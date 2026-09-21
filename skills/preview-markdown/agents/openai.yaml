@@ -1,0 +1,4 @@
+interface:
+  display_name: "Preview Markdown"
+  short_description: "Serve and validate GitHub-style Markdown"
+  default_prompt: "Use $preview-markdown to preview and validate this file."

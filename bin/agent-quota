@@ -1,0 +1,2814 @@
+#!/usr/bin/env python3
+"""Report best-effort Claude Code and Codex subscription quota data.
+
+The JSON schema is the canonical interface. Human status bars consume the
+private derived cache and never parse ``--brief`` output.
+"""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import fcntl
+import hashlib
+import json
+import math
+import os
+import queue
+import re
+import shutil
+import subprocess
+import tempfile
+import threading
+import time
+import importlib.util
+from contextlib import contextmanager
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+from typing import Any, Iterable, Iterator
+from types import SimpleNamespace
+
+
+SCHEMA_VERSION = 3
+VERSION = "0.6.0"
+CLAUDE_FRESH_SECONDS = 3600
+CLAUDE_REFRESH_SECONDS = 300
+CODEX_FRESH_SECONDS = 120
+PACE_EARLY_ELAPSED_SHARE = 0.05
+PACE_SURPLUS_UNUSED_PERCENT = 25
+RESET_SOON_SECONDS = 3600
+PACE_STATES = ("behind", "on_pace", "surplus", "early", "unknown")
+BURN_RECENT_SECONDS = 3 * 60 * 60
+BURN_MIN_SPAN_SECONDS = 15 * 60
+HISTORY_MIN_GAP_SECONDS = 5 * 60
+VELOCITY_WINDOWS = (("1h", 60 * 60), ("5h", 5 * 60 * 60), ("24h", 86400))
+HISTORY_KEEP_SECONDS = VELOCITY_WINDOWS[-1][1] + 60 * 60
+HISTORY_MAX_ENTRIES = 1000
+SAME_PERIOD_TOLERANCE_SECONDS = 60
+VELOCITY_BASELINE_SLACK_SECONDS = 2 * HISTORY_MIN_GAP_SECONDS
+
+
+def utc_now() -> datetime:
+  return datetime.now(timezone.utc)
+
+
+def iso_utc(value: datetime | None = None) -> str:
+  value = value or utc_now()
+  return (
+    value.astimezone(timezone.utc)
+    .isoformat(timespec="seconds")
+    .replace("+00:00", "Z")
+  )
+
+
+def parse_timestamp(
+  value: Any,
+  *,
+  milliseconds: bool = False,
+) -> datetime | None:
+  if isinstance(value, bool) or value is None:
+    return None
+
+  if isinstance(value, (int, float)):
+    number = float(value)
+    if not math.isfinite(number):
+      return None
+    if milliseconds:
+      number /= 1000
+    try:
+      return datetime.fromtimestamp(number, tz=timezone.utc)
+    except (ValueError, OSError, OverflowError):
+      return None
+
+  if not isinstance(value, str):
+    return None
+
+  text = value.strip()
+  if not text:
+    return None
+
+  if re.fullmatch(r"\d+(?:\.\d+)?", text):
+    return parse_timestamp(float(text), milliseconds=milliseconds)
+
+  try:
+    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+  except ValueError:
+    return None
+  if parsed.tzinfo is None:
+    return None
+  return parsed.astimezone(timezone.utc)
+
+
+def finite_percentage(value: Any) -> float | None:
+  if isinstance(value, bool):
+    return None
+  try:
+    number = float(value)
+  except (TypeError, ValueError):
+    return None
+  if not math.isfinite(number) or not 0 <= number <= 100:
+    return None
+  return number
+
+
+def compact_number(value: float) -> int | float:
+  rounded = round(value, 3)
+  if rounded.is_integer():
+    return int(rounded)
+  return rounded
+
+
+def slug(text: str) -> str:
+  return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_") or "unknown"
+
+
+def warning(code: str, message: str) -> dict[str, str]:
+  return {"code": code, "message": message}
+
+
+def walk_objects(value: Any) -> Iterable[dict[str, Any]]:
+  if isinstance(value, dict):
+    yield value
+    for child in value.values():
+      yield from walk_objects(child)
+  elif isinstance(value, list):
+    for child in value:
+      yield from walk_objects(child)
+
+
+def refresh_record(
+  status: str,
+  attempted_at: datetime | None,
+  last_success_at: datetime | str | None,
+  error: dict[str, str] | None = None,
+) -> dict[str, Any]:
+  success = (
+    iso_utc(last_success_at)
+    if isinstance(last_success_at, datetime)
+    else last_success_at
+  )
+  return {
+    "status": status,
+    "attempted_at": iso_utc(attempted_at) if attempted_at else None,
+    "last_success_at": success,
+    "error": error,
+  }
+
+
+def base_service(
+  provider_id: str,
+  service_id: str,
+  display_name: str,
+  now: datetime,
+) -> dict[str, Any]:
+  return {
+    "provider_id": provider_id,
+    "service_id": service_id,
+    "display_name": display_name,
+    "refresh": refresh_record("succeeded", now, now),
+    "data_status": "complete",
+    "warnings": [],
+    "limits": [],
+  }
+
+
+def unavailable_service(
+  provider_id: str,
+  service_id: str,
+  display_name: str,
+  error_code: str,
+  error_message: str,
+  now: datetime,
+) -> dict[str, Any]:
+  return {
+    "provider_id": provider_id,
+    "service_id": service_id,
+    "display_name": display_name,
+    "refresh": refresh_record(
+      "failed",
+      now,
+      None,
+      {"code": error_code, "message": error_message},
+    ),
+    "data_status": "unavailable",
+    "warnings": [],
+    "limits": [],
+  }
+
+
+def observation_freshness(
+  observation: dict[str, Any],
+  now: datetime,
+) -> None:
+  observed = parse_timestamp(observation.get("observed_at"))
+  fresh_until = parse_timestamp(observation.get("fresh_until"))
+
+  if observed is None or observed > now:
+    observation["freshness"] = "unknown"
+  elif fresh_until is not None and now < fresh_until:
+    observation["freshness"] = "fresh"
+  else:
+    observation["freshness"] = "stale"
+
+
+def observation_state(
+  observation: dict[str, Any],
+  now: datetime,
+) -> None:
+  observation_freshness(observation, now)
+  reset = parse_timestamp(observation.get("reset_at"))
+  if reset is None:
+    observation["period_relation"] = "unknown"
+  elif now < reset:
+    observation["period_relation"] = "current"
+  else:
+    observation["period_relation"] = "ended"
+
+
+def limit_pace(limit: dict[str, Any], now: datetime) -> dict[str, Any]:
+  """Derive pace for one limit from its observation and window.
+
+  Time to reset is measured from ``now``. The burn projection is anchored at
+  ``observed_at``, when the percentage was true, so re-evaluating a cached
+  observation later never changes its projection.
+  """
+  pace: dict[str, Any] = {
+    "state": "unknown",
+    "reset_in_seconds": None,
+    "window_share_remaining_percent": None,
+    "projected_unused_percent": None,
+    "reset_soon": False,
+  }
+  observation = limit.get("last_observation")
+  window = limit.get("window")
+  if not isinstance(observation, dict) or not isinstance(window, dict):
+    return pace
+  if observation.get("period_relation") != "current":
+    return pace
+  reset = parse_timestamp(observation.get("reset_at"))
+  observed = parse_timestamp(observation.get("observed_at"))
+  used = finite_percentage(observation.get("used_percent"))
+  if reset is None or used is None:
+    return pace
+
+  reset_in = max(0, int((reset - now).total_seconds()))
+  pace["reset_in_seconds"] = reset_in
+  pace["reset_soon"] = reset_in <= RESET_SOON_SECONDS
+
+  duration = window.get("duration_seconds")
+  if (
+    not isinstance(duration, (int, float))
+    or isinstance(duration, bool)
+    or duration <= 0
+    or observed is None
+  ):
+    return pace
+
+  share_now = min(1.0, reset_in / duration)
+  pace["window_share_remaining_percent"] = compact_number(
+    round(share_now * 100, 1)
+  )
+  share_at_observation = (reset - observed).total_seconds() / duration
+  elapsed = 1 - min(1.0, max(0.0, share_at_observation))
+  if elapsed < PACE_EARLY_ELAPSED_SHARE:
+    pace["state"] = "early"
+    return pace
+
+  projected = 100 - used / elapsed
+  pace["projected_unused_percent"] = compact_number(round(projected, 1))
+  if projected < 0:
+    pace["state"] = "behind"
+  elif projected >= PACE_SURPLUS_UNUSED_PERCENT:
+    pace["state"] = "surplus"
+  else:
+    pace["state"] = "on_pace"
+  return pace
+
+
+def history_entry(observation: dict[str, Any]) -> dict[str, Any] | None:
+  observed = observation.get("observed_at")
+  reset = observation.get("reset_at")
+  used = finite_percentage(observation.get("used_percent"))
+  if not isinstance(observed, str) or not isinstance(reset, str):
+    return None
+  if used is None:
+    return None
+  return {
+    "observed_at": observed,
+    "reset_at": reset,
+    "used_percent": compact_number(used),
+  }
+
+
+def merge_history(
+  current: dict[str, Any],
+  previous: dict[str, Any] | None,
+  now: datetime,
+) -> dict[str, Any]:
+  """Carry each limit's raw observation history forward and append the
+  newest observation. Entries stay separate snapshots, including entries
+  from earlier reset periods; the history is thinned and pruned by time."""
+  result = copy.deepcopy(current)
+  old_limits: dict[str, list[Any]] = {}
+  if isinstance(previous, dict):
+    for item in previous.get("limits", []):
+      if isinstance(item, dict) and isinstance(item.get("limit_id"), str):
+        history = item.get("history")
+        old_limits[item["limit_id"]] = (
+          history if isinstance(history, list) else []
+        )
+  cutoff = now - timedelta(seconds=HISTORY_KEEP_SECONDS)
+  for item in result.get("limits", []):
+    if not isinstance(item, dict):
+      continue
+    observation = item.get("last_observation")
+    entry = (
+      history_entry(observation) if isinstance(observation, dict) else None
+    )
+    entries: list[dict[str, Any]] = []
+    for old in old_limits.get(item.get("limit_id", ""), []):
+      if not isinstance(old, dict):
+        continue
+      observed = parse_timestamp(old.get("observed_at"))
+      if observed is None or observed < cutoff:
+        continue
+      entries.append(old)
+    if entry is not None:
+      last = entries[-1] if entries else None
+      if last is None:
+        entries.append(entry)
+      elif last.get("observed_at") != entry["observed_at"]:
+        last_time = parse_timestamp(last.get("observed_at"))
+        new_time = parse_timestamp(entry["observed_at"])
+        gap = (
+          (new_time - last_time).total_seconds()
+          if last_time is not None and new_time is not None
+          else HISTORY_MIN_GAP_SECONDS
+        )
+        if (
+          last.get("used_percent") != entry["used_percent"]
+          or gap >= HISTORY_MIN_GAP_SECONDS
+        ):
+          entries.append(entry)
+    item["history"] = entries[-HISTORY_MAX_ENTRIES:]
+  return result
+
+
+def limit_burn(limit: dict[str, Any], now: datetime) -> dict[str, Any]:
+  """Derive the recent burn rate from the trailing history window."""
+  burn: dict[str, Any] = {
+    "rate_percent_per_hour": None,
+    "span_seconds": None,
+    "exhausts_at": None,
+    "exhausts_before_reset": False,
+  }
+  observation = limit.get("last_observation")
+  history = limit.get("history")
+  if not isinstance(observation, dict) or not isinstance(history, list):
+    return burn
+  if observation.get("period_relation") != "current":
+    return burn
+  reset = parse_timestamp(observation.get("reset_at"))
+  if reset is None:
+    return burn
+  cutoff = now - timedelta(seconds=BURN_RECENT_SECONDS)
+  points: list[tuple[datetime, float]] = []
+  for entry in history:
+    if not isinstance(entry, dict):
+      continue
+    if entry.get("reset_at") != observation.get("reset_at"):
+      continue
+    observed = parse_timestamp(entry.get("observed_at"))
+    used = finite_percentage(entry.get("used_percent"))
+    if observed is None or used is None or observed < cutoff:
+      continue
+    points.append((observed, used))
+  points.sort()
+  if len(points) < 2:
+    return burn
+  (first_time, first_used), (last_time, last_used) = points[0], points[-1]
+  span = (last_time - first_time).total_seconds()
+  if span < BURN_MIN_SPAN_SECONDS:
+    return burn
+  rate = (last_used - first_used) / span * 3600
+  burn["rate_percent_per_hour"] = compact_number(round(rate, 2))
+  burn["span_seconds"] = int(span)
+  if rate <= 0:
+    return burn
+  exhausts = last_time + timedelta(hours=(100 - last_used) / rate)
+  burn["exhausts_at"] = iso_utc(exhausts)
+  burn["exhausts_before_reset"] = exhausts < reset
+  return burn
+
+
+def same_period(first: dict[str, Any], second: dict[str, Any]) -> bool:
+  """Whether two history entries describe the same reset period. Unknown
+  resets compare equal; known resets tolerate a few seconds of drift."""
+  first_reset = parse_timestamp(first.get("reset_at"))
+  second_reset = parse_timestamp(second.get("reset_at"))
+  if first_reset is None or second_reset is None:
+    return first_reset is second_reset
+  drift = abs((second_reset - first_reset).total_seconds())
+  return drift <= SAME_PERIOD_TOLERANCE_SECONDS
+
+
+def history_points(
+  history: Any,
+) -> list[tuple[datetime, float, dict[str, Any]]]:
+  points: list[tuple[datetime, float, dict[str, Any]]] = []
+  if not isinstance(history, list):
+    return points
+  for entry in history:
+    if not isinstance(entry, dict):
+      continue
+    observed = parse_timestamp(entry.get("observed_at"))
+    used = finite_percentage(entry.get("used_percent"))
+    if observed is None or used is None:
+      continue
+    points.append((observed, used, entry))
+  points.sort(key=lambda point: point[0])
+  return points
+
+
+def window_velocity(
+  points: list[tuple[datetime, float, dict[str, Any]]],
+  cutoff: datetime,
+) -> dict[str, Any]:
+  """Sum the percentage points consumed since ``cutoff``. The baseline is
+  the last entry at or before the cutoff when one sits close enough to it,
+  else the first entry after it. Within a period only increases count; a
+  period change counts the new period's usage."""
+  velocity: dict[str, Any] = {
+    "used_percent": None,
+    "rate_percent_per_hour": None,
+    "span_seconds": None,
+  }
+  earliest = cutoff - timedelta(seconds=VELOCITY_BASELINE_SLACK_SECONDS)
+  start = 0
+  for index, (observed, _, _) in enumerate(points):
+    if observed < earliest:
+      start = index + 1
+    elif observed <= cutoff:
+      start = index
+  window = points[start:]
+  if len(window) < 2:
+    return velocity
+  span = (window[-1][0] - window[0][0]).total_seconds()
+  if span < BURN_MIN_SPAN_SECONDS:
+    return velocity
+  consumed = 0.0
+  for (_, before, old), (_, after, new) in zip(window, window[1:]):
+    if same_period(old, new):
+      consumed += max(0.0, after - before)
+    else:
+      consumed += after
+  velocity["used_percent"] = compact_number(round(consumed, 1))
+  velocity["rate_percent_per_hour"] = compact_number(
+    round(consumed / span * 3600, 2)
+  )
+  velocity["span_seconds"] = int(span)
+  return velocity
+
+
+def limit_velocity(limit: dict[str, Any], now: datetime) -> dict[str, Any]:
+  """Derive consumption over each trailing velocity window from history.
+
+  Unlike ``burn``, velocity spans reset periods: a bucket used up and then
+  refilled keeps counting, so a 5h bucket can consume more than 100 points
+  in 24 hours. Windows end at ``now``; ``span_seconds`` shows how much of
+  each window the history actually covers.
+  """
+  points = history_points(limit.get("history"))
+  return {
+    label: window_velocity(points, now - timedelta(seconds=seconds))
+    for label, seconds in VELOCITY_WINDOWS
+  }
+
+
+def service_binding(service: dict[str, Any]) -> str | None:
+  """Return the limit with the lowest projection, or None if none project."""
+  best: tuple[float, float, str] | None = None
+  for item in service.get("limits", []):
+    if not isinstance(item, dict):
+      continue
+    pace = item.get("pace")
+    observation = item.get("last_observation")
+    if not isinstance(pace, dict) or not isinstance(observation, dict):
+      continue
+    projected = pace.get("projected_unused_percent")
+    remaining = finite_percentage(observation.get("remaining_percent"))
+    limit_id = item.get("limit_id")
+    if (
+      not isinstance(projected, (int, float))
+      or isinstance(projected, bool)
+      or not math.isfinite(projected)
+      or remaining is None
+      or not isinstance(limit_id, str)
+    ):
+      continue
+    candidate = (projected, remaining, limit_id)
+    if best is None or candidate < best:
+      best = candidate
+  return best[2] if best else None
+
+
+def bucket_matches_model(bucket: dict[str, Any], model: str) -> bool:
+  query = slug(model)
+  if query == "unknown":
+    return False
+  for key in ("id", "name"):
+    value = bucket.get(key)
+    if not isinstance(value, str):
+      continue
+    candidate = slug(value)
+    if candidate != "unknown" and (query in candidate or candidate in query):
+      return True
+  return False
+
+
+def filter_document_for_model(
+  document: dict[str, Any],
+  model: str,
+) -> dict[str, Any]:
+  """Keep account buckets plus scoped buckets matching ``model``."""
+  result = copy.deepcopy(document)
+  result["model_filter"] = model
+  services = result.get("services", {})
+  if not isinstance(services, dict):
+    return result
+  for service in services.values():
+    if not isinstance(service, dict):
+      continue
+    kept = []
+    for item in service.get("limits", []):
+      if not isinstance(item, dict):
+        continue
+      bucket = item.get("bucket")
+      bucket = bucket if isinstance(bucket, dict) else {}
+      if bucket.get("scope_kind") == "account" or bucket_matches_model(
+        bucket, model
+      ):
+        kept.append(item)
+    service["limits"] = kept
+    if "credits" in service:
+      service["credits"] = [
+        item for item in service["credits"]
+        if item["bucket"].get("scope_kind") == "account"
+        or bucket_matches_model(item["bucket"], model)
+      ]
+    service["binding_limit_id"] = service_binding(service)
+  return result
+
+
+def make_observation(
+  used_percent: float,
+  observed_at: datetime | None,
+  reset_at: datetime | None,
+  freshness_seconds: int,
+  source_id: str,
+  documentation_status: str,
+  now: datetime,
+) -> dict[str, Any]:
+  observation = {
+    "used_percent": compact_number(used_percent),
+    "remaining_percent": compact_number(100 - used_percent),
+    "observed_at": iso_utc(observed_at) if observed_at else None,
+    "reset_at": iso_utc(reset_at) if reset_at else None,
+    "fresh_until": (
+      iso_utc(observed_at + timedelta(seconds=freshness_seconds))
+      if observed_at
+      else None
+    ),
+    "freshness": "unknown",
+    "period_relation": "unknown",
+    "source": {
+      "id": source_id,
+      "documentation_status": documentation_status,
+    },
+  }
+  observation_state(observation, now)
+  return observation
+
+
+def parse_cache_timestamp(cache: Any) -> tuple[datetime | None, str | None]:
+  if not isinstance(cache, dict):
+    return None, None
+
+  if "fetchedAtMs" in cache:
+    parsed = parse_timestamp(cache.get("fetchedAtMs"), milliseconds=True)
+    return parsed, "cachedUsageUtilization.fetchedAtMs"
+
+  for key in (
+    "updated_at",
+    "updatedAt",
+    "fetched_at",
+    "fetchedAt",
+    "last_updated",
+    "lastUpdated",
+    "timestamp",
+    "cached_at",
+    "cachedAt",
+  ):
+    if key in cache:
+      return parse_timestamp(cache.get(key)), f"cachedUsageUtilization.{key}"
+
+  return None, None
+
+
+def claude_window(kind: str) -> tuple[str, int | None]:
+  normalized = slug(kind)
+  if normalized in {"session", "five_hour", "5h"}:
+    return "5h", 5 * 60 * 60
+  if normalized in {
+    "weekly_all",
+    "seven_day",
+    "7d",
+    "weekly",
+    "weekly_scoped",
+  }:
+    return "weekly", 7 * 24 * 60 * 60
+  return normalized, None
+
+
+def claude_candidate(
+  record: dict[str, Any],
+  cache_time: datetime | None,
+  now: datetime,
+  warnings: list[dict[str, str]],
+) -> dict[str, Any] | None:
+  kind = record.get("kind")
+  if not isinstance(kind, str):
+    return None
+
+  used = finite_percentage(record.get("percent"))
+  if used is None:
+    warnings.append(
+      warning(
+        "invalid_percentage",
+        f"Ignored Claude Code {kind!r} record with an invalid percentage.",
+      )
+    )
+    return None
+
+  scope = record.get("scope")
+  scope = scope if isinstance(scope, dict) else {}
+  model = scope.get("model")
+  model = model if isinstance(model, dict) else {}
+  model_name = model.get("display_name")
+  model_name = model_name if isinstance(model_name, str) else None
+  model_id = model.get("id")
+  model_id = model_id if isinstance(model_id, str) else None
+
+  if model_name:
+    bucket_id = model_id or slug(model_name)
+    bucket_name = model_name
+    scope_kind = "model"
+  else:
+    bucket_id = "account"
+    bucket_name = "All models"
+    scope_kind = "account"
+
+  record_time_raw = record.get("observed_at")
+  record_time = (
+    parse_timestamp(record_time_raw)
+    if record_time_raw is not None
+    else cache_time
+  )
+  if record_time_raw is not None and record_time is None:
+    warnings.append(
+      warning(
+        "invalid_timestamp",
+        f"Claude Code {kind!r} record has an invalid observation time.",
+      )
+    )
+
+  reset_raw = record.get("resets_at")
+  reset = parse_timestamp(reset_raw)
+  if reset_raw is not None and reset is None:
+    warnings.append(
+      warning(
+        "invalid_timestamp",
+        f"Claude Code {kind!r} record has an invalid reset time.",
+      )
+    )
+
+  if record_time is not None and record_time > now:
+    warnings.append(
+      warning(
+        "future_observation",
+        f"Claude Code {kind!r} observation time is in the future.",
+      )
+    )
+
+  window_label, duration = claude_window(kind)
+  observation = make_observation(
+    used,
+    record_time,
+    reset,
+    CLAUDE_FRESH_SECONDS,
+    "claude.cachedUsageUtilization",
+    "undocumented",
+    now,
+  )
+
+  # Claude reports an unused session window with no reset until first use.
+  if (window_label == "5h" and used == 0 and reset_raw is None
+      and "resets_at" in record and record.get("is_active") is False):
+    observation["window_not_started"] = True
+
+  return {
+    "limit_id": (
+      f"claude_code:{slug(bucket_id)}:{slug(window_label)}"
+    ),
+    "bucket": {
+      "id": bucket_id,
+      "name": bucket_name,
+      "scope_kind": scope_kind,
+    },
+    "window": {
+      "label": window_label,
+      "duration_seconds": duration,
+    },
+    "non_additive": scope_kind != "account",
+    "availability": None,
+    "last_observation": observation,
+    "selection": {
+      "active": (
+        record.get("is_active")
+        if isinstance(record.get("is_active"), bool)
+        else None
+      )
+    },
+  }
+
+
+def choose_claude_duplicate(
+  candidates: list[dict[str, Any]],
+  warnings: list[dict[str, str]],
+) -> dict[str, Any]:
+  active = [
+    item
+    for item in candidates
+    if item.get("selection", {}).get("active") is True
+  ]
+  pool = active or candidates
+
+  if len(active) > 1:
+    values = {
+      item["last_observation"]["used_percent"]
+      for item in active
+    }
+    if len(values) > 1:
+      warnings.append(
+        warning(
+          "conflicting_active_records",
+          "Multiple active Claude Code records disagree; selected the "
+          "newest, then highest utilization.",
+        )
+      )
+
+  def key(item: dict[str, Any]) -> tuple[datetime, float]:
+    observed = parse_timestamp(item["last_observation"].get("observed_at"))
+    used = float(item["last_observation"]["used_percent"])
+    return (
+      observed or datetime.min.replace(tzinfo=timezone.utc),
+      used,
+    )
+
+  selected = max(pool, key=key)
+  selected.pop("selection", None)
+  return selected
+
+
+def parse_claude_cache(
+  path: Path,
+  *,
+  raw: dict[str, Any] | None = None,
+  now: datetime | None = None,
+) -> dict[str, Any]:
+  observed_now = now or utc_now()
+  if raw is None and not path.exists():
+    return unavailable_service(
+      "anthropic",
+      "claude_code",
+      "Claude Code",
+      "cache_unavailable",
+      "Claude Code usage cache is unavailable.",
+      observed_now,
+    )
+
+  try:
+    if raw is None:
+      raw = json.loads(path.read_text(encoding="utf-8"))
+  except (OSError, json.JSONDecodeError):
+    return unavailable_service(
+      "anthropic",
+      "claude_code",
+      "Claude Code",
+      "cache_unreadable",
+      "Claude Code usage cache could not be read.",
+      observed_now,
+    )
+
+  cache = raw.get("cachedUsageUtilization") if isinstance(raw, dict) else None
+  if not isinstance(cache, dict):
+    return unavailable_service(
+      "anthropic",
+      "claude_code",
+      "Claude Code",
+      "cache_missing",
+      "Claude Code has not cached usage data yet.",
+      observed_now,
+    )
+
+  service = base_service(
+    "anthropic",
+    "claude_code",
+    "Claude Code",
+    observed_now,
+  )
+  cache_time, timestamp_basis = parse_cache_timestamp(cache)
+  if cache_time is None:
+    service["warnings"].append(
+      warning(
+        "missing_observation_time",
+        "Claude Code usage has no valid cache observation time.",
+      )
+    )
+  elif cache_time > observed_now:
+    service["warnings"].append(
+      warning(
+        "future_observation",
+        "Claude Code cache observation time is in the future.",
+      )
+    )
+
+  records: Any = cache.get("records")
+  if records is None:
+    utilization = cache.get("utilization")
+    if isinstance(utilization, dict):
+      records = utilization.get("limits")
+  groups: dict[str, list[dict[str, Any]]] = {}
+  for record in walk_objects(records if records is not None else []):
+    candidate = claude_candidate(
+      record,
+      cache_time,
+      observed_now,
+      service["warnings"],
+    )
+    if candidate is None:
+      continue
+    groups.setdefault(candidate["limit_id"], []).append(candidate)
+
+  limits = [
+    choose_claude_duplicate(candidates, service["warnings"])
+    for candidates in groups.values()
+  ]
+  limits.sort(
+    key=lambda item: (
+      0 if item["window"]["label"] == "5h" else 1,
+      0 if item["bucket"]["scope_kind"] == "account" else 1,
+      item["bucket"]["name"],
+    )
+  )
+  service["limits"] = limits
+
+  if timestamp_basis:
+    service["source_timestamp_basis"] = timestamp_basis
+
+  if not limits:
+    service["refresh"] = refresh_record(
+      "failed",
+      observed_now,
+      None,
+      {
+        "code": "unrecognized_cache_data",
+        "message": "Claude Code cache contained no valid quota records.",
+      },
+    )
+    service["data_status"] = "unavailable"
+  elif service["warnings"]:
+    service["data_status"] = "partial"
+  return service
+
+
+def claude_cache_time(path: Path) -> datetime | None:
+  try:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+  except (OSError, json.JSONDecodeError):
+    return None
+  cache = raw.get("cachedUsageUtilization") if isinstance(raw, dict) else None
+  parsed, _ = parse_cache_timestamp(cache)
+  return parsed
+
+
+def refresh_claude_usage(
+  path: Path,
+  claude_bin: str,
+  timeout: float,
+  now: datetime,
+  *,
+  force: bool = False,
+) -> dict[str, Any]:
+  cached_at = claude_cache_time(path)
+  if cached_at is not None and not force:
+    age = max(0, (now - cached_at).total_seconds())
+    if age < CLAUDE_REFRESH_SECONDS:
+      return refresh_record("not_needed", None, cached_at)
+
+  if shutil.which(claude_bin) is None and os.path.sep not in claude_bin:
+    return refresh_record(
+      "failed",
+      now,
+      cached_at,
+      {
+        "code": "claude_not_found",
+        "message": "Claude Code executable was not found.",
+      },
+    )
+
+  command = [
+    claude_bin,
+    "-p",
+    "--safe-mode",
+    "--no-session-persistence",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "/usage",
+  ]
+  try:
+    completed = subprocess.run(
+      command,
+      stdin=subprocess.DEVNULL,
+      stdout=subprocess.DEVNULL,
+      stderr=subprocess.PIPE,
+      text=True,
+      timeout=timeout,
+      check=False,
+    )
+  except (OSError, subprocess.TimeoutExpired) as exc:
+    code = "claude_refresh_timeout" if isinstance(
+      exc,
+      subprocess.TimeoutExpired,
+    ) else "claude_refresh_failed"
+    return refresh_record(
+      "failed",
+      now,
+      cached_at,
+      {"code": code, "message": "Claude Code usage refresh failed."},
+    )
+
+  refreshed_at = claude_cache_time(path)
+  if completed.returncode != 0 or refreshed_at is None:
+    return refresh_record(
+      "failed",
+      now,
+      cached_at,
+      {
+        "code": "claude_refresh_failed",
+        "message": "Claude Code usage refresh failed.",
+      },
+    )
+  if cached_at is not None and refreshed_at <= cached_at:
+    return refresh_record(
+      "failed",
+      now,
+      cached_at,
+      {
+        "code": "claude_cache_not_updated",
+        "message": "Claude Code did not update its usage cache.",
+      },
+    )
+  return refresh_record("succeeded", now, refreshed_at)
+
+
+def claude_auth_status(claude_bin: str, timeout: float) -> dict[str, Any]:
+  result = subprocess.run(
+    [claude_bin, "auth", "status", "--json"], capture_output=True,
+    text=True, timeout=min(timeout, 5), check=False,
+  )
+  if result.returncode:
+    raise RuntimeError("Claude Code subscription identity unavailable.")
+  raw = json.loads(result.stdout)
+  return raw if isinstance(raw, dict) else {}
+
+
+def claude_account(raw: Any, now: datetime) -> dict[str, Any] | None:
+  if any(os.environ.get(name) for name in (
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_SECURESTORAGE_CONFIG_DIR", "ANTHROPIC_PROFILE",
+  )):
+    return None
+  if not isinstance(raw, dict) or not (
+    raw.get("loggedIn") is True and raw.get("authMethod") == "claude.ai"
+    and raw.get("apiProvider") == "firstParty"
+  ):
+    return None
+  email, org, plan = (raw.get(k) for k in ("email", "orgId", "subscriptionType"))
+  if not all(isinstance(v, str) and v.strip() and len(v) <= 320
+             and all(c.isprintable() for c in v) for v in (email, org, plan)):
+    return None
+  key = hashlib.sha256(json.dumps([email.strip().casefold(), org]).encode())
+  return {"key": key.hexdigest(), "label": email.strip(), "plan": plan,
+          "observed_at": iso_utc(now), "source": "claude.auth/status"}
+
+
+def claude_state(path: Path) -> dict[str, Any]:
+  try:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return raw if isinstance(raw, dict) else {}
+  except (OSError, ValueError):
+    return {}
+
+
+def claude_cache_owner(raw: dict[str, Any], account: dict[str, Any]) -> bool:
+  stored = raw.get("oauthAccount") or {}
+  usage = raw.get("cachedUsageUtilization") or {}
+  if not isinstance(stored, dict) or not isinstance(usage, dict):
+    return False
+  identity = claude_account({
+    "loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty",
+    "email": stored.get("emailAddress"), "orgId": stored.get("organizationUuid"),
+    "subscriptionType": account["plan"],
+  }, utc_now())
+  owner = usage.get("accountUuid")
+  return bool(identity and identity["key"] == account["key"]
+              and isinstance(owner, str) and owner
+              and owner == stored.get("accountUuid"))
+
+
+def claude_cache_digest(raw: dict[str, Any]) -> str:
+  return hashlib.sha256(json.dumps(
+    raw.get("cachedUsageUtilization"), sort_keys=True,
+  ).encode()).hexdigest()
+
+
+def get_claude(
+  path: Path, claude_bin: str, timeout: float,
+  previous: dict[str, Any] | None, now: datetime | None = None,
+) -> dict[str, Any]:
+  account = None
+  try:
+    before = claude_account(claude_auth_status(claude_bin, timeout),
+                            now or utc_now())
+    if not before:
+      raise RuntimeError("Claude Code subscription identity not verified.")
+    old = previous or {}
+    previous_account = old.get("account") or {}
+    state = claude_state(path)
+    reuse = (
+      (before["key"], before["plan"]) == (
+        previous_account.get("key"), previous_account.get("plan")
+      ) and claude_cache_owner(state, before)
+      and old.get("usage_cache_digest") == claude_cache_digest(state)
+    )
+    refresh = refresh_claude_usage(
+      path, claude_bin, timeout, now or utc_now(), force=not reuse,
+    )
+    state = claude_state(path)
+    after = claude_account(claude_auth_status(claude_bin, timeout),
+                           now or utc_now())
+    if not after or (before["key"], before["plan"]) != (
+      after["key"], after["plan"]
+    ):
+      raise RuntimeError("Claude Code account changed or became unverified.")
+    account = after
+    if refresh["status"] == "failed":
+      raise RuntimeError("Claude Code usage refresh failed.")
+    if refresh["status"] == "not_needed" and (
+      old.get("usage_cache_digest") != claude_cache_digest(state)
+    ):
+      raise RuntimeError("Claude Code usage cache changed during collection.")
+    if not claude_cache_owner(state, account):
+      raise RuntimeError("Claude Code usage cache owner does not match login.")
+    service = parse_claude_cache(path, raw=state, now=now or utc_now())
+    service["refresh"] = refresh
+    service["usage_cache_digest"] = claude_cache_digest(state)
+  except Exception as exc:
+    service = unavailable_service(
+      "anthropic", "claude_code", "Claude Code", "claude_refresh_failed",
+      str(exc), now or utc_now(),
+    )
+  service["account"] = account
+  return service
+
+
+def _stream_reader(
+  stream: Any,
+  out: queue.Queue[tuple[str, str | None]],
+  tag: str,
+) -> None:
+  try:
+    for line in iter(stream.readline, ""):
+      out.put((tag, line.rstrip("\n")))
+  finally:
+    out.put((tag, None))
+
+
+def _codex_exit_error(
+  returncode: int,
+  stderr_lines: list[str],
+) -> RuntimeError:
+  detail = (
+    f"; stderr: {' | '.join(stderr_lines[-3:])}"
+    if stderr_lines
+    else ""
+  )
+  hint = ""
+  stderr_text = "\n".join(stderr_lines).lower()
+  if "sqlite state runtime" in stderr_text:
+    hint = (
+      "; Codex needs writable state under ~/.codex; run agent-quota "
+      "outside the sandbox or approve an unsandboxed invocation"
+    )
+  return RuntimeError(
+    f"Codex app-server exited with status {returncode} before "
+    f"account/rateLimits/read{detail}{hint}"
+  )
+
+
+def codex_rpc(
+  timeout: float,
+  codex_bin: str = "codex",
+  method: str = "account/rateLimits/read",
+  *,
+  snapshot: bool = False,
+) -> dict[str, Any]:
+  if shutil.which(codex_bin) is None and os.path.sep not in codex_bin:
+    raise RuntimeError(f"'{codex_bin}' not found on PATH")
+
+  try:
+    proc = subprocess.Popen(
+      [codex_bin, "app-server"],
+      stdin=subprocess.PIPE,
+      stdout=subprocess.PIPE,
+      stderr=subprocess.PIPE,
+      text=True,
+      bufsize=1,
+    )
+  except OSError as exc:
+    raise RuntimeError(f"could not start Codex app-server: {exc}") from exc
+
+  assert proc.stdin is not None
+  assert proc.stdout is not None
+  assert proc.stderr is not None
+  events: queue.Queue[tuple[str, str | None]] = queue.Queue()
+  stdout_thread = threading.Thread(
+    target=_stream_reader,
+    args=(proc.stdout, events, "stdout"),
+    daemon=True,
+  )
+  stderr_thread = threading.Thread(
+    target=_stream_reader,
+    args=(proc.stderr, events, "stderr"),
+    daemon=True,
+  )
+  stdout_thread.start()
+  stderr_thread.start()
+
+  def send(message: dict[str, Any]) -> None:
+    proc.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+    proc.stdin.flush()
+
+  stderr_lines: list[str] = []
+  request_id = 1
+
+  def request(method: str, seconds: float) -> dict[str, Any]:
+    nonlocal request_id
+    request_id += 1
+    params = {"refreshToken": False} if method == "account/read" else {}
+    send({"method": method, "id": request_id, "params": params})
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+      remaining = max(0.01, deadline - time.monotonic())
+      try:
+        tag, line = events.get(timeout=remaining)
+      except queue.Empty:
+        break
+      if line is None:
+        if proc.poll() is not None:
+          stdout_thread.join(timeout=0.2)
+          stderr_thread.join(timeout=0.2)
+          while True:
+            try:
+              pending_tag, pending_line = events.get_nowait()
+            except queue.Empty:
+              break
+            if pending_tag == "stderr" and pending_line:
+              stderr_lines.append(pending_line)
+          error = _codex_exit_error(proc.returncode, stderr_lines)
+          raise RuntimeError(
+            str(error).replace("account/rateLimits/read", method)
+          )
+        continue
+      if tag == "stderr":
+        if line:
+          stderr_lines.append(line)
+        continue
+      if not line:
+        continue
+      try:
+        message = json.loads(line)
+      except json.JSONDecodeError:
+        continue
+      if not isinstance(message, dict) or message.get("id") != request_id:
+        continue
+      if "error" in message:
+        raise RuntimeError(f"Codex app-server error: {message['error']}")
+      result = message.get("result")
+      if not isinstance(result, dict):
+        raise RuntimeError(f"Codex app-server returned no {method} result")
+      return result
+    raise RuntimeError(
+      f"timed out after {seconds:g}s waiting for {method}"
+    )
+
+  try:
+    send({"method": "initialize", "id": 1, "params": {
+      "clientInfo": {"name": "agent_quota", "title": "Agent Quota Broker",
+                     "version": VERSION},
+    }})
+    send({"method": "initialized", "params": {}})
+    if not snapshot:
+      return request(method, timeout)
+    result = {}
+    # One process owns all these observations. A second account read detects
+    # auth changes during collection; usage failure remains optional.
+    for key, rpc_method in (
+      ("account_before", "account/read"),
+      ("limits", "account/rateLimits/read"),
+      ("usage", "account/usage/read"),
+      ("account_after", "account/read"),
+    ):
+      try:
+        seconds = min(timeout, 5) if key == "usage" else timeout
+        result[key] = {"result": request(rpc_method, seconds)}
+      except Exception as exc:
+        result[key] = {"error": str(exc)}
+    return result
+  finally:
+    try:
+      proc.stdin.close()
+    except Exception:
+      pass
+    if proc.poll() is None:
+      proc.terminate()
+      try:
+        proc.wait(timeout=1)
+      except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=1)
+    proc.stdout.close()
+    proc.stderr.close()
+
+
+def codex_window(window_minutes: int | None) -> tuple[str, int | None]:
+  if window_minutes == 300:
+    return "5h", 5 * 60 * 60
+  if window_minutes == 10080:
+    return "weekly", 7 * 24 * 60 * 60
+  if window_minutes is None:
+    return "unknown", None
+  if window_minutes % 1440 == 0:
+    return f"{window_minutes // 1440}d", window_minutes * 60
+  if window_minutes % 60 == 0:
+    return f"{window_minutes // 60}h", window_minutes * 60
+  return f"{window_minutes}m", window_minutes * 60
+
+
+def credit_balance(value: Any) -> Decimal | None:
+  """Validate a nonnegative decimal balance without losing precision."""
+  if not isinstance(value, str) or not re.fullmatch(
+    r"[0-9]+(?:\.[0-9]+)?", value
+  ):
+    return None
+  try:
+    balance = Decimal(value)
+    return balance if balance.is_finite() else None
+  except InvalidOperation:
+    return None
+
+
+def credit_points(
+  history: Any, now: datetime,
+) -> list[tuple[datetime, Decimal]]:
+  points = {}
+  cutoff = now - timedelta(seconds=HISTORY_KEEP_SECONDS)
+  for entry in history if isinstance(history, list) else []:
+    if not isinstance(entry, dict):
+      continue
+    observed = parse_timestamp(entry.get("observed_at"))
+    balance = credit_balance(entry.get("balance"))
+    if (
+      observed is not None and cutoff <= observed <= now
+      and balance is not None
+    ):
+      points[observed] = balance
+  return sorted(points.items())[-HISTORY_MAX_ENTRIES:]
+
+
+def merge_credit_history(
+  service: dict[str, Any], previous: dict[str, Any] | None, now: datetime,
+) -> dict[str, Any]:
+  result = copy.deepcopy(service)
+  old = {
+    item["bucket"]["id"]: item
+    for item in (previous or {}).get("credits", [])
+  }
+  for credit in result.get("credits", []):
+    before = old.get(credit["bucket"]["id"], {})
+    points = credit_points(before.get("history"), now)
+    balance = credit_balance(credit.get("balance"))
+    observed = parse_timestamp(credit.get("observed_at"))
+    if balance is None or credit.get("unlimited") is True:
+      points = []
+    elif observed is not None and observed <= now:
+      if points and balance > points[-1][1]:
+        points = []  # A top-up starts a new consumption estimate.
+      if not points or (
+        observed > points[-1][0] and (
+          balance != points[-1][1]
+          or (observed - points[-1][0]).total_seconds()
+          >= HISTORY_MIN_GAP_SECONDS
+        )
+      ):
+        points.append((observed, balance))
+    credit["history"] = [
+      {"observed_at": iso_utc(when), "balance": str(value)}
+      for when, value in points[-HISTORY_MAX_ENTRIES:]
+    ]
+  return result
+
+
+def credit_pace(credit: dict[str, Any], now: datetime) -> dict[str, Any]:
+  pace: dict[str, Any] = {
+    "rate_credits_per_hour": None, "span_seconds": None,
+    "exhausts_at": None, "seconds_until_empty": None,
+  }
+  if credit.get("unlimited") is True or credit_balance(
+    credit.get("balance")
+  ) is None:
+    return pace
+  cutoff = now - timedelta(seconds=BURN_RECENT_SECONDS)
+  points = []
+  for point in credit_points(credit.get("history"), now):
+    if point[0] < cutoff:
+      continue
+    if points and point[1] > points[-1][1]:
+      points = []
+    points.append(point)
+  if len(points) < 2:
+    return pace
+  first_time, first_balance = points[0]
+  last_time, last_balance = points[-1]
+  span = (last_time - first_time).total_seconds()
+  if span < BURN_MIN_SPAN_SECONDS:
+    return pace
+  rate = (first_balance - last_balance) * 3600 / Decimal(str(span))
+  rate_number = float(rate)
+  if not math.isfinite(rate_number):
+    return pace
+  pace["rate_credits_per_hour"] = rate_number
+  pace["span_seconds"] = int(span)
+  if rate > 0:
+    try:
+      seconds = float(last_balance / rate * 3600)
+      exhausts = last_time + timedelta(seconds=seconds)
+    except (OverflowError, ValueError):
+      return pace
+    pace["exhausts_at"] = iso_utc(exhausts)
+    pace["seconds_until_empty"] = max(
+      0, int((exhausts - now).total_seconds())
+    )
+  return pace
+
+
+def parse_codex_credits(
+  raw: Any, bucket: dict[str, Any], service: dict[str, Any], now: datetime,
+) -> None:
+  if raw is None:
+    return
+  raw = raw if isinstance(raw, dict) else {}
+  has_credits = raw.get("hasCredits")
+  unlimited = raw.get("unlimited")
+  balance = raw.get("balance")
+  invalid = (
+    not isinstance(has_credits, bool) or not isinstance(unlimited, bool)
+    or (balance is not None and credit_balance(balance) is None)
+  )
+  if invalid:
+    service["warnings"].append(warning(
+      "invalid_credits", "Codex returned invalid credit details; "
+      "invalid fields are UNKNOWN.",
+    ))
+  service["credits"].append({
+    "bucket": bucket,
+    "has_credits": has_credits if isinstance(has_credits, bool) else None,
+    "unlimited": unlimited if isinstance(unlimited, bool) else None,
+    "balance": balance if credit_balance(balance) is not None else None,
+    "observed_at": iso_utc(now),
+    "fresh_until": iso_utc(now + timedelta(seconds=CODEX_FRESH_SECONDS)),
+    "freshness": "fresh",
+    "source": {"id": "codex.account/rateLimits/read",
+               "documentation_status": "documented"},
+  })
+
+
+def parse_codex_result(
+  result: dict[str, Any],
+  *,
+  now: datetime | None = None,
+) -> dict[str, Any]:
+  observed_now = now or utc_now()
+  service = base_service("openai", "codex", "Codex", observed_now)
+  service["credits"] = []
+  buckets = result.get("rateLimitsByLimitId")
+  if isinstance(buckets, dict) and buckets:
+    bucket_values = list(buckets.values())
+  else:
+    single = result.get("rateLimits")
+    bucket_values = [single] if isinstance(single, dict) else []
+
+  for bucket in bucket_values:
+    if not isinstance(bucket, dict):
+      continue
+    bucket_id = bucket.get("limitId")
+    bucket_id = bucket_id if isinstance(bucket_id, str) else "unknown"
+    bucket_name = bucket.get("limitName")
+    bucket_name = (
+      bucket_name
+      if isinstance(bucket_name, str)
+      else ("Codex" if bucket_id == "codex" else bucket_id)
+    )
+    scope_kind = "account" if bucket_id == "codex" else "provider_defined"
+    parse_codex_credits(bucket.get("credits"), {
+      "id": bucket_id, "name": bucket_name, "scope_kind": scope_kind,
+    }, service, observed_now)
+
+    for role in ("primary", "secondary"):
+      window = bucket.get(role)
+      if not isinstance(window, dict):
+        continue
+      used = finite_percentage(window.get("usedPercent"))
+      if used is None:
+        service["warnings"].append(
+          warning(
+            "invalid_percentage",
+            f"Ignored Codex {bucket_name!r} {role} window with an "
+            "invalid percentage.",
+          )
+        )
+        continue
+
+      minutes_raw = window.get("windowDurationMins")
+      minutes_number = finite_percentage(minutes_raw)
+      if minutes_number is None:
+        try:
+          candidate = float(minutes_raw)
+          minutes = int(candidate) if candidate > 0 else None
+        except (TypeError, ValueError):
+          minutes = None
+      else:
+        minutes = int(minutes_number)
+      label, duration = codex_window(minutes)
+
+      reset_raw = window.get("resetsAt")
+      reset = parse_timestamp(reset_raw)
+      if reset_raw is not None and reset is None:
+        service["warnings"].append(
+          warning(
+            "invalid_timestamp",
+            f"Codex {bucket_name!r} {role} window has an invalid reset time.",
+          )
+        )
+
+      service["limits"].append(
+        {
+          "limit_id": f"codex:{slug(bucket_id)}:{role}",
+          "bucket": {
+            "id": bucket_id,
+            "name": bucket_name,
+            "scope_kind": scope_kind,
+          },
+          "window": {
+            "label": label,
+            "duration_seconds": duration,
+            "role": role,
+          },
+          "non_additive": scope_kind != "account",
+          "availability": None,
+          "last_observation": make_observation(
+            used,
+            observed_now,
+            reset,
+            CODEX_FRESH_SECONDS,
+            "codex.account/rateLimits/read",
+            "documented",
+            observed_now,
+          ),
+        }
+      )
+
+  service["limits"].sort(
+    key=lambda item: (
+      0 if item["bucket"]["scope_kind"] == "account" else 1,
+      item["bucket"]["name"],
+      item["window"]["duration_seconds"] or 10**12,
+    )
+  )
+  if service["warnings"]:
+    service["data_status"] = "partial"
+  if not service["limits"]:
+    service["data_status"] = "unavailable"
+    service["refresh"] = refresh_record(
+      "failed",
+      observed_now,
+      None,
+      {
+        "code": "no_rate_limits",
+        "message": "Codex returned no valid rate-limit windows.",
+      },
+    )
+  return service
+
+
+def parse_token_usage(raw: dict[str, Any], now: datetime) -> dict[str, Any]:
+  """Summarize seven consecutive provider dates, without inventing hours."""
+  usage: dict[str, Any] = {
+    "status": "unavailable", "average_tokens": None,
+    "period_start": None, "period_end": None,
+    "observed_at": iso_utc(now),
+    "fresh_until": iso_utc(now + timedelta(seconds=CODEX_FRESH_SECONDS)),
+    "freshness": "fresh",
+    "source": {"id": "codex.account/usage/read",
+               "documentation_status": "documented"},
+  }
+  buckets = raw.get("dailyUsageBuckets")
+  if not isinstance(buckets, list) or not buckets:
+    return usage
+  days: dict[date, int] = {}
+  for bucket in buckets:
+    if not isinstance(bucket, dict):
+      return usage
+    day = bucket.get("startDate")
+    tokens = bucket.get("tokens")
+    if (
+      not isinstance(day, str)
+      or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day)
+      or type(tokens) is not int or not 0 <= tokens <= 2**53 - 1
+    ):
+      return usage
+    try:
+      parsed = date.fromisoformat(day)
+    except ValueError:
+      return usage
+    if parsed in days:
+      return usage
+    days[parsed] = tokens
+  end = max(days)
+  try:
+    start = end - timedelta(days=6)
+  except OverflowError:
+    return usage
+  usage.update(period_start=start.isoformat(), period_end=end.isoformat())
+  window = [days.get(start + timedelta(days=day)) for day in range(7)]
+  if any(tokens is None for tokens in window):
+    usage["status"] = "partial"
+    return usage
+  total = sum(tokens for tokens in window if tokens is not None)
+  usage["status"] = "complete"
+  usage["average_tokens"] = {
+    "hour": total / 168, "day": total / 7, "week": total,
+  }
+  return usage
+
+
+def brief_tokens(usage: dict[str, Any], name: str = "Codex") -> str:
+  averages = usage.get("average_tokens")
+  if not isinstance(averages, dict):
+    return f"{name} tokens: UNKNOWN (usage observations unavailable)."
+
+  def short(value: float) -> str:
+    for scale, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+      if value >= scale:
+        return f"{value / scale:.1f}".rstrip("0").rstrip(".") + suffix
+    return f"{value:.0f}"
+
+  values = " | ".join(
+    f"{short(averages[key])}/{label}"
+    for key, label in (("hour", "h"), ("day", "day"), ("week", "week"))
+  )
+  freshness = str(usage.get("freshness", "unknown")).upper()
+  if usage.get("scope") == "observed_local_sessions":
+    period = "local observations, last 7d"
+    if usage.get("scan_truncated"):
+      period += "; inventory truncated"
+    elif usage.get("incomplete"):
+      period += "; incomplete records"
+  else:
+    period = f"7d through {usage['period_end']}"
+  return f"{name} tokens avg: {values} ({period}) [{freshness}]."
+
+
+def codex_account(raw: Any, now: datetime) -> dict[str, Any] | None:
+  """Personal account identity, never a credential or inferred workspace ID."""
+  account = raw.get("account") if isinstance(raw, dict) else None
+  if not isinstance(account, dict) or account.get("type") != "chatgpt":
+    return None
+  email = account.get("email")
+  plan = account.get("planType")
+  if not isinstance(email, str) or not email.strip():
+    return None
+  if any(not char.isprintable() for char in email) or len(email) > 320:
+    return None
+  # The API has no workspace identifier. Only personal allocations can be
+  # safely keyed by login email; never combine organizational workspaces.
+  if not isinstance(plan, str) or not re.fullmatch(r"[a-z0-9_-]{1,40}", plan):
+    return None
+  label = email.strip()
+  key = (
+    hashlib.sha256(label.casefold().encode()).hexdigest()
+    if plan in {"free", "go", "plus", "pro", "prolite"} else None
+  )
+  return {"key": key, "label": label, "plan": plan,
+          "observed_at": iso_utc(now), "source": "codex.account/read"}
+
+
+def account_line(service: dict[str, Any]) -> str:
+  account = service.get("account")
+  name = service.get("display_name", "Codex")
+  if not isinstance(account, dict):
+    return f"{name} account: UNKNOWN (identity not verified)."
+  ident = account["key"][:8] if account.get("key") else "workspace unknown"
+  return (
+    f"{name} account (last checked): {account['label']} "
+    f"[{ident}] ({account['plan']}); "
+    f"{account['observed_at']}."
+  )
+
+
+def get_codex(
+  timeout: float,
+  codex_bin: str,
+  now: datetime | None = None,
+) -> dict[str, Any]:
+  account = None
+  try:
+    snapshot = codex_rpc(timeout=timeout, codex_bin=codex_bin, snapshot=True)
+    checked = now or utc_now()
+    before = codex_account(snapshot.get("account_before", {}).get("result"),
+                           checked)
+    after = codex_account(snapshot.get("account_after", {}).get("result"),
+                          checked)
+    if before and after and (before["label"], before["plan"]) != (
+      after["label"], after["plan"]
+    ):
+      raise RuntimeError("Codex account changed during quota collection.")
+    # Unknown identity permits live measurements but never historical reuse.
+    account = after if before and after else None
+    limits = snapshot.get("limits", {})
+    if "error" in limits:
+      raise RuntimeError(limits["error"])
+    service = parse_codex_result(limits.get("result", {}), now=checked)
+    if not account or not account.get("key"):
+      if service.get("limits"):
+        service["data_status"] = "partial"
+      service["warnings"].append(warning(
+        "codex_account_unverified",
+        "Account/workspace identity is unknown; history reuse is disabled.",
+      ))
+    usage = snapshot.get("usage", {})
+    if "error" in usage:
+      service["token_usage"] = {
+        "status": "unavailable", "error": usage["error"],
+      }
+    else:
+      service["token_usage"] = parse_token_usage(usage.get("result", {}), checked)
+  except Exception as exc:
+    service = unavailable_service(
+      "openai", "codex", "Codex", "codex_refresh_failed", str(exc),
+      now or utc_now(),
+    )
+  service["account"] = account
+  return service
+
+
+def account_cache(
+  previous: dict[str, Any] | None, service_id: str, cache_name: str,
+) -> dict[str, Any]:
+  """Bounded last-good snapshots; old unlabelled caches cannot be attributed."""
+  previous = previous or {}
+  accounts = copy.deepcopy(previous.get(cache_name, {}))
+  if not isinstance(accounts, dict):
+    accounts = {}
+  active = previous.get("services", {}).get(service_id, {})
+  account = active.get("account") or {}
+  if account.get("key") and active.get("limits"):
+    accounts[account["key"]] = copy.deepcopy(active)
+  return {
+    key: service for key, service in accounts.items()
+    if isinstance(service, dict)
+    and (service.get("account") or {}).get("key") == key
+    and service.get("limits")
+  }
+
+
+def reevaluate_service(
+  service: dict[str, Any],
+  now: datetime,
+) -> dict[str, Any]:
+  result = copy.deepcopy(service)
+  usage = result.get("token_usage")
+  if isinstance(usage, dict):
+    observation_freshness(usage, now)
+  for credit in result.get("credits", []):
+    observation_freshness(credit, now)
+    credit["pace"] = credit_pace(credit, now)
+  for item in result.get("limits", []):
+    if not isinstance(item, dict):
+      continue
+    observation = item.get("last_observation")
+    if isinstance(observation, dict):
+      observation_state(observation, now)
+    item["pace"] = limit_pace(item, now)
+    item["burn"] = limit_burn(item, now)
+    item["velocity"] = limit_velocity(item, now)
+  result["binding_limit_id"] = service_binding(result)
+  return result
+
+
+def retain_last_good(
+  current: dict[str, Any],
+  previous: dict[str, Any] | None,
+  *,
+  now: datetime | None = None,
+) -> dict[str, Any]:
+  if current.get("limits") or not isinstance(previous, dict):
+    return current
+  old_limits = previous.get("limits")
+  if not isinstance(old_limits, list) or not old_limits:
+    return current
+  result = copy.deepcopy(current)
+  result["limits"] = copy.deepcopy(old_limits)
+  if "credits" not in current and "credits" in previous:
+    result["credits"] = copy.deepcopy(previous["credits"])
+  result["data_status"] = "partial"
+  result["retained_last_good"] = True
+  return reevaluate_service(result, now or utc_now())
+
+
+def has_usable_current_value(service: dict[str, Any]) -> bool:
+  for item in service.get("limits", []):
+    if not isinstance(item, dict):
+      continue
+    observation = item.get("last_observation")
+    if not isinstance(observation, dict):
+      continue
+    if (
+      observation.get("period_relation") == "current"
+      and finite_percentage(observation.get("remaining_percent")) is not None
+    ):
+      return True
+  return False
+
+
+def default_cache_path() -> Path:
+  cache_home = os.environ.get("XDG_CACHE_HOME")
+  root = Path(cache_home).expanduser() if cache_home else Path.home() / ".cache"
+  return root / "agent-quota" / "report-v3.json"
+
+
+def load_cache(path: Path) -> dict[str, Any] | None:
+  try:
+    value = json.loads(path.read_text(encoding="utf-8"))
+  except (OSError, json.JSONDecodeError):
+    return None
+  if (
+    not isinstance(value, dict)
+    or value.get("schema_version") != SCHEMA_VERSION
+  ):
+    return None
+  if not isinstance(value.get("services"), dict):
+    return None
+  return value
+
+
+def write_cache(path: Path, document: dict[str, Any]) -> None:
+  path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+  try:
+    path.parent.chmod(0o700)
+  except OSError:
+    pass
+  fd, temporary = tempfile.mkstemp(
+    dir=path.parent,
+    prefix=f".{path.name}.",
+  )
+  temporary_path = Path(temporary)
+  try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+      json.dump(document, stream, separators=(",", ":"), ensure_ascii=False)
+      stream.write("\n")
+      stream.flush()
+      os.fsync(stream.fileno())
+    os.replace(temporary_path, path)
+  finally:
+    try:
+      temporary_path.unlink()
+    except FileNotFoundError:
+      pass
+
+
+@contextmanager
+def cache_lock(path: Path) -> Iterator[bool]:
+  path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+  lock_path = path.with_suffix(path.suffix + ".lock")
+  with lock_path.open("a+", encoding="utf-8") as stream:
+    try:
+      os.chmod(lock_path, 0o600)
+    except OSError:
+      pass
+    try:
+      fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+      yield False
+      return
+    try:
+      yield True
+    finally:
+      fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def service_label(limit: dict[str, Any], service_name: str) -> str:
+  bucket = limit.get("bucket", {})
+  window = limit.get("window", {})
+  bucket_name = bucket.get("name", "unknown")
+  scope_kind = bucket.get("scope_kind")
+  window_label = window.get("label", "unknown")
+  if scope_kind == "account":
+    return f"{service_name} {window_label}"
+  return f"{service_name} {bucket_name} {window_label}"
+
+
+def format_percent(value: Any) -> str:
+  parsed = finite_percentage(value)
+  if parsed is None:
+    return "UNKNOWN"
+  return f"{compact_number(parsed)}%"
+
+
+def format_duration(seconds: Any) -> str:
+  if not isinstance(seconds, (int, float)) or isinstance(seconds, bool):
+    return "UNKNOWN"
+  total = max(0, int(seconds))
+  days, rest = divmod(total, 86400)
+  hours, rest = divmod(rest, 3600)
+  minutes = rest // 60
+  if days:
+    return f"{days}d {hours}h"
+  if hours:
+    return f"{hours}h {minutes}m"
+  return f"{minutes}m"
+
+
+def format_signed_percent(value: Any) -> str:
+  if (
+    not isinstance(value, (int, float))
+    or isinstance(value, bool)
+    or not math.isfinite(value)
+  ):
+    return "UNKNOWN"
+  return f"{compact_number(value)}%"
+
+
+def brief_pace(limit: dict[str, Any]) -> str | None:
+  pace = limit.get("pace")
+  if not isinstance(pace, dict) or pace.get("reset_in_seconds") is None:
+    return None
+  reset_in = format_duration(pace.get("reset_in_seconds"))
+  share = pace.get("window_share_remaining_percent")
+  state = str(pace.get("state", "unknown")).upper()
+  if share is None:
+    text = f"Resets in {reset_in}; pace UNKNOWN (window length unknown)."
+  elif state == "EARLY":
+    text = (
+      f"Resets in {reset_in} ({format_percent(share)} of window). "
+      "Pace: EARLY (too little of the window elapsed to project)."
+    )
+  else:
+    projected = format_signed_percent(pace.get("projected_unused_percent"))
+    text = (
+      f"Resets in {reset_in} ({format_percent(share)} of window). "
+      f"Pace: {state}; projected {projected} unused at reset."
+    )
+  if pace.get("reset_soon"):
+    text += " RESET SOON."
+  burn = limit.get("burn")
+  if isinstance(burn, dict) and burn.get("rate_percent_per_hour") is not None:
+    rate = burn["rate_percent_per_hour"]
+    span = format_duration(burn.get("span_seconds"))
+    if burn.get("exhausts_before_reset"):
+      text += (
+        f" Recent burn {rate}%/h over {span}: EXHAUSTS BEFORE RESET "
+        f"({burn.get('exhausts_at')})."
+      )
+    else:
+      text += f" Recent burn {rate}%/h over {span}."
+  return text
+
+
+def brief_velocity(limit: dict[str, Any]) -> str | None:
+  velocity = limit.get("velocity")
+  if not isinstance(velocity, dict):
+    return None
+  parts: list[str] = []
+  known = False
+  for label, seconds in VELOCITY_WINDOWS:
+    window = velocity.get(label)
+    used = window.get("used_percent") if isinstance(window, dict) else None
+    if used is None:
+      parts.append(f"{label} UNKNOWN")
+      continue
+    known = True
+    text = f"{format_signed_percent(used)} in {label}"
+    span = window.get("span_seconds")
+    if (
+      isinstance(span, (int, float))
+      and not isinstance(span, bool)
+      and span < seconds - HISTORY_MIN_GAP_SECONDS
+    ):
+      text += f" (covers {format_duration(span)})"
+    parts.append(text)
+  if not known:
+    return None
+  return "Velocity: " + ", ".join(parts) + "."
+
+
+def brief_binding(service: dict[str, Any], service_name: str) -> str:
+  binding = service.get("binding_limit_id")
+  for item in service.get("limits", []):
+    if isinstance(item, dict) and item.get("limit_id") == binding:
+      pace = item.get("pace")
+      state = (
+        str(pace.get("state", "unknown")).upper()
+        if isinstance(pace, dict)
+        else "UNKNOWN"
+      )
+      return (
+        f"Binding (period-average): "
+        f"{service_label(item, service_name)} ({state})."
+      )
+  return "Binding (period-average): none projected."
+
+
+def brief_limit(limit: dict[str, Any], service_name: str) -> list[str]:
+  label = service_label(limit, service_name)
+  observation = limit.get("last_observation")
+  if not isinstance(observation, dict):
+    return [f"{label}: current remaining UNKNOWN [NO OBSERVATION]."]
+
+  remaining = format_percent(observation.get("remaining_percent"))
+  observed = observation.get("observed_at") or "UNKNOWN"
+  reset = observation.get("reset_at") or "UNKNOWN"
+  relation = observation.get("period_relation")
+  freshness = str(observation.get("freshness", "unknown")).upper()
+
+  if relation == "current":
+    lines = [
+      f"{label}: {remaining} remaining [CURRENT PERIOD; {freshness}].",
+      f"Observed {observed}; resets {reset}.",
+    ]
+    pace_line = brief_pace(limit)
+    if pace_line:
+      lines.append(pace_line)
+  elif relation == "ended":
+    lines = [
+      f"{label}: current remaining UNKNOWN [PERIOD ENDED].",
+      f"Last observation: {remaining} remaining at {observed}; "
+      f"that period ended {reset}.",
+    ]
+  else:
+    lines = [
+      f"{label}: current remaining UNKNOWN [PERIOD UNKNOWN].",
+      f"Last observed {remaining} remaining at {observed}; whether it "
+      "applies to the current period is UNKNOWN.",
+    ]
+  velocity_line = brief_velocity(limit)
+  if velocity_line:
+    lines.append(velocity_line)
+  return lines
+
+
+def brief_credits(service: dict[str, Any]) -> list[str]:
+  credits = service.get("credits", [])
+  if not credits:
+    return ["Codex credits: UNKNOWN (not reported)."]
+  lines = []
+  for credit in credits:
+    balance = credit_balance(credit.get("balance"))
+    if credit.get("unlimited") is True:
+      value = "UNLIMITED"
+    elif balance is not None:
+      value = f"{balance:,.2f} credits"
+    elif credit.get("has_credits") is True:
+      value = "AVAILABLE; balance UNKNOWN"
+    elif credit.get("has_credits") is False:
+      value = "NONE; balance UNKNOWN"
+    else:
+      value = "UNKNOWN"
+    label = credit["bucket"]["name"]
+    freshness = str(credit.get("freshness", "unknown")).upper()
+    lines.append(f"{label} credits: {value} [{freshness}]; "
+                 "separate from subscription quota.")
+    lines.append(f"Observed {credit.get('observed_at') or 'UNKNOWN'}.")
+    pace = credit.get("pace", {})
+    rate = pace.get("rate_credits_per_hour")
+    if credit.get("unlimited") is True:
+      lines.append("Credit pace: not applicable (unlimited credits).")
+    elif rate is None:
+      lines.append("Credit pace: UNKNOWN (needs balance observations "
+                   "at least 15m apart without a top-up).")
+    else:
+      span = format_duration(pace.get("span_seconds"))
+      text = f"Credit pace: {rate:,.2f} credits/h over {span}."
+      if pace.get("exhausts_at"):
+        remaining = format_duration(pace.get("seconds_until_empty"))
+        text += (f" Estimated {remaining} until empty "
+                 f"({pace['exhausts_at']}).")
+      elif rate == 0:
+        text += " No observed consumption."
+      lines.append(text)
+  return lines
+
+
+def text_table(headers: list[str], rows: list[list[str]]) -> list[str]:
+  widths = [max(len(row[i]) for row in [headers, *rows])
+            for i in range(len(headers))]
+  def line(row: list[str]) -> str:
+    return "  ".join(value.ljust(width) for value, width in zip(row, widths))
+  return [line(headers).rstrip(),
+          "  ".join("-" * width for width in widths),
+          *(line(row).rstrip() for row in rows)]
+
+
+def stale_marker(observation: dict[str, Any]) -> str:
+  state = observation.get("freshness", "unknown")
+  return "" if state == "fresh" else f" [{str(state).upper()}]"
+
+
+def render_brief(document: dict[str, Any]) -> str:
+  rows, credit_rows, alerts, notes, tokens = [], [], [], [], []
+  for service_id, service in document.get("services", {}).items():
+    name = str(service.get("display_name", service_id))
+    for limit in service.get("limits", []):
+      observation = limit.get("last_observation") or {}
+      label = service_label(limit, name)
+      marker = stale_marker(observation)
+      relation = observation.get("period_relation")
+      pace = limit.get("pace") or {}
+      remaining, reset, state = "UNKNOWN", "—", "Period unknown"
+      if observation.get("window_not_started"):
+        remaining, state = "100%", "Not started"
+      elif relation == "ended":
+        state = "Period ended"
+      elif relation == "current":
+        remaining = format_percent(observation.get("remaining_percent"))
+        reset = format_duration(pace.get("reset_in_seconds"))
+        state = str(pace.get("state", "unknown")).replace("_", " ").title()
+        if observation.get("remaining_percent") == 0:
+          state = "Exhausted"
+          alerts.append(f"{label} exhausted{marker}")
+        elif (limit.get("burn") or {}).get("exhausts_before_reset"):
+          state = "Recent burn too high"
+          alerts.append(f"{label}: recent burn exhausts before reset{marker}")
+        elif pace.get("state") == "behind":
+          alerts.append(f"{label}: projected exhaustion before reset{marker}")
+      rows.append([label + marker, remaining, reset, state])
+    refresh = service.get("refresh") or {}
+    if refresh.get("status") == "failed":
+      error = refresh.get("error") or {}
+      notes.append(f"{name} refresh failed: {error.get('message', 'unknown')}.")
+    if not service.get("limits"):
+      notes.append(f"{name} quota: unavailable.")
+    for warning_item in service.get("warnings", []):
+      notes.append(f"{name}: {warning_item.get('message', 'unknown warning')}")
+    if service_id == "claude_code":
+      tokens.append(brief_tokens(service.get("token_usage", {}),
+                                 "Claude Code").replace(" [FRESH]", ""))
+    if service_id != "codex":
+      continue
+    for credit in service.get("credits", []):
+      balance = credit_balance(credit.get("balance"))
+      value = f"{balance:,.2f}" if balance is not None else "UNKNOWN"
+      pace = credit.get("pace") or {}
+      rate = pace.get("rate_credits_per_hour")
+      burn = f"{rate:,.2f}/h" if rate is not None else "Collecting history"
+      until = "—"
+      if pace.get("seconds_until_empty") is not None:
+        until = "~" + format_duration(pace["seconds_until_empty"])
+      elif rate == 0:
+        until = "No observed burn"
+      if credit.get("unlimited") is True:
+        value, burn = "Unlimited", "—"
+      elif balance is None:
+        burn = "UNKNOWN"
+        if credit.get("has_credits") is True:
+          value = "Available (unknown)"
+        elif credit.get("has_credits") is False:
+          value = "None reported"
+      credit_rows.append([
+        credit["bucket"]["name"] + stale_marker(credit), value, burn, until,
+      ])
+    if not service.get("credits"):
+      credit_rows.append(["Codex", "UNKNOWN", "—", "—"])
+    usage = service.get("token_usage") or {}
+    tokens.append(brief_tokens(usage).replace(" [FRESH]", ""))
+    if usage.get("error"):
+      notes.append(f"Token lookup failed: {usage['error']}")
+
+  lines = ["Attention: " + "; ".join(alerts) + "."] if alerts else []
+  for service_id in ("claude_code", "codex"):
+    if service_id in document.get("services", {}):
+      if lines:
+        lines.append("")
+      lines.append(account_line(document["services"][service_id]))
+  if rows:
+    if lines:
+      lines.append("")
+    lines.extend(text_table(["Quota", "Remaining", "Resets in", "Pace"], rows))
+  if credit_rows:
+    lines.append("")
+    lines.extend(text_table(
+      ["Credits", "Balance", "Burn", "Until empty"], credit_rows,
+    ))
+  if tokens:
+    lines.extend(["", *tokens])
+  if notes:
+    lines.extend(["", *notes])
+  lines.extend(["", f"Checked {document.get('generated_at', 'UNKNOWN')}; "
+                "observations fresh unless marked. Quota buckets are separate."])
+  if document.get("model_filter"):
+    lines.append(
+      f"Model: {document['model_filter']}; token activity is not model-filtered."
+    )
+  return "\n".join(lines)
+
+
+def render_verbose(document: dict[str, Any]) -> str:
+  generated = document.get("generated_at", "UNKNOWN")
+  lines = [
+    f"Quota report generated {generated}.",
+    "Percentages are REMAINING in separate buckets; do not add them.",
+    "Pace: BEHIND = exhaustion before reset; "
+    f"SURPLUS = at least {PACE_SURPLUS_UNUSED_PERCENT}% projected unused.",
+    "Recent-burn exhaustion overrides SURPLUS; stale/unknown data or "
+    "RESET SOON alone do not justify speeding up.",
+  ]
+  model_filter = document.get("model_filter")
+  if isinstance(model_filter, str):
+    lines.append(
+      f"Filtered for model {model_filter!r}: account buckets plus "
+      "matching scoped buckets."
+    )
+  services = document.get("services", {})
+  for service_id in ("claude_code", "codex"):
+    if service_id in services:
+      lines.append(account_line(services[service_id]))
+  for service_id in ("claude_code", "codex"):
+    service = services.get(service_id)
+    if not isinstance(service, dict):
+      continue
+    name = str(service.get("display_name", service_id))
+    refresh = service.get("refresh", {})
+    status = str(refresh.get("status", "unknown")).upper()
+    attempted = refresh.get("attempted_at") or "not attempted"
+    lines.append("")
+    if refresh.get("status") == "not_needed":
+      last_success = refresh.get("last_success_at") or "UNKNOWN"
+      lines.append(
+        f"{name} refresh: NOT NEEDED; cached provider data is from "
+        f"{last_success}."
+      )
+    else:
+      lines.append(f"{name} refresh: {status} at {attempted}.")
+    if refresh.get("status") == "failed" and service.get("limits"):
+      lines.append("Showing the last successful observations.")
+    error = refresh.get("error")
+    if isinstance(error, dict):
+      lines.append(
+        f"Refresh error {error.get('code', 'unknown')}: "
+        f"{error.get('message', 'unknown error')}"
+      )
+    if service_id == "codex":
+      lines.extend(brief_credits(service))
+      lines.append(brief_tokens(service.get("token_usage", {})))
+    elif service_id == "claude_code":
+      lines.append(brief_tokens(service.get("token_usage", {}), "Claude Code"))
+    for limit in service.get("limits", []):
+      if isinstance(limit, dict):
+        lines.extend(["", *brief_limit(limit, name)])
+    if service.get("limits"):
+      lines.append(brief_binding(service, name))
+    for limit in service.get("limits", []):
+      if not isinstance(limit, dict):
+        continue
+      burn = limit.get("burn")
+      observation = limit.get("last_observation")
+      if (
+        isinstance(burn, dict)
+        and burn.get("exhausts_before_reset") is True
+        and isinstance(observation, dict)
+        and observation.get("period_relation") == "current"
+      ):
+        freshness = str(observation.get("freshness", "unknown")).upper()
+        lines.append(
+          f"Recent-burn constraint: {service_label(limit, name)} "
+          f"[{freshness}]; EXHAUSTS BEFORE RESET. "
+          "Conserve this bucket even if pace is SURPLUS."
+        )
+    for item in service.get("warnings", []):
+      if isinstance(item, dict):
+        lines.append(
+          f"Warning {item.get('code', 'unknown')}: "
+          f"{item.get('message', 'unknown warning')}"
+        )
+  return "\n".join(lines)
+
+
+def parse_claude_effort_levels(help_text: str) -> list[str] | None:
+  """Extract the effort levels listed on the ``--effort`` help line."""
+  match = re.search(
+    r"--effort\s+<level>.*?\(([a-z0-9, \n]+?)\)",
+    help_text,
+    re.S,
+  )
+  if not match:
+    return None
+  levels = [
+    item.strip()
+    for item in match.group(1).replace("\n", " ").split(",")
+    if item.strip()
+  ]
+  return levels or None
+
+
+def claude_help_text(claude_bin: str, timeout: float) -> str | None:
+  if shutil.which(claude_bin) is None and os.path.sep not in claude_bin:
+    return None
+  try:
+    completed = subprocess.run(
+      [claude_bin, "--help"],
+      capture_output=True,
+      text=True,
+      timeout=timeout,
+      check=False,
+    )
+  except (OSError, subprocess.SubprocessError):
+    return None
+  return completed.stdout if completed.returncode == 0 else None
+
+
+def load_codex_models(path: Path) -> dict[str, Any]:
+  """Read Codex's undocumented models cache; fail visibly on shape changes."""
+  result: dict[str, Any] = {
+    "models": [],
+    "fetched_at": None,
+    "source": {
+      "id": "codex.models_cache",
+      "documentation_status": "undocumented",
+    },
+    "warnings": [],
+  }
+  try:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+  except (OSError, ValueError) as error:
+    result["warnings"].append(
+      warning("codex_models_unreadable", f"Codex models cache: {error}")
+    )
+    return result
+  models = raw.get("models") if isinstance(raw, dict) else None
+  if not isinstance(models, list):
+    result["warnings"].append(
+      warning(
+        "codex_models_schema",
+        "Codex models cache has no recognized 'models' list.",
+      )
+    )
+    return result
+  fetched = raw.get("fetched_at")
+  result["fetched_at"] = fetched if isinstance(fetched, str) else None
+  for entry in models:
+    if not isinstance(entry, dict):
+      continue
+    slug_value = entry.get("slug")
+    levels_raw = entry.get("supported_reasoning_levels")
+    default = entry.get("default_reasoning_level")
+    if not isinstance(slug_value, str) or not isinstance(levels_raw, list):
+      result["warnings"].append(
+        warning(
+          "codex_models_schema",
+          "Ignored a Codex model entry with an unrecognized shape.",
+        )
+      )
+      continue
+    if entry.get("visibility") == "hide":
+      continue
+    levels = [
+      item.get("effort")
+      for item in levels_raw
+      if isinstance(item, dict) and isinstance(item.get("effort"), str)
+    ]
+    tiers = [
+      tier.get("name")
+      for tier in entry.get("service_tiers") or []
+      if isinstance(tier, dict) and isinstance(tier.get("name"), str)
+    ]
+    display = entry.get("display_name")
+    result["models"].append(
+      {
+        "slug": slug_value,
+        "display_name": display if isinstance(display, str) else slug_value,
+        "default_effort": default if isinstance(default, str) else None,
+        "effort_levels": levels,
+        "service_tiers": tiers,
+      }
+    )
+  return result
+
+
+def build_models_document(
+  claude_bin: str,
+  claude_timeout: float,
+  codex_models_path: Path,
+  now: datetime | None = None,
+) -> dict[str, Any]:
+  """Describe the live model and effort lineup without touching quota."""
+  generated = now or utc_now()
+  help_text = claude_help_text(claude_bin, claude_timeout)
+  levels = parse_claude_effort_levels(help_text) if help_text else None
+  claude: dict[str, Any] = {
+    "effort_levels": levels,
+    "source": {"id": "claude.--help", "documentation_status": "documented"},
+    "warnings": [],
+  }
+  if levels is None:
+    claude["warnings"].append(
+      warning(
+        "claude_effort_unknown",
+        "Could not read effort levels from `claude --help`.",
+      )
+    )
+  return {
+    "schema_version": SCHEMA_VERSION,
+    "document": "models",
+    "generated_at": iso_utc(generated),
+    "tools": {
+      "claude_code": claude,
+      "codex": load_codex_models(codex_models_path),
+    },
+  }
+
+
+def render_models_brief(document: dict[str, Any]) -> str:
+  tools = document.get("tools", {})
+  claude = tools.get("claude_code", {}) if isinstance(tools, dict) else {}
+  codex = tools.get("codex", {}) if isinstance(tools, dict) else {}
+  lines = [
+    f"Model lineup generated {document.get('generated_at', 'UNKNOWN')}.",
+    "Capabilities and model defaults, not task recommendations. Select "
+    "model and effort explicitly; use the delegation skill for pacing "
+    "and approval limits.",
+  ]
+  levels = claude.get("effort_levels")
+  if isinstance(levels, list) and levels:
+    lines.append(
+      f"Claude Code effort levels: {', '.join(levels)} (from `claude --help`)."
+    )
+  else:
+    lines.append("Claude Code effort levels: UNKNOWN.")
+  lines.append(
+    "Claude Code models: consult `claude --help` or Claude Code's Agent "
+    "tool; scoped quota buckets are not a model catalogue."
+  )
+  fetched = codex.get("fetched_at") or "UNKNOWN"
+  models = codex.get("models") if isinstance(codex.get("models"), list) else []
+  lines.append(f"Codex models (undocumented cache fetched {fetched}):")
+  if not models:
+    lines.append("  none readable.")
+  for model in models:
+    if not isinstance(model, dict):
+      continue
+    levels_text = ", ".join(model.get("effort_levels") or []) or "UNKNOWN"
+    tiers = model.get("service_tiers") or []
+    tier_text = f"; tiers {', '.join(tiers)}" if tiers else ""
+    default = model.get("default_effort") or "UNKNOWN"
+    lines.append(
+      f"  {model.get('slug')}: default {default}; "
+      f"levels {levels_text}{tier_text}."
+    )
+  for tool in (claude, codex):
+    for item in tool.get("warnings", []) if isinstance(tool, dict) else []:
+      if isinstance(item, dict):
+        lines.append(
+          f"Warning {item.get('code', 'unknown')}: "
+          f"{item.get('message', 'unknown warning')}"
+        )
+  return "\n".join(lines)
+
+
+def models_exit_status(document: dict[str, Any]) -> int:
+  tools = document.get("tools", {})
+  if not isinstance(tools, dict):
+    return 1
+  claude = tools.get("claude_code", {})
+  codex = tools.get("codex", {})
+  has_claude = isinstance(claude, dict) and bool(claude.get("effort_levels"))
+  has_codex = isinstance(codex, dict) and bool(codex.get("models"))
+  return 0 if has_claude or has_codex else 1
+
+
+def build_document(
+  provider: str,
+  state_path: Path,
+  claude_bin: str,
+  claude_timeout: float,
+  codex_bin: str,
+  codex_timeout: float,
+  previous: dict[str, Any] | None,
+  now: datetime | None = None,
+) -> dict[str, Any]:
+  started = now or utc_now()
+  previous_services = (
+    previous.get("services", {}) if isinstance(previous, dict) else {}
+  )
+  services: dict[str, Any] = {}
+  accounts = account_cache(previous, "codex", "codex_accounts")
+  claude_accounts = account_cache(previous, "claude_code", "claude_accounts")
+
+  if provider in {"all", "claude"}:
+    claude = get_claude(
+      state_path, claude_bin, claude_timeout,
+      previous_services.get("claude_code"), now,
+    )
+    account = claude.get("account") or {}
+    prior = claude_accounts.get(account.get("key"))
+    if prior and (prior.get("account") or {}).get("plan") != account.get("plan"):
+      prior = None
+    claude = merge_history(claude, prior, started)
+    claude = retain_last_good(claude, prior, now=now or utc_now())
+    services["claude_code"] = claude
+    if account.get("key") and claude.get("limits"):
+      claude_accounts[account["key"]] = copy.deepcopy(claude)
+
+  if provider in {"all", "codex"}:
+    codex = get_codex(codex_timeout, codex_bin, now=now)
+    account = codex.get("account") or {}
+    prior = accounts.get(account.get("key"))
+    if prior and (prior.get("account") or {}).get("plan") != account.get("plan"):
+      prior = None
+    codex = merge_history(codex, prior, started)
+    codex = merge_credit_history(
+      codex, prior, now or utc_now(),
+    )
+    codex = retain_last_good(
+      codex,
+      prior,
+      now=now or utc_now(),
+    )
+    services["codex"] = codex
+    if account.get("key") and codex.get("limits"):
+      accounts[account["key"]] = copy.deepcopy(codex)
+
+  generated = now or utc_now()
+  if isinstance(previous_services, dict):
+    for service_id, service in previous_services.items():
+      if service_id not in services and isinstance(service, dict):
+        services[service_id] = reevaluate_service(service, generated)
+
+  for service_id, service in list(services.items()):
+    if isinstance(service, dict):
+      services[service_id] = reevaluate_service(service, generated)
+
+  return {
+    "schema_version": SCHEMA_VERSION,
+    "generated_at": iso_utc(generated),
+    "services": services,
+    "claude_accounts": dict(sorted(
+      claude_accounts.items(),
+      key=lambda item: item[1]["account"].get("observed_at", ""),
+      reverse=True,
+    )[:8]),
+    "codex_accounts": dict(sorted(
+      accounts.items(),
+      key=lambda item: item[1]["account"].get("observed_at", ""),
+      reverse=True,
+    )[:8]),
+  }
+
+
+def reevaluate_document(
+  document: dict[str, Any],
+  now: datetime | None = None,
+) -> dict[str, Any]:
+  generated = now or utc_now()
+  result = copy.deepcopy(document)
+  result["generated_at"] = iso_utc(generated)
+  services = result.get("services", {})
+  if isinstance(services, dict):
+    for key, service in list(services.items()):
+      if isinstance(service, dict):
+        services[key] = reevaluate_service(service, generated)
+  return result
+
+
+def requested_service_ids(provider: str) -> list[str]:
+  if provider == "claude":
+    return ["claude_code"]
+  if provider == "codex":
+    return ["codex"]
+  return ["claude_code", "codex"]
+
+
+def exit_status(
+  document: dict[str, Any],
+  provider: str,
+  strict: bool,
+) -> int:
+  services = document.get("services", {})
+  requested_ids = requested_service_ids(provider)
+  requested_values = [
+    services.get(service_id)
+    for service_id in requested_ids
+  ]
+  requested = [
+    item for item in requested_values if isinstance(item, dict)
+  ]
+  if not any(has_usable_current_value(item) for item in requested):
+    return 1
+  if strict:
+    if len(requested) != len(requested_ids):
+      return 1
+    if any(item.get("data_status") != "complete" for item in requested):
+      return 1
+  return 0
+
+
+def select_services(
+  document: dict[str, Any],
+  provider: str,
+) -> dict[str, Any]:
+  """Return a report containing only the requested services."""
+  selected = copy.deepcopy(document)
+  services = selected.get("services", {})
+  if not isinstance(services, dict):
+    selected["services"] = {}
+    return selected
+  allowed = set(requested_service_ids(provider))
+  selected["services"] = {
+    key: value for key, value in services.items() if key in allowed
+  }
+  return selected
+
+
+def agents_module():
+  path = Path(__file__).resolve().with_name("agent_quota_agents.py")
+  spec = importlib.util.spec_from_file_location("agent_quota_agents", path)
+  module = importlib.util.module_from_spec(spec)
+  spec.loader.exec_module(module)
+  return module
+
+
+def main(argv: list[str] | None = None) -> int:
+  parser = argparse.ArgumentParser(
+    prog="agent-quota",
+    description=(
+      "Report best-effort Claude Code and Codex subscription quota data."
+    ),
+  )
+  parser.add_argument(
+    "provider",
+    nargs="?",
+    choices=("all", "claude", "codex"),
+    default="all",
+    help="service to query (default: all)",
+  )
+  output = parser.add_mutually_exclusive_group()
+  output.add_argument(
+    "--brief",
+    action="store_true",
+    help="compact quota and credit tables with token activity",
+  )
+  output.add_argument(
+    "--compact",
+    action="store_true",
+    help="one-line canonical JSON",
+  )
+  parser.add_argument(
+    "--verbose",
+    action="store_true",
+    help="detailed text with observation timestamps, projections, and velocity",
+  )
+  parser.add_argument(
+    "--cached",
+    action="store_true",
+    help="read and reevaluate the derived cache without querying services",
+  )
+  parser.add_argument(
+    "--for",
+    dest="model_filter",
+    metavar="MODEL",
+    help="show account buckets plus scoped buckets matching this model",
+  )
+  parser.add_argument(
+    "--agents", action="store_true",
+    help="recent local agents with cached work summaries (table by default)",
+  )
+  parser.add_argument(
+    "--agent-days", type=float, default=1,
+    help="agent activity window in days, 0–30 (default: 1)",
+  )
+  parser.add_argument(
+    "--agent-limit", type=int, default=20,
+    help="maximum agents to display, 1–100 (default: 20)",
+  )
+  parser.add_argument(
+    "--no-summaries", action="store_true",
+    help="collect agent observations without starting summary calls",
+  )
+  parser.add_argument(
+    "--no-cross-provider-summaries", action="store_true",
+    help="summarize each agent only with its original provider",
+  )
+  parser.add_argument(
+    "--agent-refresh", action="store_true", help=argparse.SUPPRESS,
+  )
+  parser.add_argument("--agent-cache-file", help="private agent cache override")
+  parser.add_argument(
+    "--codex-sessions-dir",
+    default=str(Path(os.environ.get("CODEX_HOME", "~/.codex")) / "sessions"),
+    help="Codex session directory for local agent observations",
+  )
+  parser.add_argument(
+    "--claude-projects-dir",
+    default=str(Path(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude"))
+                / "projects"),
+    help="Claude project directory for local agent observations",
+  )
+  parser.add_argument(
+    "--models",
+    action="store_true",
+    help="report the live model and effort lineup instead of quota",
+  )
+  parser.add_argument(
+    "--codex-models-file",
+    default=os.environ.get("CODEX_MODELS_FILE", "~/.codex/models_cache.json"),
+    help="Codex models cache (default: ~/.codex/models_cache.json)",
+  )
+  parser.add_argument(
+    "--no-cache",
+    action="store_true",
+    help="do not read or write the derived cache",
+  )
+  parser.add_argument(
+    "--cache-file",
+    default=os.environ.get("AGENT_QUOTA_CACHE_FILE"),
+    help="derived cache path (default: XDG cache directory)",
+  )
+  parser.add_argument(
+    "--claude-file",
+    default=os.environ.get("CLAUDE_STATE_FILE", "~/.claude.json"),
+    help="Claude Code state file (default: ~/.claude.json)",
+  )
+  parser.add_argument(
+    "--claude-bin",
+    default=os.environ.get("CLAUDE_BIN", "claude"),
+    help="Claude Code executable (default: claude)",
+  )
+  parser.add_argument(
+    "--claude-timeout",
+    type=float,
+    default=30,
+    help="seconds to wait for Claude usage refresh (default: 30)",
+  )
+  parser.add_argument(
+    "--codex-bin",
+    default=os.environ.get("CODEX_BIN", "codex"),
+    help="Codex executable (default: codex)",
+  )
+  parser.add_argument(
+    "--timeout",
+    type=float,
+    default=6,
+    help="seconds to wait for Codex app-server (default: 6)",
+  )
+  parser.add_argument(
+    "--strict",
+    action="store_true",
+    help="also fail when any requested service is partial or unavailable",
+  )
+  parser.add_argument(
+    "--version",
+    action="version",
+    version=f"%(prog)s {VERSION}",
+  )
+  args = parser.parse_args(argv)
+  if args.verbose and (args.compact or args.models):
+    parser.error("--verbose cannot be used with --compact or --models")
+  if args.cached and args.no_cache:
+    parser.error("--cached and --no-cache cannot be used together")
+  if not 0 < args.agent_days <= 30 or not 1 <= args.agent_limit <= 100:
+    parser.error("--agent-days must be >0 and <=30; --agent-limit must be 1–100")
+  if args.agent_refresh and not args.agents:
+    parser.error("--agent-refresh requires --agents")
+  if args.agents:
+    if args.models:
+      parser.error("--agents cannot be combined with --models")
+    return agents_module().main(
+      args, SimpleNamespace(**globals()), Path(__file__).resolve(),
+    )
+
+  if args.models:
+    lineup = build_models_document(
+      args.claude_bin,
+      args.claude_timeout,
+      Path(args.codex_models_file).expanduser(),
+    )
+    if args.brief:
+      print(render_models_brief(lineup))
+    elif args.compact:
+      print(json.dumps(lineup, separators=(",", ":"), ensure_ascii=False))
+    else:
+      print(json.dumps(lineup, indent=2, ensure_ascii=False))
+    return models_exit_status(lineup)
+
+  cache_path = (
+    Path(args.cache_file).expanduser()
+    if args.cache_file
+    else default_cache_path()
+  )
+  previous = None if args.no_cache else load_cache(cache_path)
+
+  if args.cached:
+    if previous is None:
+      parser.error("no compatible agent-quota cache is available")
+    document = select_services(
+      reevaluate_document(previous),
+      args.provider,
+    )
+  elif args.no_cache:
+    document = build_document(
+      args.provider,
+      Path(args.claude_file).expanduser(),
+      args.claude_bin,
+      args.claude_timeout,
+      args.codex_bin,
+      args.timeout,
+      None,
+    )
+  else:
+    with cache_lock(cache_path) as acquired:
+      if not acquired:
+        if previous is None:
+          parser.error("quota refresh is already running and no cache exists")
+        document = reevaluate_document(previous)
+      else:
+        previous = load_cache(cache_path)
+        document = build_document(
+          args.provider,
+          Path(args.claude_file).expanduser(),
+          args.claude_bin,
+          args.claude_timeout,
+          args.codex_bin,
+          args.timeout,
+          previous,
+        )
+        write_cache(cache_path, document)
+
+  if "claude_code" in document.get("services", {}):
+    module = agents_module()
+    try:
+      document["services"]["claude_code"]["token_usage"] = (
+        module.claude_observation(args, SimpleNamespace(**globals()), cache_path)
+      )
+    except (OSError, ValueError):
+      document["services"]["claude_code"]["token_usage"] = {
+        "status": "unavailable", "average_tokens": None,
+      }
+  status = exit_status(document, args.provider, args.strict)
+  if args.model_filter:
+    document = filter_document_for_model(document, args.model_filter)
+  if args.verbose:
+    print(render_verbose(document))
+  elif args.brief:
+    print(render_brief(document))
+  elif args.compact:
+    print(json.dumps(document, separators=(",", ":"), ensure_ascii=False))
+  else:
+    print(json.dumps(document, indent=2, ensure_ascii=False))
+  return status
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())

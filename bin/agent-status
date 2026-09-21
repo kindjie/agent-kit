@@ -1,0 +1,473 @@
+#!/usr/bin/env python3
+"""Render Claude Code and tmux status rows from cached agent quota data."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import subprocess
+import sys
+from datetime import datetime, timedelta, timezone, tzinfo
+from pathlib import Path
+from typing import Any
+
+
+SCHEMA_VERSION = 3
+REFRESH_AFTER_SECONDS = 60
+PACE_GLYPHS = {
+  "behind": ("▼", "fg=red,nodim"),
+  "surplus": ("▲", "fg=blue,nodim"),
+  "on_pace": ("●", "fg=colour8,dim"),
+}
+PACE_UNKNOWN_GLYPH = "·"
+SPECIAL_BUCKET_LABELS = {
+  "Fable 5": "Fable",
+  "GPT-5.3-Codex-Spark": "Spark",
+}
+
+
+def utc_now() -> datetime:
+  return datetime.now(timezone.utc)
+
+
+def parse_timestamp(value: Any) -> datetime | None:
+  if not isinstance(value, str):
+    return None
+  try:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+  except ValueError:
+    return None
+  if parsed.tzinfo is None:
+    return None
+  return parsed.astimezone(timezone.utc)
+
+
+def percentage(value: Any) -> int | float | None:
+  if isinstance(value, bool):
+    return None
+  try:
+    number = float(value)
+  except (TypeError, ValueError):
+    return None
+  if not math.isfinite(number) or not 0 <= number <= 100:
+    return None
+  rounded = round(number, 3)
+  return int(rounded) if rounded.is_integer() else rounded
+
+
+def valid_report(value: Any) -> bool:
+  return (
+    isinstance(value, dict)
+    and value.get("schema_version") == SCHEMA_VERSION
+    and isinstance(value.get("services"), dict)
+  )
+
+
+def default_cache_path() -> Path:
+  cache_home = os.environ.get("XDG_CACHE_HOME")
+  root = Path(cache_home).expanduser() if cache_home else Path.home() / ".cache"
+  return root / "agent-quota" / "report-v3.json"
+
+
+def load_report(path: Path) -> dict[str, Any] | None:
+  try:
+    value = json.loads(path.read_text(encoding="utf-8"))
+  except (OSError, json.JSONDecodeError):
+    return None
+  return value if valid_report(value) else None
+
+
+def observation_state(
+  observation: dict[str, Any],
+  now: datetime,
+) -> tuple[str, str]:
+  observed = parse_timestamp(observation.get("observed_at"))
+  fresh_until = parse_timestamp(observation.get("fresh_until"))
+  reset = parse_timestamp(observation.get("reset_at"))
+
+  if observed is None or observed > now:
+    freshness = "unknown"
+  elif fresh_until is not None and now < fresh_until:
+    freshness = "fresh"
+  else:
+    freshness = "stale"
+
+  if reset is None:
+    relation = "unknown"
+  elif now < reset:
+    relation = "current"
+  else:
+    relation = "ended"
+  return freshness, relation
+
+
+def age_text(observed: datetime, now: datetime) -> str:
+  seconds = max(0, int((now - observed).total_seconds()))
+  minutes = seconds // 60
+  if minutes < 1:
+    return "<1m"
+  if minutes < 60:
+    return f"{minutes}m"
+  hours, remainder = divmod(minutes, 60)
+  if hours < 24:
+    return f"{hours}h{remainder:02d}m" if remainder else f"{hours}h"
+  days, remainder_hours = divmod(hours, 24)
+  return f"{days}d{remainder_hours}h" if remainder_hours else f"{days}d"
+
+
+def reset_text(
+  reset: datetime,
+  now: datetime,
+  local_tz: tzinfo | None,
+) -> str:
+  local_reset = reset.astimezone(local_tz) if local_tz else reset.astimezone()
+  local_now = now.astimezone(local_tz) if local_tz else now.astimezone()
+  if local_reset.date() == local_now.date():
+    return local_reset.strftime("%H:%M")
+  if local_reset - local_now < timedelta(days=7):
+    return local_reset.strftime("%a %H:%M")
+  return local_reset.strftime("%b%d %H:%M")
+
+
+def format_observation(
+  observation: dict[str, Any] | None,
+  *,
+  now: datetime,
+  local_tz: tzinfo | None = None,
+  compact: bool,
+) -> str:
+  if not isinstance(observation, dict):
+    return "?"
+  remaining = percentage(observation.get("remaining_percent"))
+  if remaining is None:
+    return "?"
+
+  freshness, relation = observation_state(observation, now)
+  if relation == "ended":
+    return f"?was{remaining}%" if compact else f"? (was {remaining}%)"
+  if relation == "unknown":
+    return f"?last{remaining}%" if compact else f"? (last {remaining}%)"
+
+  marker = "" if freshness == "fresh" else "~"
+  result = f"{marker}{remaining}%"
+  observed = parse_timestamp(observation.get("observed_at"))
+  if freshness != "fresh" and observed is not None:
+    age = age_text(observed, now)
+    result += f"@{age}" if compact else f" ({age} old)"
+
+  reset = parse_timestamp(observation.get("reset_at"))
+  if reset is not None:
+    reset_in = reset - now
+    if remaining <= 20 or reset_in <= timedelta(hours=12):
+      result += f"↻{reset_text(reset, now, local_tz)}"
+      if not compact:
+        result = result.replace("↻", " ↻", 1)
+  return result
+
+
+def service_limits(
+  report: dict[str, Any] | None,
+  service_id: str,
+) -> list[dict[str, Any]]:
+  if not valid_report(report):
+    return []
+  service = report["services"].get(service_id)
+  if not isinstance(service, dict):
+    return []
+  return [
+    item
+    for item in service.get("limits", [])
+    if isinstance(item, dict) and isinstance(item.get("window"), dict)
+  ]
+
+
+def weekly_limits(
+  report: dict[str, Any] | None,
+  service_id: str,
+) -> list[dict[str, Any]]:
+  return [
+    item
+    for item in service_limits(report, service_id)
+    if item["window"].get("label") == "weekly"
+  ]
+
+
+def claude_row_label(item: dict[str, Any]) -> str:
+  window = str(item["window"].get("label", "?"))
+  window_label = "wk" if window == "weekly" else window
+  bucket = item.get("bucket", {})
+  if bucket.get("scope_kind") == "account":
+    return window_label
+  name = str(bucket.get("name", "special"))
+  return name if window == "weekly" else f"{name} {window_label}"
+
+
+def live_session_parts(session: dict[str, Any] | None) -> list[str]:
+  if not isinstance(session, dict):
+    return []
+  model = session.get("model")
+  model_name = model.get("display_name") if isinstance(model, dict) else None
+  effort = session.get("effort")
+  effort_name = effort.get("level") if isinstance(effort, dict) else None
+  context = session.get("context_window")
+  context_value = (
+    percentage(context.get("used_percentage"))
+    if isinstance(context, dict)
+    else None
+  )
+  parts: list[str] = []
+  if isinstance(model_name, str) and model_name:
+    parts.append(model_name)
+  if isinstance(effort_name, str) and effort_name:
+    parts.append(effort_name)
+  if context_value is not None:
+    parts.append(f"ctx {round(float(context_value))}% used")
+  return parts
+
+
+def render_claude(
+  session: dict[str, Any],
+  report: dict[str, Any] | None,
+  *,
+  now: datetime | None = None,
+) -> str:
+  observed_now = now or utc_now()
+  parts = live_session_parts(session)
+  for item in service_limits(report, "claude_code"):
+    label = claude_row_label(item)
+    value = format_observation(
+      item.get("last_observation"),
+      now=observed_now,
+      compact=False,
+    )
+    parts.append(f"{label} {value}")
+  return " · ".join(parts)
+
+
+def abbreviation(
+  service_id: str,
+  item: dict[str, Any],
+) -> str:
+  bucket = item.get("bucket", {})
+  if bucket.get("scope_kind") == "account":
+    return "Cl" if service_id == "claude_code" else "Cx"
+  name = wide_label(service_id, item)
+  token = re_safe_token(name)
+  return token[:3] if token else "Spc"
+
+
+def re_safe_token(text: str) -> str:
+  token = "".join(character for character in text if character.isalnum())
+  return token
+
+
+def wide_label(service_id: str, item: dict[str, Any]) -> str:
+  bucket = item.get("bucket", {})
+  if bucket.get("scope_kind") == "account":
+    return "Claude" if service_id == "claude_code" else "Codex"
+  name = str(bucket.get("name", "Special"))
+  return SPECIAL_BUCKET_LABELS.get(name, name)
+
+
+def tmux_style(
+  text: str,
+  style: str,
+  restore: str = "fg=colour8,dim",
+) -> str:
+  return f"#[{style}]{text}#[{restore}]"
+
+
+def format_tmux_observation(
+  observation: dict[str, Any] | None,
+  *,
+  now: datetime,
+  wide: bool,
+) -> str:
+  rendered = format_observation(
+    observation,
+    now=now,
+    compact=True,
+  )
+  if wide:
+    rendered = rendered.replace("↻", " reset ")
+  if not isinstance(observation, dict):
+    return tmux_style(rendered, "fg=yellow,nodim")
+
+  remaining = percentage(observation.get("remaining_percent"))
+  if remaining is None:
+    return tmux_style(rendered, "fg=yellow,nodim")
+  freshness, relation = observation_state(observation, now)
+  if relation != "current":
+    return tmux_style(rendered, "fg=yellow,nodim")
+
+  if freshness != "fresh" and rendered.startswith("~"):
+    rendered = tmux_style("~", "fg=yellow,nodim") + rendered[1:]
+
+  token = f"{remaining}%"
+  if remaining == 0:
+    styled = tmux_style(
+      token,
+      "fg=red,nodim,reverse",
+      "fg=colour8,dim,noreverse",
+    )
+  elif remaining <= 10:
+    styled = tmux_style(token, "fg=red,nodim")
+  elif remaining <= 20:
+    styled = tmux_style(token, "fg=yellow,nodim")
+  else:
+    return rendered
+  return rendered.replace(token, styled, 1)
+
+
+def pace_indicator(item: dict[str, Any], *, now: datetime) -> str:
+  """One glyph per bucket: red ▼ behind (reversed when the recent burn
+  exhausts it before the reset), blue ▲ surplus, dim ● on pace, dim ·
+  when pace is unknown or the stored period is no longer current."""
+  dim = tmux_style(PACE_UNKNOWN_GLYPH, "fg=colour8,dim")
+  observation = item.get("last_observation")
+  if not isinstance(observation, dict):
+    return dim
+  _, relation = observation_state(observation, now)
+  if relation != "current":
+    return dim
+  burn = item.get("burn")
+  if isinstance(burn, dict) and burn.get("exhausts_before_reset") is True:
+    return tmux_style(
+      PACE_GLYPHS["behind"][0],
+      "fg=red,nodim,reverse",
+      "fg=colour8,dim,noreverse",
+    )
+  pace = item.get("pace")
+  state = pace.get("state") if isinstance(pace, dict) else None
+  if state not in PACE_GLYPHS:
+    return dim
+  glyph, style = PACE_GLYPHS[state]
+  return tmux_style(glyph, style)
+
+
+def tmux_service_group(
+  report: dict[str, Any] | None,
+  service_id: str,
+  *,
+  now: datetime,
+  wide: bool,
+) -> str:
+  items = weekly_limits(report, service_id)
+  if not items:
+    return ""
+
+  accounts = [
+    item
+    for item in items
+    if item.get("bucket", {}).get("scope_kind") == "account"
+  ]
+  primary = accounts[0] if accounts else None
+  specials = [item for item in items if item is not primary]
+
+  def item_text(item: dict[str, Any]) -> str:
+    label = (
+      wide_label(service_id, item)
+      if wide
+      else abbreviation(service_id, item)
+    )
+    value = format_tmux_observation(
+      item.get("last_observation"),
+      now=now,
+      wide=wide,
+    )
+    indicator = pace_indicator(item, now=now)
+    return f"{label}{' ' if wide else ''}{indicator}{value}"
+
+  if primary is not None:
+    rendered = item_text(primary)
+  else:
+    rendered = "Claude" if service_id == "claude_code" else "Codex"
+  for item in specials:
+    rendered += f" ({item_text(item)})"
+  return rendered
+
+
+def render_tmux(
+  report: dict[str, Any] | None,
+  width: int,
+  *,
+  now: datetime | None = None,
+) -> str:
+  observed_now = now or utc_now()
+  wide = width >= 120
+  groups = [
+    tmux_service_group(
+      report,
+      service_id,
+      now=observed_now,
+      wide=wide,
+    )
+    for service_id in ("claude_code", "codex")
+  ]
+  groups = [group for group in groups if group]
+
+  if not groups:
+    return ""
+  suffix = " │ " if width > 50 else " "
+  return f"#[fg=colour8]{' │ '.join(groups)}{suffix}#[default]"
+
+
+def time_now() -> float:
+  return datetime.now().timestamp()
+
+
+def trigger_refresh(path: Path) -> None:
+  try:
+    age = time_now() - path.stat().st_mtime
+    if age < REFRESH_AFTER_SECONDS:
+      return
+  except OSError:
+    pass
+  executable = Path(__file__).with_name("agent-quota")
+  try:
+    subprocess.Popen(
+      [str(executable), "--compact", "--cache-file", str(path)],
+      stdin=subprocess.DEVNULL,
+      stdout=subprocess.DEVNULL,
+      stderr=subprocess.DEVNULL,
+      start_new_session=True,
+    )
+  except OSError:
+    return
+
+
+def main(argv: list[str] | None = None) -> int:
+  parser = argparse.ArgumentParser(prog="agent-status")
+  parser.add_argument("mode", choices=("claude", "tmux"))
+  parser.add_argument("window", nargs="?")
+  parser.add_argument("width", nargs="?", type=int, default=120)
+  args = parser.parse_args(argv)
+  cache = default_cache_path()
+  trigger_refresh(cache)
+  report = load_report(cache)
+
+  if args.mode == "claude":
+    try:
+      session = json.load(sys.stdin)
+    except json.JSONDecodeError:
+      return 0
+    if not isinstance(session, dict):
+      return 0
+    print(render_claude(session, report))
+    return 0
+
+  if not args.window:
+    return 0
+  rendered = render_tmux(
+    report,
+    args.width,
+  )
+  if rendered:
+    print(rendered, end="")
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())

@@ -1,0 +1,32 @@
+#!/usr/bin/env sh
+
+######################################################################
+# @file        : md-preview
+#
+# @description : Prerequisite check and entry point for md-preview.py.
+#
+#                md-preview.py is a PEP 723 script, so uv resolves its
+#                pinned dependencies per invocation. Without uv the
+#                shebang fails as "env: uv: No such file or directory",
+#                naming env rather than this command, so check first and
+#                say what is missing.
+######################################################################
+
+if ! command -v uv >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+md-preview: uv is not installed.
+
+md-preview runs through uv, which supplies its pinned dependencies.
+Install uv and retry:
+
+  macOS   brew install uv
+  Arch    pacman -S uv
+  other   https://docs.astral.sh/uv
+EOF
+  exit 127
+fi
+
+# Resolved from the invoked path, not the real one, so a linked copy finds
+# the sibling link beside it.
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+exec uv run --script "$script_dir/md-preview.py" "$@"
