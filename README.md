@@ -59,7 +59,7 @@ Nothing here assumes that repository.
 Clone anywhere, then link the pieces you want.
 
 ```sh
-git clone <this-repo> ~/src/agent-kit
+git clone git@github.com:kindjie/agent-kit.git ~/src/agent-kit
 cd ~/src/agent-kit
 ```
 
