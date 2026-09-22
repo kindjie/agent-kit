@@ -30,7 +30,10 @@ lineup document, agent-readable output, private caching, and Codex app-server
 failures. Account-switch coverage includes A→B→A quota/credit isolation,
 same-account failure retention, legacy-cache migration, unknown identity,
 plan changes, bounded account snapshots, changes during collection, and a
-single-process RPC fixture with an optional usage timeout. Claude coverage
+single-process RPC fixture with an optional usage timeout. Archived accounts
+are covered for elapsed and live resets, newest-check ordering, exclusion of
+the account last checked, absence when only one account is known, and
+narrowing by `--for` and provider selection. Claude coverage
 also verifies organization isolation, cache-owner matching, forced refresh
 across switches, and rejection of credential overrides.
 

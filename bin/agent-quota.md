@@ -33,6 +33,8 @@ without passing a flag. Ordinary quota queries never start summarization.
 - `--verbose` (also accepted with `--brief`) emits detailed text including
   observation timestamps, projections, bindings, and velocity. It cannot
   be combined with `--compact` or `--models`.
+- Both text modes list archived accounts when any exist; see
+  [Accounts not checked now](#accounts-not-checked-now).
 - `--cached` reads and reevaluates the derived cache without querying a
   service.
 
@@ -116,7 +118,7 @@ eight account snapshots, keeping those most recently checked. Only
 `services.codex` represents the account just collected; archived snapshots
 are not active allowances and are never summed or used for provider selection.
 Switching back restores that account's quota and credit histories, subject to
-normal history expiry. A plan change starts new history. Failed quota reads
+normal history expiry; text output lists them meanwhile. A plan change starts new history. Failed quota reads
 retain last-good data only for the same verified account and plan. Legacy
 unlabelled history is not assigned to the first account encountered.
 
@@ -146,7 +148,8 @@ and plan can retain previous observations. A changed or unverified login
 cannot inherit another account's quota. An unknown cache owner is rejected.
 
 `claude_accounts` holds at most eight last-known snapshots, independently of
-`codex_accounts`. Switching back restores that account's retained history;
+`codex_accounts`, and is displayed on the same terms. Switching back restores
+that account's retained history;
 plan changes restart burn history. Cached reports show the identity last
 checked, not a fresh authentication result. Local transcript totals remain
 machine-wide observations and are not assigned to an account.
@@ -157,6 +160,27 @@ credential-store environment overrides leave identity unverified instead of
 assuming that saved profile metadata describes the effective credential.
 The cache format is not a provider guarantee; concurrent clients sharing
 that file can still race with collection. This tool never switches accounts.
+
+## Accounts not checked now
+
+`--brief` and `--verbose` list every archived snapshot whose account is not
+the one its service just checked, newest check first, under `Other accounts
+(last checked; not verified now)`. Each account shows its label, short key,
+plan, and check time; each of its buckets shows the last known remaining
+percentage and its recorded reset, marked `(PASSED)` once that reset time is
+behind the report's `generated_at`, `(in <duration>)` while it is ahead, and
+`reset time UNKNOWN` when none was recorded.
+
+`(PASSED)` means only that the recorded period ended, which is the strongest
+claim available without signing in: the account is not queried, and switching
+back is what confirms a reset. Snapshots are re-evaluated against
+`generated_at` in JSON output too, so `period_relation` is never a stale
+`current`. `--for MODEL` narrows archived buckets exactly as it narrows live
+ones, and selecting one provider drops the other's archive.
+
+An account only appears here if it was checked at least once while signed in.
+Legacy unlabelled history is never attributed to an account, so quota
+observed before per-account tracking existed is not shown.
 
 ## Pace
 

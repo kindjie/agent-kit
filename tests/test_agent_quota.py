@@ -1647,5 +1647,107 @@ class AgentQuotaTest(unittest.TestCase):
     self.assertNotIn("timed out", str(raised.exception))
 
 
+  def archived_codex_document(self):
+    """A report whose archive holds one account other than the live one."""
+    archived = {
+      "provider_id": "openai", "service_id": "codex",
+      "display_name": "Codex", "warnings": [], "data_status": "complete",
+      "account": {"key": "a" * 64, "label": "other@example.test",
+                  "plan": "pro", "observed_at": "2026-08-19T20:00:00Z",
+                  "source": "test"},
+      "limits": [
+        limit_record("codex:codex:primary", 100),
+        limit_record("codex:fable:weekly", 10, bucket={
+          "id": "fable", "name": "Fable 5", "scope_kind": "model",
+        }),
+      ],
+    }
+    active = AGENT_QUOTA.base_service("openai", "codex", "Codex", NOW)
+    active["account"] = {"key": "b" * 64, "label": "live@example.test",
+                         "plan": "prolite", "observed_at": AGENT_QUOTA.iso_utc(
+                           NOW), "source": "test"}
+    active["limits"] = [limit_record("codex:codex:primary", 5)]
+    return {
+      "schema_version": AGENT_QUOTA.SCHEMA_VERSION,
+      "generated_at": AGENT_QUOTA.iso_utc(NOW),
+      "services": {"codex": active},
+      "claude_accounts": {},
+      "codex_accounts": {"a" * 64: archived},
+    }
+
+  def test_other_account_state_is_rendered_with_elapsed_reset(self):
+    first = self.collect_account(self.account_snapshot(used=100))
+    second = self.collect_account(
+      self.account_snapshot("second@example.test", 1), first,
+      NOW + timedelta(minutes=20),
+    )
+    later = AGENT_QUOTA.reevaluate_document(second, NOW + timedelta(days=2))
+
+    archive = later["codex_accounts"][
+      first["services"]["codex"]["account"]["key"]
+    ]
+    self.assertEqual(
+      archive["limits"][0]["last_observation"]["period_relation"], "ended",
+    )
+    for renderer in (AGENT_QUOTA.render_brief, AGENT_QUOTA.render_verbose):
+      output = renderer(later)
+      self.assertIn("Other accounts (last checked; not verified now)", output)
+      self.assertIn("first@example.test", output)
+      self.assertIn("(pro)", output)
+      self.assertIn(
+        "Codex weekly: last known 0% remaining; "
+        "reset 2026-08-20T21:30:00Z (PASSED).",
+        output,
+      )
+      self.assertEqual(output.count("second@example.test"), 1)
+
+  def test_other_accounts_show_time_to_reset_newest_first(self):
+    first = self.collect_account(self.account_snapshot("a@example.test"))
+    second = self.collect_account(
+      self.account_snapshot("b@example.test"), first,
+      NOW + timedelta(minutes=20),
+    )
+    third = self.collect_account(
+      self.account_snapshot("c@example.test"), second,
+      NOW + timedelta(minutes=40),
+    )
+    output = AGENT_QUOTA.render_brief(
+      AGENT_QUOTA.reevaluate_document(third, NOW + timedelta(hours=1)),
+    )
+
+    self.assertIn(
+      "Codex weekly: last known 80% remaining; "
+      "resets 2026-08-20T21:30:00Z (in 23h 0m).",
+      output,
+    )
+    self.assertLess(output.index("b@example.test"),
+                    output.index("a@example.test"))
+    self.assertEqual(output.count("c@example.test"), 1)
+
+  def test_single_account_has_no_other_accounts_block(self):
+    document = self.collect_account(self.account_snapshot())
+    output = AGENT_QUOTA.render_brief(
+      AGENT_QUOTA.reevaluate_document(document, NOW),
+    )
+    self.assertNotIn("Other accounts", output)
+
+  def test_other_accounts_follow_provider_and_model_selection(self):
+    document = self.archived_codex_document()
+
+    self.assertIn("Fable 5", AGENT_QUOTA.render_brief(document))
+    filtered = AGENT_QUOTA.filter_document_for_model(document, "Sonnet 5")
+    self.assertEqual(
+      [item["limit_id"] for item in
+       filtered["codex_accounts"]["a" * 64]["limits"]],
+      ["codex:codex:primary"],
+    )
+    self.assertNotIn("Fable 5", AGENT_QUOTA.render_brief(filtered))
+    self.assertIn("other@example.test", AGENT_QUOTA.render_brief(filtered))
+
+    selected = AGENT_QUOTA.select_services(document, "claude")
+    self.assertEqual(selected["codex_accounts"], {})
+    self.assertNotIn("other@example.test", AGENT_QUOTA.render_brief(selected))
+
+
 if __name__ == "__main__":
   unittest.main()
