@@ -150,6 +150,50 @@ def report() -> dict[str, object]:
   }
 
 
+def archived_account(
+  service: str,
+  key: str,
+  remaining: int,
+  reset_at: str,
+  *,
+  window: str = "weekly",
+) -> dict[str, object]:
+  bucket = "account" if service == "claude_code" else "codex"
+  item = limit(service, bucket, "All models", remaining, window=window)
+  item["last_observation"] = observation(remaining, reset_at=reset_at)
+  return {
+    "service_id": service,
+    "account": {"key": key, "label": f"{key}@example.com"},
+    "limits": [item],
+  }
+
+
+def with_archived_accounts(doc: dict[str, object]) -> dict[str, object]:
+  """Active accounts are "active-cl" and "active-cx". NOW is Wed 21:30Z."""
+  doc["services"]["claude_code"]["account"] = {"key": "active-cl"}
+  doc["services"]["codex"]["account"] = {"key": "active-cx"}
+  doc["claude_accounts"] = {
+    "active-cl": archived_account(
+      "claude_code", "active-cl", 70, "2026-08-19T23:00:00Z"
+    ),
+    "later-cl": archived_account(
+      "claude_code", "later-cl", 5, "2026-08-21T07:00:00Z"
+    ),
+    "soon-cl": archived_account(
+      "claude_code", "soon-cl", 0, "2026-08-20T18:00:00Z"
+    ),
+    "passed-cl": archived_account(
+      "claude_code", "passed-cl", 0, "2026-08-19T21:00:00Z"
+    ),
+  }
+  doc["codex_accounts"] = {
+    "far-cx": archived_account(
+      "codex", "far-cx", 0, "2026-08-21T10:00:00Z"
+    ),
+  }
+  return doc
+
+
 class AgentStatusTest(unittest.TestCase):
   def test_claude_row_contains_model_effort_weekly_and_context(self) -> None:
     session = {
@@ -283,6 +327,124 @@ class AgentStatusTest(unittest.TestCase):
       "#[fg=red,nodim,reverse]0%#[fg=colour8,dim,noreverse]",
       rendered,
     )
+
+  def test_tmux_shows_a_session_window_about_to_run_out_instead(
+    self,
+  ) -> None:
+    doc = report()
+    claude = doc["services"]["claude_code"]["limits"]
+    claude[0]["last_observation"] = observation(
+      15, reset_at="2026-08-20T01:00:00Z"
+    )
+    reset = datetime(2026, 8, 20, 1, tzinfo=timezone.utc)
+    when = AGENT_STATUS.reset_text(reset, NOW, None)
+
+    wide = strip_tmux_styles(AGENT_STATUS.render_tmux(doc, 160, now=NOW))
+    narrow = strip_tmux_styles(AGENT_STATUS.render_tmux(doc, 80, now=NOW))
+
+    self.assertEqual(
+      wide,
+      f"Claude 5h ·15% reset {when} (Fable ·~47%@1h30m) │ "
+      "Codex ·46% (Spark ·100%) │ ",
+    )
+    self.assertEqual(
+      narrow,
+      f"Cl5h·15%↻{when} (Fab·~47%@1h30m) │ Cx·46% (Spa·100%) │ ",
+    )
+
+  def test_tmux_session_window_replaces_its_own_bucket_on_burn(
+    self,
+  ) -> None:
+    doc = report()
+    claude = doc["services"]["claude_code"]["limits"]
+    session = limit(
+      "claude_code", "claude-fable-5", "Fable 5", 30,
+      scope_kind="model", window="5h",
+    )
+    session["burn"] = {"exhausts_before_reset": True}
+    claude.append(session)
+
+    rendered = strip_tmux_styles(AGENT_STATUS.render_tmux(doc, 160, now=NOW))
+
+    self.assertIn("Claude ·~70%@1h30m (Fable 5h ▼30% reset ", rendered)
+
+  def test_tmux_keeps_weekly_unless_session_window_is_the_constraint(
+    self,
+  ) -> None:
+    cases = {
+      "plenty left": (observation(99, reset_at="2026-08-20T01:00:00Z"), 70),
+      "weekly lower": (observation(15, reset_at="2026-08-20T01:00:00Z"), 10),
+      "period ended": (
+        observation(0, period="ended", reset_at="2026-08-19T21:00:00Z"),
+        70,
+      ),
+    }
+    for name, (session, weekly) in cases.items():
+      with self.subTest(name):
+        doc = report()
+        claude = doc["services"]["claude_code"]["limits"]
+        claude[0]["last_observation"] = session
+        claude[1]["last_observation"] = observation(weekly)
+
+        rendered = strip_tmux_styles(
+          AGENT_STATUS.render_tmux(doc, 160, now=NOW)
+        )
+
+        self.assertNotIn("5h", rendered)
+        self.assertIn(f"Claude ·{weekly}%", rendered)
+
+  def test_tmux_shows_soonest_inactive_account_reset_within_36h(
+    self,
+  ) -> None:
+    doc = with_archived_accounts(report())
+    soon = datetime(2026, 8, 20, 18, tzinfo=timezone.utc)
+    when = AGENT_STATUS.reset_text(soon, NOW, None)
+
+    wide = strip_tmux_styles(AGENT_STATUS.render_tmux(doc, 160, now=NOW))
+    narrow = strip_tmux_styles(AGENT_STATUS.render_tmux(doc, 80, now=NOW))
+
+    self.assertEqual(
+      wide,
+      f"Claude ·~70%@1h30m (Fable ·~47%@1h30m) alt reset {when} │ "
+      "Codex ·46% (Spark ·100%) │ ",
+    )
+    self.assertEqual(
+      narrow,
+      f"Cl·~70%@1h30m (Fab·~47%@1h30m) alt↻{when} │ "
+      "Cx·46% (Spa·100%) │ ",
+    )
+
+  def test_tmux_ignores_resets_that_are_not_useful_to_switch_for(
+    self,
+  ) -> None:
+    doc = with_archived_accounts(report())
+    claude = doc["claude_accounts"]
+    del claude["soon-cl"]
+    del claude["later-cl"]
+    claude["full-cl"] = archived_account(
+      "claude_code", "full-cl", 100, "2026-08-20T01:00:00Z"
+    )
+    claude["session-cl"] = archived_account(
+      "claude_code", "session-cl", 0, "2026-08-20T01:00:00Z", window="5h"
+    )
+    claude["mismatched"] = archived_account(
+      "claude_code", "other", 0, "2026-08-20T01:00:00Z"
+    )
+
+    rendered = strip_tmux_styles(AGENT_STATUS.render_tmux(doc, 160, now=NOW))
+
+    self.assertNotIn("alt", rendered)
+
+  def test_tmux_inactive_reset_is_dim_and_never_names_the_account(
+    self,
+  ) -> None:
+    doc = with_archived_accounts(report())
+
+    rendered = AGENT_STATUS.render_tmux(doc, 160, now=NOW)
+
+    self.assertIn("#[fg=colour8,dim] alt reset ", rendered)
+    self.assertNotIn("example.com", rendered)
+    self.assertNotIn("soon-cl", rendered)
 
   def test_reset_suffix_uses_local_timezone_only_when_near(self) -> None:
     near = observation(

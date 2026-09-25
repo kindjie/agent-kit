@@ -22,6 +22,12 @@ PACE_GLYPHS = {
   "on_pace": ("●", "fg=colour8,dim"),
 }
 PACE_UNKNOWN_GLYPH = "·"
+SESSION_WARNING_PERCENT = 20
+INACTIVE_RESET_HORIZON = timedelta(hours=36)
+ACCOUNT_ARCHIVES = {
+  "claude_code": "claude_accounts",
+  "codex": "codex_accounts",
+}
 SPECIAL_BUCKET_LABELS = {
   "Fable 5": "Fable",
   "GPT-5.3-Codex-Spark": "Spark",
@@ -173,7 +179,10 @@ def service_limits(
 ) -> list[dict[str, Any]]:
   if not valid_report(report):
     return []
-  service = report["services"].get(service_id)
+  return limits_of(report["services"].get(service_id))
+
+
+def limits_of(service: Any) -> list[dict[str, Any]]:
   if not isinstance(service, dict):
     return []
   return [
@@ -192,6 +201,39 @@ def weekly_limits(
     for item in service_limits(report, service_id)
     if item["window"].get("label") == "weekly"
   ]
+
+
+def session_takeover(
+  weekly: dict[str, Any],
+  session: dict[str, Any] | None,
+  now: datetime,
+) -> bool:
+  """Whether a bucket's 5h window, rather than its weekly one, is about to
+  stop work: its period is current, it is at the warning threshold or its
+  recent burn empties it before its reset, and the weekly window has more
+  left. A weekly window as low or lower is the longer outage, so it stays."""
+  if not isinstance(session, dict):
+    return False
+  observation = session.get("last_observation")
+  if not isinstance(observation, dict):
+    return False
+  remaining = percentage(observation.get("remaining_percent"))
+  _, relation = observation_state(observation, now)
+  if remaining is None or relation != "current":
+    return False
+  burn = session.get("burn")
+  exhausting = (
+    isinstance(burn, dict) and burn.get("exhausts_before_reset") is True
+  )
+  if remaining > SESSION_WARNING_PERCENT and not exhausting:
+    return False
+  weekly_observation = weekly.get("last_observation")
+  weekly_remaining = (
+    percentage(weekly_observation.get("remaining_percent"))
+    if isinstance(weekly_observation, dict)
+    else None
+  )
+  return weekly_remaining is None or weekly_remaining > remaining
 
 
 def claude_row_label(item: dict[str, Any]) -> str:
@@ -347,6 +389,48 @@ def pace_indicator(item: dict[str, Any], *, now: datetime) -> str:
   return tmux_style(glyph, style)
 
 
+def inactive_reset(
+  report: dict[str, Any] | None,
+  service_id: str,
+  *,
+  now: datetime,
+) -> datetime | None:
+  """Soonest weekly reset, within the horizon, among archived accounts other
+  than the one the service last checked. Snapshots already full gain nothing
+  from a reset, so they are skipped. These are last observations of accounts
+  that are not queried, never claims about them now."""
+  if not valid_report(report):
+    return None
+  archive = report.get(ACCOUNT_ARCHIVES[service_id])
+  if not isinstance(archive, dict):
+    return None
+  active = report["services"].get(service_id)
+  account = active.get("account") if isinstance(active, dict) else None
+  active_key = account.get("key") if isinstance(account, dict) else None
+  soonest: datetime | None = None
+  for key, service in archive.items():
+    if not isinstance(service, dict) or key == active_key:
+      continue
+    account = service.get("account")
+    if not isinstance(account, dict) or account.get("key") != key:
+      continue
+    for item in limits_of(service):
+      if item["window"].get("label") != "weekly":
+        continue
+      observation = item.get("last_observation")
+      if not isinstance(observation, dict):
+        continue
+      remaining = percentage(observation.get("remaining_percent"))
+      reset = parse_timestamp(observation.get("reset_at"))
+      if remaining is None or remaining >= 100 or reset is None:
+        continue
+      if not now < reset <= now + INACTIVE_RESET_HORIZON:
+        continue
+      if soonest is None or reset < soonest:
+        soonest = reset
+  return soonest
+
+
 def tmux_service_group(
   report: dict[str, Any] | None,
   service_id: str,
@@ -365,6 +449,11 @@ def tmux_service_group(
   ]
   primary = accounts[0] if accounts else None
   specials = [item for item in items if item is not primary]
+  sessions = {
+    item.get("bucket", {}).get("id"): item
+    for item in service_limits(report, service_id)
+    if item["window"].get("label") == "5h"
+  }
 
   def item_text(item: dict[str, Any]) -> str:
     label = (
@@ -372,6 +461,10 @@ def tmux_service_group(
       if wide
       else abbreviation(service_id, item)
     )
+    session = sessions.get(item.get("bucket", {}).get("id"))
+    if session_takeover(item, session, now):
+      item = session
+      label += " 5h" if wide else "5h"
     value = format_tmux_observation(
       item.get("last_observation"),
       now=now,
@@ -386,6 +479,13 @@ def tmux_service_group(
     rendered = "Claude" if service_id == "claude_code" else "Codex"
   for item in specials:
     rendered += f" ({item_text(item)})"
+  reset = inactive_reset(report, service_id, now=now)
+  if reset is not None:
+    when = reset_text(reset, now, None)
+    rendered += tmux_style(
+      f" alt{' reset ' if wide else '↻'}{when}",
+      "fg=colour8,dim",
+    )
   return rendered
 
 

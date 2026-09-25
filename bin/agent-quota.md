@@ -41,6 +41,12 @@ without passing a flag. Ordinary quota queries never start summarization.
 Renderers consume JSON or the derived cache. They must never parse `--brief`.
 An unsupported `schema_version` is an error, not a best-effort input.
 
+The tmux component shows each bucket's weekly window. It shows the bucket's
+5h window and reset instead while that period is current, at or below 20%
+remaining or projected by recent burn to empty before its reset, and below
+the weekly window's remaining percentage; a weekly window as low or lower
+is the longer outage and stays in view.
+
 ## Semantics
 
 The root `generated_at` is when the report evaluated its observations. A
@@ -177,6 +183,11 @@ back is what confirms a reset. Snapshots are re-evaluated against
 `generated_at` in JSON output too, so `period_relation` is never a stale
 `current`. `--for MODEL` narrows archived buckets exactly as it narrows live
 ones, and selecting one provider drops the other's archive.
+
+The tmux component appends, per service, the soonest weekly reset among
+those archived accounts when it falls within 36 hours, as `alt reset <time>`
+(`alt↻<time>` when narrow). It names no account, and it skips snapshots
+already at 100% remaining, since that reset restores nothing.
 
 An account only appears here if it was checked at least once while signed in.
 Legacy unlabelled history is never attributed to an account, so quota
