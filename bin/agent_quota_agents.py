@@ -818,11 +818,6 @@ def view_agents(cache, args, now):
       continue
     if agent["last_seen"] < now - args.agent_days * 86400:
       continue
-    if args.model_filter and not any(
-      args.model_filter.lower() in model.lower()
-      for model in agent.get("models", [])
-    ):
-      continue
     old = cache["summaries"].get(agent["key"], {})
     agent["work"] = old.get("summary") or clean(
       next(
@@ -1237,8 +1232,6 @@ def main(args, quota, script):
         "--timeout",
         str(args.timeout),
       ]
-      if args.model_filter:
-        command.extend(["--for", args.model_filter])
       if args.no_cross_provider_summaries:
         command.append("--no-cross-provider-summaries")
       try:

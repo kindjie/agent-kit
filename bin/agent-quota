@@ -515,67 +515,6 @@ def service_binding(service: dict[str, Any]) -> str | None:
   return best[2] if best else None
 
 
-def bucket_matches_model(bucket: dict[str, Any], model: str) -> bool:
-  query = slug(model)
-  if query == "unknown":
-    return False
-  for key in ("id", "name"):
-    value = bucket.get(key)
-    if not isinstance(value, str):
-      continue
-    candidate = slug(value)
-    if candidate != "unknown" and (query in candidate or candidate in query):
-      return True
-  return False
-
-
-def filter_service_for_model(service: dict[str, Any], model: str) -> None:
-  """Keep account buckets plus scoped buckets matching ``model``, in place."""
-  kept = []
-  for item in service.get("limits", []):
-    if not isinstance(item, dict):
-      continue
-    bucket = item.get("bucket")
-    bucket = bucket if isinstance(bucket, dict) else {}
-    if bucket.get("scope_kind") == "account" or bucket_matches_model(
-      bucket, model
-    ):
-      kept.append(item)
-  service["limits"] = kept
-  if "credits" in service:
-    service["credits"] = [
-      item for item in service["credits"]
-      if item["bucket"].get("scope_kind") == "account"
-      or bucket_matches_model(item["bucket"], model)
-    ]
-  service["binding_limit_id"] = service_binding(service)
-
-
-def filter_document_for_model(
-  document: dict[str, Any],
-  model: str,
-) -> dict[str, Any]:
-  """Keep account buckets plus scoped buckets matching ``model``.
-
-  Archived accounts are narrowed the same way, so a filtered report never
-  shows a bucket for one account that it hides for another."""
-  result = copy.deepcopy(document)
-  result["model_filter"] = model
-  services = result.get("services", {})
-  if isinstance(services, dict):
-    for service in services.values():
-      if isinstance(service, dict):
-        filter_service_for_model(service, model)
-  for cache_name in ACCOUNT_ARCHIVES.values():
-    cache = result.get(cache_name)
-    if not isinstance(cache, dict):
-      continue
-    for service in cache.values():
-      if isinstance(service, dict):
-        filter_service_for_model(service, model)
-  return result
-
-
 def make_observation(
   used_percent: float,
   observed_at: datetime | None,
@@ -2241,10 +2180,6 @@ def render_brief(document: dict[str, Any]) -> str:
     lines.extend(["", *notes])
   lines.extend(["", f"Checked {document.get('generated_at', 'UNKNOWN')}; "
                 "observations fresh unless marked. Quota buckets are separate."])
-  if document.get("model_filter"):
-    lines.append(
-      f"Model: {document['model_filter']}; token activity is not model-filtered."
-    )
   return "\n".join(lines)
 
 
@@ -2258,12 +2193,6 @@ def render_verbose(document: dict[str, Any]) -> str:
     "Recent-burn exhaustion overrides SURPLUS; stale/unknown data or "
     "RESET SOON alone do not justify speeding up.",
   ]
-  model_filter = document.get("model_filter")
-  if isinstance(model_filter, str):
-    lines.append(
-      f"Filtered for model {model_filter!r}: account buckets plus "
-      "matching scoped buckets."
-    )
   services = document.get("services", {})
   for service_id in ("claude_code", "codex"):
     if service_id in services:
@@ -2725,12 +2654,6 @@ def main(argv: list[str] | None = None) -> int:
     help="read and reevaluate the derived cache without querying services",
   )
   parser.add_argument(
-    "--for",
-    dest="model_filter",
-    metavar="MODEL",
-    help="show account buckets plus scoped buckets matching this model",
-  )
-  parser.add_argument(
     "--agents", action="store_true",
     help="recent local agents with cached work summaries (table by default)",
   )
@@ -2906,8 +2829,6 @@ def main(argv: list[str] | None = None) -> int:
         "status": "unavailable", "average_tokens": None,
       }
   status = exit_status(document, args.provider, args.strict)
-  if args.model_filter:
-    document = filter_document_for_model(document, args.model_filter)
   if args.verbose:
     print(render_verbose(document))
   elif args.brief:

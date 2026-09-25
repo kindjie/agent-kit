@@ -401,21 +401,6 @@ class AgentQuotaTest(unittest.TestCase):
     )
     self.assertEqual(refreshed["credits"], [])
 
-  def test_codex_credit_buckets_respect_model_filter(self) -> None:
-    bucket = {
-      "credits": {"hasCredits": True, "unlimited": False, "balance": "5"},
-      "primary": {"usedPercent": 20, "windowDurationMins": 300,
-                  "resetsAt": int(NOW.timestamp()) + 3600},
-    }
-    service = AGENT_QUOTA.parse_codex_result({"rateLimitsByLimitId": {
-      name: {**bucket, "limitId": name} for name in ("codex", "spark")
-    }}, now=NOW)
-    self.assertEqual(len(service["credits"]), 2)
-    filtered = AGENT_QUOTA.filter_document_for_model(
-      {"services": {"codex": service}}, "gpt-6-astra",
-    )
-    self.assertEqual(len(filtered["services"]["codex"]["credits"]), 1)
-
   def test_credit_pace_uses_balance_history_and_resets_after_topup(self):
     def snapshot(balance, when, previous=None):
       service = self.codex_with_credits({
@@ -630,56 +615,6 @@ class AgentQuotaTest(unittest.TestCase):
     )
     self.assertIsNone(only_early["binding_limit_id"])
 
-  def test_model_filter_keeps_account_and_matching_scoped_buckets(
-    self,
-  ) -> None:
-    fable = {"id": "fable", "name": "Fable", "scope_kind": "model"}
-    spark = {
-      "id": "codex_bengalfox",
-      "name": "GPT-5.3-Codex-Spark",
-      "scope_kind": "provider_defined",
-    }
-    document = AGENT_QUOTA.reevaluate_document(
-      {
-        "schema_version": 3,
-        "services": {
-          "claude_code": {
-            "limits": [
-              limit_record("claude:account", 30),
-              limit_record("claude:fable", 60, bucket=fable),
-            ]
-          },
-          "codex": {
-            "limits": [
-              limit_record("codex:account", 10),
-              limit_record("codex:spark", 90, bucket=spark),
-            ]
-          },
-        },
-      },
-      NOW,
-    )
-
-    for_fable = AGENT_QUOTA.filter_document_for_model(document, "fable")
-    self.assertEqual(for_fable["model_filter"], "fable")
-    claude_service = for_fable["services"]["claude_code"]
-    claude_ids = [item["limit_id"] for item in claude_service["limits"]]
-    self.assertEqual(claude_ids, ["claude:account", "claude:fable"])
-    self.assertEqual(claude_service["binding_limit_id"], "claude:fable")
-    codex_ids = [
-      item["limit_id"] for item in for_fable["services"]["codex"]["limits"]
-    ]
-    self.assertEqual(codex_ids, ["codex:account"])
-
-    for_spark = AGENT_QUOTA.filter_document_for_model(
-      document, "gpt-5.3-codex-spark"
-    )
-    self.assertEqual(
-      [item["limit_id"] for item in for_spark["services"]["codex"]["limits"]],
-      ["codex:account", "codex:spark"],
-    )
-    self.assertNotIn("model_filter", document)
-
   def test_cached_document_without_pace_gains_it_on_reevaluation(self) -> None:
     document = {
       "schema_version": 3,
@@ -692,7 +627,7 @@ class AgentQuotaTest(unittest.TestCase):
     self.assertEqual(result["services"]["claude_code"]["binding_limit_id"], "a")
     self.assertNotIn("pace", document["services"]["claude_code"]["limits"][0])
 
-  def test_brief_reports_pace_binding_and_model_filter(self) -> None:
+  def test_verbose_reports_pace_and_binding(self) -> None:
     five_hour = 5 * 60 * 60
     document = AGENT_QUOTA.reevaluate_document(
       {
@@ -716,11 +651,8 @@ class AgentQuotaTest(unittest.TestCase):
       },
       NOW,
     )
-    output = AGENT_QUOTA.render_verbose(
-      AGENT_QUOTA.filter_document_for_model(document, "fable")
-    )
+    output = AGENT_QUOTA.render_verbose(document)
     self.assertIn("SURPLUS = at least 25% projected unused", output)
-    self.assertIn("Filtered for model 'fable'", output)
     self.assertIn(
       "Resets in 30m (10% of window). Pace: BEHIND; projected -16.7% "
       "unused at reset. RESET SOON.",
@@ -731,9 +663,7 @@ class AgentQuotaTest(unittest.TestCase):
       "Binding (period-average): Claude Code 5h (BEHIND).", output
     )
 
-  def test_brief_surfaces_nonbinding_burn_risk_and_respects_filter(
-    self,
-  ) -> None:
+  def test_verbose_surfaces_nonbinding_burn_risk(self) -> None:
     scoped = limit_record(
       "astra",
       20,
@@ -773,16 +703,10 @@ class AgentQuotaTest(unittest.TestCase):
     self.assertEqual(service["limits"][1]["pace"]["state"], "surplus")
     self.assertTrue(service["limits"][1]["burn"]["exhausts_before_reset"])
     risk = "Recent-burn constraint: Codex GPT-6 Astra weekly [FRESH]"
-    output = AGENT_QUOTA.render_verbose(
-      AGENT_QUOTA.filter_document_for_model(document, "gpt-6-astra")
-    )
+    output = AGENT_QUOTA.render_verbose(document)
     self.assertIn("Binding (period-average): Codex weekly (SURPLUS).", output)
     self.assertIn(risk, output)
     self.assertIn("Conserve this bucket even if pace is SURPLUS.", output)
-    unrelated = AGENT_QUOTA.filter_document_for_model(document, "spark")
-    self.assertNotIn(
-      "Recent-burn constraint:", AGENT_QUOTA.render_verbose(unrelated)
-    )
     stale = AGENT_QUOTA.reevaluate_document(
       document, NOW + timedelta(hours=1)
     )
@@ -1731,19 +1655,10 @@ class AgentQuotaTest(unittest.TestCase):
     )
     self.assertNotIn("Other accounts", output)
 
-  def test_other_accounts_follow_provider_and_model_selection(self):
+  def test_other_accounts_follow_provider_selection(self):
     document = self.archived_codex_document()
 
-    self.assertIn("Fable 5", AGENT_QUOTA.render_brief(document))
-    filtered = AGENT_QUOTA.filter_document_for_model(document, "Sonnet 5")
-    self.assertEqual(
-      [item["limit_id"] for item in
-       filtered["codex_accounts"]["a" * 64]["limits"]],
-      ["codex:codex:primary"],
-    )
-    self.assertNotIn("Fable 5", AGENT_QUOTA.render_brief(filtered))
-    self.assertIn("other@example.test", AGENT_QUOTA.render_brief(filtered))
-
+    self.assertIn("other@example.test", AGENT_QUOTA.render_brief(document))
     selected = AGENT_QUOTA.select_services(document, "claude")
     self.assertEqual(selected["codex_accounts"], {})
     self.assertNotIn("other@example.test", AGENT_QUOTA.render_brief(selected))

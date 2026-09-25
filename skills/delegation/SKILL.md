@@ -69,13 +69,15 @@ Choose model, effort, service tier, and concurrency for sustained throughput.
 Account for retries and rework: a stronger model can finish more work per
 unit of quota than a cheaper model that needs repeated attempts.
 
-Run `agent-quota --brief --for <model>` outside the sandbox (approval if
-required, so Codex can write its SQLite state): before substantial review or
+Run `agent-quota --brief` outside the sandbox (approval if required, so
+Codex can write its SQLite state): before substantial review or
 second-opinion delegation, for the delegate's model; at the start of
 substantial autonomous work, for your own. Use the plain command for a live
 check; `--cached` only reads existing observations. Routine in-process
-spawns skip it. Buckets are separate allocations: `--for` keeps the account
-buckets plus those scoped to that model. The compact table shows remaining
+spawns skip it. Buckets are separate allocations: a model draws on its
+provider's account buckets plus any bucket named for it, such as a
+model-scoped weekly limit. The report cannot map models to buckets, so
+judge that from the names. The compact table shows remaining
 capacity, resets, and pace; `--verbose` adds the binding limit and detailed
 velocity/burn evidence. Use remaining quota, time to reset, and recent burn
 together; percentage alone is insufficient.
@@ -174,7 +176,6 @@ locally observed transcripts have different coverage. Hour/day/week values
 are averages over the reported seven-day window, not instantaneous rates;
 check freshness and truncation. Cached input is included in token totals,
 so raw tokens alone do not measure cost, productivity, or credit efficiency.
-The `--for` model filter does not filter these activity averages.
 
 ### Per-thread observations
 

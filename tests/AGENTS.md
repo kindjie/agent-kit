@@ -19,34 +19,33 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_quota
 
 `test_agent_quota.py` covers schema-v3 normalization, strict value and
 timestamp handling, stale/reset state, scoped buckets, last-good retention,
-pace projection anchored at observation time (behind, on-pace, surplus,
-early, unknown, reset-soon), binding-limit selection, the `--for` model
-filter, pace added to older cached reports, observation-history merging
-across reset periods, trailing-window velocity (1h, 5h, 24h consumption
-summed across resets, coverage spans, and brief output), recent-burn
-exhaustion (including nonbinding buckets, model filtering, and stale/ended
-observations in brief constraint summaries), the `--models`
-lineup document, agent-readable output, private caching, and Codex app-server
+pace projection anchored at observation time (behind, on-pace, surplus, early,
+unknown, reset-soon), binding-limit selection, pace added to older cached
+reports, observation-history merging across reset periods, trailing-window
+velocity (1h, 5h, 24h consumption summed across resets, coverage spans, and
+brief output), recent-burn exhaustion (including nonbinding buckets and
+stale/ended observations in brief constraint summaries), the `--models` lineup
+document, agent-readable output, private caching, and Codex app-server
 failures. Account-switch coverage includes A→B→A quota/credit isolation,
-same-account failure retention, legacy-cache migration, unknown identity,
-plan changes, bounded account snapshots, changes during collection, and a
+same-account failure retention, legacy-cache migration, unknown identity, plan
+changes, bounded account snapshots, changes during collection, and a
 single-process RPC fixture with an optional usage timeout. Archived accounts
 are covered for elapsed and live resets, newest-check ordering, exclusion of
 the account last checked, absence when only one account is known, and
-narrowing by `--for` and provider selection. Claude coverage
-also verifies organization isolation, cache-owner matching, forced refresh
-across switches, and rejection of credential overrides.
+narrowing by provider selection. Claude coverage also verifies organization
+isolation, cache-owner matching, forced refresh across switches, and rejection
+of credential overrides.
 
 Credit coverage includes balances separate from exhausted subscription quota,
-unknown/zero/unlimited and invalid values, model filtering, freshness and
-failed-refresh retention, and credit burn/exhaustion estimates with top-ups,
-duplicate samples, zero burn, and insufficient or expired history.
-Token activity tests cover seven-calendar-day averages, compact formatting,
+unknown/zero/unlimited and invalid values, freshness and failed-refresh
+retention, and credit burn/exhaustion estimates with top-ups, duplicate
+samples, zero burn, and insufficient or expired history. Token activity tests
+cover seven-calendar-day averages, compact formatting,
 missing/invalid/duplicate daily data, cached freshness, optional lookup
-failure isolation, and app-server method selection.
-Compact table tests cover constraints first, recent-burn precedence,
-credit history warm-up, stale/ended observations, and visible refresh errors.
-Detailed output assertions exercise the verbose renderer.
+failure isolation, and app-server method selection. Compact table tests cover
+constraints first, recent-burn precedence, credit history warm-up, stale/ended
+observations, and visible refresh errors. Detailed output assertions exercise
+the verbose renderer.
 
 Run the local agent collector and summary-cache suite:
 

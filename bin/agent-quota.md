@@ -181,8 +181,7 @@ behind the report's `generated_at`, `(in <duration>)` while it is ahead, and
 claim available without signing in: the account is not queried, and switching
 back is what confirms a reset. Snapshots are re-evaluated against
 `generated_at` in JSON output too, so `period_relation` is never a stale
-`current`. `--for MODEL` narrows archived buckets exactly as it narrows live
-ones, and selecting one provider drops the other's archive.
+`current`. Selecting one provider drops the other's archive.
 
 The tmux component appends, per service, the soonest weekly reset among
 those archived accounts when it falls within 36 hours, as `alt reset <time>`
@@ -218,10 +217,10 @@ Projections are never clamped.
 
 Each service carries `binding_limit_id`: the limit with the lowest
 projection, ties broken by lower remaining percent, or null when no limit
-projects. `--for MODEL` keeps account buckets plus scoped buckets whose id or
-name matches the model slug, recomputes bindings on the kept set, records
-`model_filter` at the root, and leaves the exit status of the unfiltered
-report unchanged.
+projects. Neither provider reports which models draw on which scoped
+bucket, so the report does not filter by model: readers apply the account
+bucket plus any bucket named for the model in use. A guessed match would
+hide a binding bucket whenever a new model broke the naming pattern.
 
 Verbose output labels binding as period-average and separately names each
 current-period bucket whose recent burn projects exhaustion before reset,
@@ -283,7 +282,7 @@ Brief output rounds balances to two decimal places. Credit balances from
 different buckets must not be added; they may describe the same funds.
 
 Credits do not change subscription percentages, binding limits, quota pace,
-or exit status. The model filter applies to their buckets too. Failed
+or exit status. Failed
 collection retains last-good credits with their original timestamps;
 successful responses that omit credits clear the old credit observation.
 Cached reads recompute freshness, and older schema-v3 caches without credit
@@ -328,10 +327,10 @@ invalid counts, and malformed dates are rejected. `status` is `complete`,
 `partial`, or `unavailable`. Collection time and freshness are separate from
 the dates represented by the data; cached reads recompute freshness.
 
-Token activity is account-wide and is not narrowed by `--for`. It does not
-affect quota, credits, or exit status. The optional lookup has a timeout of
-at most five seconds; failure records an error under `token_usage` without
-failing quota collection or carrying forward an old token summary.
+Token activity is account-wide. It does not affect quota, credits, or exit
+status. The optional lookup has a timeout of at most five seconds; failure
+records an error under `token_usage` without failing quota collection or
+carrying forward an old token summary.
 
 ## Model lineup
 
@@ -366,7 +365,7 @@ sets, token breakdowns, parser warnings, and summary state. `--agents
 --compact` emits the separate `document: agents`, schema-version-1 JSON
 document carrying both labels; it omits source paths and message excerpts
 used as summary input.
-`--for` matches observed model names in this view. `--cached` neither scans
+`--cached` neither scans
 transcripts nor starts model calls. `--no-cache` scans without reading or
 writing caches and does not generate summaries. `--no-summaries` updates
 observations without starting model calls. Ordinary quota queries never
