@@ -29,6 +29,10 @@ ACCOUNT_ARCHIVES = {
   "claude_code": "claude_accounts",
   "codex": "codex_accounts",
 }
+SERVICE_LABELS = {
+  "claude_code": ("Claude", "Cl"),
+  "codex": ("Codex", "Cx"),
+}
 SPECIAL_BUCKET_LABELS = {
   "Fable 5": "Fable",
   "GPT-5.3-Codex-Spark": "Spark",
@@ -296,7 +300,7 @@ def abbreviation(
 ) -> str:
   bucket = item.get("bucket", {})
   if bucket.get("scope_kind") == "account":
-    return "Cl" if service_id == "claude_code" else "Cx"
+    return SERVICE_LABELS[service_id][1]
   name = wide_label(service_id, item)
   token = re_safe_token(name)
   return token[:3] if token else "Spc"
@@ -310,7 +314,7 @@ def re_safe_token(text: str) -> str:
 def wide_label(service_id: str, item: dict[str, Any]) -> str:
   bucket = item.get("bucket", {})
   if bucket.get("scope_kind") == "account":
-    return "Claude" if service_id == "claude_code" else "Codex"
+    return SERVICE_LABELS[service_id][0]
   name = str(bucket.get("name", "Special"))
   return SPECIAL_BUCKET_LABELS.get(name, name)
 
@@ -442,7 +446,15 @@ def tmux_service_group(
 ) -> str:
   items = weekly_limits(report, service_id)
   if not items:
-    return ""
+    # A service whose refresh failed has no limits to show; mark it unknown
+    # rather than letting it vanish from the line.
+    if not valid_report(report) or not isinstance(
+      report["services"].get(service_id), dict
+    ):
+      return ""
+    name = SERVICE_LABELS[service_id][0 if wide else 1]
+    unknown = tmux_style("?", "fg=yellow,nodim")
+    return f"{name}{' ' if wide else ''}{unknown}"
 
   accounts = [
     item
@@ -478,7 +490,7 @@ def tmux_service_group(
   if primary is not None:
     rendered = item_text(primary)
   else:
-    rendered = "Claude" if service_id == "claude_code" else "Codex"
+    rendered = SERVICE_LABELS[service_id][0 if wide else 1]
   for item in specials:
     rendered += f" ({item_text(item)})"
   reset = inactive_reset(report, service_id, now=now)

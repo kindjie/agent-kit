@@ -45,7 +45,9 @@ The tmux component shows each bucket's weekly window. It shows the bucket's
 5h window and reset instead while that period is current, below 10%
 remaining, and below the weekly window's remaining percentage; a weekly
 window as low or lower is the longer outage and stays in view. Recent burn
-alone does not swap them, since it can project exhaustion hours ahead.
+alone does not swap them, since it can project exhaustion hours ahead. A
+service in the report with no weekly limit to show, such as after a failed
+refresh, appears as `?` rather than disappearing.
 
 ## Semantics
 
@@ -136,7 +138,9 @@ The tool does not sign in, sign out, save alternate logins, or switch accounts.
 
 Claude collection checks `claude auth status --json` before and after reading
 usage. The documented command reports authentication status; its observed
-JSON fields supply the email, organization ID, and subscription type. See the
+JSON fields supply the email, organization ID, and subscription type. Each
+check waits at most 15 seconds: it normally answers in under one, but a
+shorter cap failed under memory pressure. See the
 [Claude CLI reference](https://code.claude.com/docs/en/cli-reference).
 The service's `account` uses the same display fields as Codex, with
 `source: claude.auth/status`. Its key hashes the case-folded email together

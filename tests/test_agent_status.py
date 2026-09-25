@@ -479,6 +479,30 @@ class AgentStatusTest(unittest.TestCase):
     self.assertEqual(near_text, "12% ↻23:00")
     self.assertEqual(far_text, "70%")
 
+  def test_failed_service_shows_unknown_instead_of_vanishing(self) -> None:
+    doc = report()
+    claude = doc["services"]["claude_code"]
+    claude["limits"] = []
+    claude["refresh"] = {"status": "failed"}
+
+    wide = strip_tmux_styles(AGENT_STATUS.render_tmux(doc, 160, now=NOW))
+    narrow = strip_tmux_styles(AGENT_STATUS.render_tmux(doc, 80, now=NOW))
+
+    self.assertEqual(wide, "Claude ? │ Codex ·46% (Spark ·100%) │ ")
+    self.assertEqual(narrow, "Cl? │ Cx·46% (Spa·100%) │ ")
+    self.assertIn(
+      "#[fg=yellow,nodim]?#[fg=colour8,dim]",
+      AGENT_STATUS.render_tmux(doc, 160, now=NOW),
+    )
+
+  def test_absent_service_is_still_omitted(self) -> None:
+    doc = report()
+    del doc["services"]["claude_code"]
+
+    rendered = strip_tmux_styles(AGENT_STATUS.render_tmux(doc, 160, now=NOW))
+
+    self.assertEqual(rendered, "Codex ·46% (Spark ·100%) │ ")
+
   def test_malformed_bucket_is_skipped_rather_than_crashing(self) -> None:
     doc = report()
     doc["services"]["claude_code"]["limits"][2]["bucket"] = None

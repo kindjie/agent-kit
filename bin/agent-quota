@@ -939,9 +939,11 @@ def refresh_claude_usage(
 
 
 def claude_auth_status(claude_bin: str, timeout: float) -> dict[str, Any]:
+  # Usually well under a second, but 5 s timed out under memory pressure,
+  # and an unverified login keeps no quota.
   result = subprocess.run(
     [claude_bin, "auth", "status", "--json"], capture_output=True,
-    text=True, timeout=min(timeout, 5), check=False,
+    text=True, timeout=min(timeout, 15), check=False,
   )
   if result.returncode:
     raise RuntimeError("Claude Code subscription identity unavailable.")

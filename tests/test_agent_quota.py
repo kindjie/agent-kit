@@ -1545,8 +1545,10 @@ class AgentQuotaTest(unittest.TestCase):
       encoding="utf-8",
     )
     fake.chmod(0o755)
+    # A generous timeout costs nothing when the reply is prompt, and a
+    # loaded machine can take seconds just to start the fake.
     result = AGENT_QUOTA.codex_rpc(
-      timeout=3, codex_bin=str(fake), method="account/usage/read",
+      timeout=30, codex_bin=str(fake), method="account/usage/read",
     )
     self.assertEqual(result, {"requested": "account/usage/read"})
 
@@ -1560,14 +1562,16 @@ class AgentQuotaTest(unittest.TestCase):
     )
     fake_codex.chmod(0o755)
 
+    # Waiting out the timeout would take 30 s; a prompt failure takes a
+    # fraction of that even on a loaded machine.
     started = time.monotonic()
     with self.assertRaisesRegex(
       RuntimeError,
       "exited with status 1.*run agent-quota outside the sandbox",
     ) as raised:
-      AGENT_QUOTA.codex_rpc(timeout=6, codex_bin=str(fake_codex))
+      AGENT_QUOTA.codex_rpc(timeout=30, codex_bin=str(fake_codex))
 
-    self.assertLess(time.monotonic() - started, 1)
+    self.assertLess(time.monotonic() - started, 10)
     self.assertNotIn("timed out", str(raised.exception))
 
 
@@ -1662,6 +1666,20 @@ class AgentQuotaTest(unittest.TestCase):
     selected = AGENT_QUOTA.select_services(document, "claude")
     self.assertEqual(selected["codex_accounts"], {})
     self.assertNotIn("other@example.test", AGENT_QUOTA.render_brief(selected))
+
+
+class ClaudeAuthStatusTest(unittest.TestCase):
+  def test_waits_long_enough_for_a_loaded_machine(self) -> None:
+    # The command usually answers in under a second, but a 5 s cap failed
+    # under memory pressure and dropped Claude from the status line.
+    completed = AGENT_QUOTA.subprocess.CompletedProcess([], 0, "{}", "")
+    with patch.object(
+      AGENT_QUOTA.subprocess, "run", return_value=completed,
+    ) as run:
+      AGENT_QUOTA.claude_auth_status("claude", 30)
+      self.assertEqual(run.call_args.kwargs["timeout"], 15)
+      AGENT_QUOTA.claude_auth_status("claude", 3)
+      self.assertEqual(run.call_args.kwargs["timeout"], 3)
 
 
 if __name__ == "__main__":
