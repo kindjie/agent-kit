@@ -32,7 +32,11 @@
 
 CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-speak"
 MUTE_FILE="$CONF_DIR/mute"
-LOCK_DIR="${TMPDIR:-/tmp}/agent-speak-$(id -u).lock"
+# A private per-user directory: a lock in shared /tmp could be pre-created
+# or redirected by another user.
+LOCK_ROOT="${XDG_RUNTIME_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/agent-speak"
+LOCK="$LOCK_ROOT/lock"
+have_lock=0
 VOICE="${AGENT_SPEAK_VOICE:-Zoe (Premium)}"
 VOLUME="${AGENT_SPEAK_VOLUME:-0.4}"
 
@@ -63,24 +67,36 @@ mute_status() {
   echo 'agent-speak: unmuted'
 }
 
-release_lock() { rm -rf "$LOCK_DIR"; }
+lock_root_is_private() {
+  (umask 077 && mkdir -p "$LOCK_ROOT") 2>/dev/null &&
+    [ -d "$LOCK_ROOT" ] && [ ! -L "$LOCK_ROOT" ] && [ -O "$LOCK_ROOT" ] &&
+    chmod 700 "$LOCK_ROOT" 2>/dev/null
+}
 
-# Serialise speech across parallel agent sessions: wait (up to ~6 s)
-# for a live holder, reap stale locks, then speak anyway.
+# Only the holder releases, so a timed-out wait never breaks a live lock.
+release_lock() {
+  if [ "$have_lock" = 1 ] && [ "$(readlink "$LOCK" 2>/dev/null)" = "$$" ]; then
+    rm -f "$LOCK"
+  fi
+  have_lock=0
+}
+
+# Serialise speech across parallel agent sessions: wait (up to ~6 s) for a
+# live holder, reap a dead one, then speak anyway without the lock. The
+# lock is a symlink naming the holder's PID, created atomically by ln.
 acquire_lock() {
+  lock_root_is_private || return 0
   tries=0
-  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
-    holder=$(cat "$LOCK_DIR/pid" 2>/dev/null)
+  while ! ln -s "$$" "$LOCK" 2>/dev/null; do
+    holder=$(readlink "$LOCK" 2>/dev/null)
     if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-      rm -rf "$LOCK_DIR"
-      continue
+      rm -f "$LOCK"
     fi
     tries=$((tries + 1))
-    [ "$tries" -ge 12 ] && break
+    [ "$tries" -ge 12 ] && return 0
     sleep 0.5
   done
-  mkdir -p "$LOCK_DIR" 2>/dev/null
-  echo $$ >"$LOCK_DIR/pid"
+  have_lock=1
 }
 
 speak() {

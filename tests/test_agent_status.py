@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import fcntl
 import importlib.machinery
 import importlib.util
+import os
 import re
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
+from unittest import mock
 
 
 KIT = Path(__file__).parents[1] / "bin"
@@ -474,6 +478,33 @@ class AgentStatusTest(unittest.TestCase):
 
     self.assertEqual(near_text, "12% ↻23:00")
     self.assertEqual(far_text, "70%")
+
+  def test_malformed_bucket_is_skipped_rather_than_crashing(self) -> None:
+    doc = report()
+    doc["services"]["claude_code"]["limits"][2]["bucket"] = None
+    doc["services"]["codex"]["limits"][1]["bucket"] = "Spark"
+
+    wide = strip_tmux_styles(AGENT_STATUS.render_tmux(doc, 160, now=NOW))
+    row = AGENT_STATUS.render_claude({}, doc, now=NOW)
+
+    self.assertEqual(wide, "Claude ·~70%@1h30m │ Codex ·46% │ ")
+    self.assertNotIn("Fable", row)
+
+  def test_refresh_is_not_started_while_one_holds_the_lock(self) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+      cache = Path(directory) / "report-v3.json"
+      cache.write_text("{}", encoding="utf-8")
+      os.utime(cache, (0, 0))
+      lock = cache.with_suffix(cache.suffix + ".lock")
+
+      with mock.patch.object(AGENT_STATUS.subprocess, "Popen") as popen:
+        with lock.open("a+") as holder:
+          fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+          AGENT_STATUS.trigger_refresh(cache)
+        popen.assert_not_called()
+
+        AGENT_STATUS.trigger_refresh(cache)
+        popen.assert_called_once()
 
   def test_unsupported_schema_is_rejected(self) -> None:
     self.assertFalse(AGENT_STATUS.valid_report({"schema_version": 2}))

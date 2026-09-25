@@ -1,7 +1,9 @@
 import os
 from pathlib import Path
+import stat
 import subprocess
 import tempfile
+import time
 import unittest
 
 
@@ -11,8 +13,8 @@ SCRIPT = REPO_ROOT / "bin" / "agent-speak.sh"
 CODEX_PAYLOAD = '{"type":"turn-ended","last-assistant-message":"done"}'
 
 
-class AgentSpeakOptionTests(unittest.TestCase):
-  """Option handling, with speech captured rather than performed."""
+class AgentSpeakCase(unittest.TestCase):
+  """Runs the script with speech captured rather than performed."""
 
   def setUp(self):
     self.tempdir = tempfile.TemporaryDirectory()
@@ -35,6 +37,8 @@ class AgentSpeakOptionTests(unittest.TestCase):
     env["PATH"] = f"{self.mock_bin}{os.pathsep}{env['PATH']}"
     # Keep mute state and the speech lock out of the real home.
     env["XDG_CONFIG_HOME"] = str(self.root / "config")
+    env["XDG_CACHE_HOME"] = str(self.root / "cache")
+    env.pop("XDG_RUNTIME_DIR", None)
     env["TMPDIR"] = str(self.root)
     return subprocess.run(
       [str(SCRIPT), *args],
@@ -48,6 +52,10 @@ class AgentSpeakOptionTests(unittest.TestCase):
     if not self.spoken.exists():
       return ""
     return self.spoken.read_text(encoding="utf-8")
+
+
+class AgentSpeakOptionTests(AgentSpeakCase):
+  """Option handling."""
 
   def test_unknown_option_errors_without_speaking(self):
     result = self.run_script("--codex", CODEX_PAYLOAD)
@@ -90,6 +98,59 @@ class AgentSpeakOptionTests(unittest.TestCase):
     self.assertEqual(self.run_script("--status").returncode, 1)
     self.run_script("--toggle-mute")
     self.assertEqual(self.run_script("--status").returncode, 0)
+
+
+class AgentSpeakLockTests(AgentSpeakCase):
+  """The lock serialising speech across sessions."""
+
+  def setUp(self):
+    super().setUp()
+    self.lock_root = self.root / "cache" / "agent-speak"
+    self.lock = self.lock_root / "lock"
+
+  def hold_lock(self, pid):
+    self.lock_root.mkdir(parents=True, mode=0o700)
+    os.symlink(str(pid), self.lock)
+
+  def dead_pid(self):
+    process = subprocess.Popen(["true"])
+    process.wait()
+    return process.pid
+
+  def test_lock_is_private_and_released(self):
+    self.assertEqual(self.run_script("hello").returncode, 0)
+    self.assertIn("hello", self.spoken_text())
+    self.assertEqual(stat.S_IMODE(self.lock_root.stat().st_mode), 0o700)
+    self.assertFalse(os.path.lexists(self.lock))
+
+  def test_reaps_a_dead_holders_lock_without_waiting(self):
+    self.hold_lock(self.dead_pid())
+
+    started = time.monotonic()
+    self.run_script("reaped")
+
+    self.assertLess(time.monotonic() - started, 3)
+    self.assertIn("reaped", self.spoken_text())
+    self.assertFalse(os.path.lexists(self.lock))
+
+  def test_never_releases_a_live_holders_lock(self):
+    self.hold_lock(os.getpid())
+
+    self.run_script("after timeout")
+
+    self.assertIn("after timeout", self.spoken_text())
+    self.assertEqual(os.readlink(self.lock), str(os.getpid()))
+
+  def test_skips_locking_in_a_directory_it_does_not_own(self):
+    elsewhere = self.root / "elsewhere"
+    elsewhere.mkdir()
+    (self.root / "cache").mkdir()
+    self.lock_root.symlink_to(elsewhere)
+
+    self.run_script("unlocked")
+
+    self.assertIn("unlocked", self.spoken_text())
+    self.assertEqual(list(elsewhere.iterdir()), [])
 
 
 if __name__ == "__main__":

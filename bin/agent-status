@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import math
 import os
@@ -183,12 +184,16 @@ def service_limits(
 
 
 def limits_of(service: Any) -> list[dict[str, Any]]:
+  """Limits whose window and bucket are objects; a malformed cache entry is
+  skipped rather than crashing a status line."""
   if not isinstance(service, dict):
     return []
   return [
     item
     for item in service.get("limits", [])
-    if isinstance(item, dict) and isinstance(item.get("window"), dict)
+    if isinstance(item, dict)
+    and isinstance(item.get("window"), dict)
+    and isinstance(item.get("bucket"), dict)
   ]
 
 
@@ -515,6 +520,22 @@ def time_now() -> float:
   return datetime.now().timestamp()
 
 
+def refresh_running(path: Path) -> bool:
+  """Whether agent-quota holds the cache lock. A refresh can outlast the
+  status interval, and each tick would otherwise start another."""
+  lock_path = path.with_suffix(path.suffix + ".lock")
+  try:
+    with lock_path.open("r", encoding="utf-8") as stream:
+      try:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+      except BlockingIOError:
+        return True
+      fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+  except OSError:
+    pass
+  return False
+
+
 def trigger_refresh(path: Path) -> None:
   try:
     age = time_now() - path.stat().st_mtime
@@ -522,6 +543,8 @@ def trigger_refresh(path: Path) -> None:
       return
   except OSError:
     pass
+  if refresh_running(path):
+    return
   executable = Path(__file__).with_name("agent-quota")
   try:
     subprocess.Popen(

@@ -84,7 +84,8 @@ periods), stale and historical markers, reset formatting, a 5h window
 replacing its bucket's weekly one when about to run out (below 10%, not at 10%
 or on burn alone, weekly lower, ended period), the soonest inactive-account
 weekly reset within 36 hours (excluding the active, full, mismatched, passed,
-and session entries), and schema rejection.
+and session entries), skipping limits with malformed buckets, no background
+refresh while one holds the cache lock, and schema rejection.
 
 ## Markdown Preview
 
@@ -115,4 +116,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_speak
 shadowed by a stub, so a regression is recorded in a file rather than read
 aloud. It asserts that an unrecognised option exits 2 without speaking, that
 a notify payload is never spoken, that `--` still allows a message starting
-with a dash, and that mute round-trips.
+with a dash, and that mute round-trips. Lock tests cover the private lock
+directory, reaping a dead holder without waiting, speaking after the timeout
+without releasing a live holder's lock, and skipping the lock when its
+directory is not a real one owned by the user.

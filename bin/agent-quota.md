@@ -493,7 +493,9 @@ never expose local filesystem paths.
 `agent-quota` exclusively owns provider refresh, normalization, refresh
 locking, and atomic writes to its private derived cache. A failed refresh does
 not replace or retimestamp last-good observations. Status renderers only read
-the cache and start non-blocking background refreshes.
+the cache and start non-blocking background refreshes, and none while a
+refresh already holds the cache lock. They skip limits whose bucket or window
+is not an object instead of failing the whole line.
 
 ## Exit status
 
