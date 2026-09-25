@@ -22,7 +22,7 @@ PACE_GLYPHS = {
   "on_pace": ("●", "fg=colour8,dim"),
 }
 PACE_UNKNOWN_GLYPH = "·"
-SESSION_WARNING_PERCENT = 20
+SESSION_TAKEOVER_BELOW_PERCENT = 10
 INACTIVE_RESET_HORIZON = timedelta(hours=36)
 ACCOUNT_ARCHIVES = {
   "claude_code": "claude_accounts",
@@ -209,9 +209,10 @@ def session_takeover(
   now: datetime,
 ) -> bool:
   """Whether a bucket's 5h window, rather than its weekly one, is about to
-  stop work: its period is current, it is at the warning threshold or its
-  recent burn empties it before its reset, and the weekly window has more
-  left. A weekly window as low or lower is the longer outage, so it stays."""
+  stop work: its period is current, it is nearly empty, and the weekly
+  window has more left. A weekly window as low or lower is the longer
+  outage, so it stays. Recent burn alone does not qualify, since it can
+  project exhaustion hours ahead."""
   if not isinstance(session, dict):
     return False
   observation = session.get("last_observation")
@@ -221,11 +222,7 @@ def session_takeover(
   _, relation = observation_state(observation, now)
   if remaining is None or relation != "current":
     return False
-  burn = session.get("burn")
-  exhausting = (
-    isinstance(burn, dict) and burn.get("exhausts_before_reset") is True
-  )
-  if remaining > SESSION_WARNING_PERCENT and not exhausting:
+  if remaining >= SESSION_TAKEOVER_BELOW_PERCENT:
     return False
   weekly_observation = weekly.get("last_observation")
   weekly_remaining = (

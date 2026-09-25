@@ -78,13 +78,13 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_status
 ```
 
 `test_agent_status.py` covers Claude's native row (session and weekly
-windows), wide and narrow tmux quota grouping, warning colours,
-the per-bucket pace glyph (behind, surplus, on pace, unknown, burn
-exhaustion, stale periods), stale and historical markers, reset
-formatting, a 5h window replacing its bucket's weekly one when about to run
-out (threshold, burn, weekly lower, ended period), the soonest
-inactive-account weekly reset within 36 hours (excluding the active, full,
-mismatched, passed, and session entries), and schema rejection.
+windows), wide and narrow tmux quota grouping, warning colours, the per-bucket
+pace glyph (behind, surplus, on pace, unknown, burn exhaustion, stale
+periods), stale and historical markers, reset formatting, a 5h window
+replacing its bucket's weekly one when about to run out (below 10%, not at 10%
+or on burn alone, weekly lower, ended period), the soonest inactive-account
+weekly reset within 36 hours (excluding the active, full, mismatched, passed,
+and session entries), and schema rejection.
 
 ## Markdown Preview
 

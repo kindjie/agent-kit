@@ -42,10 +42,10 @@ Renderers consume JSON or the derived cache. They must never parse `--brief`.
 An unsupported `schema_version` is an error, not a best-effort input.
 
 The tmux component shows each bucket's weekly window. It shows the bucket's
-5h window and reset instead while that period is current, at or below 20%
-remaining or projected by recent burn to empty before its reset, and below
-the weekly window's remaining percentage; a weekly window as low or lower
-is the longer outage and stays in view.
+5h window and reset instead while that period is current, below 10%
+remaining, and below the weekly window's remaining percentage; a weekly
+window as low or lower is the longer outage and stays in view. Recent burn
+alone does not swap them, since it can project exhaustion hours ahead.
 
 ## Semantics
 

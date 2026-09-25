@@ -334,7 +334,7 @@ class AgentStatusTest(unittest.TestCase):
     doc = report()
     claude = doc["services"]["claude_code"]["limits"]
     claude[0]["last_observation"] = observation(
-      15, reset_at="2026-08-20T01:00:00Z"
+      9, reset_at="2026-08-20T01:00:00Z"
     )
     reset = datetime(2026, 8, 20, 1, tzinfo=timezone.utc)
     when = AGENT_STATUS.reset_text(reset, NOW, None)
@@ -344,46 +344,49 @@ class AgentStatusTest(unittest.TestCase):
 
     self.assertEqual(
       wide,
-      f"Claude 5h ·15% reset {when} (Fable ·~47%@1h30m) │ "
+      f"Claude 5h ·9% reset {when} (Fable ·~47%@1h30m) │ "
       "Codex ·46% (Spark ·100%) │ ",
     )
     self.assertEqual(
       narrow,
-      f"Cl5h·15%↻{when} (Fab·~47%@1h30m) │ Cx·46% (Spa·100%) │ ",
+      f"Cl5h·9%↻{when} (Fab·~47%@1h30m) │ Cx·46% (Spa·100%) │ ",
     )
 
-  def test_tmux_session_window_replaces_its_own_bucket_on_burn(
-    self,
-  ) -> None:
+  def test_tmux_session_window_replaces_only_its_own_bucket(self) -> None:
     doc = report()
     claude = doc["services"]["claude_code"]["limits"]
-    session = limit(
-      "claude_code", "claude-fable-5", "Fable 5", 30,
+    claude.append(limit(
+      "claude_code", "claude-fable-5", "Fable 5", 9,
       scope_kind="model", window="5h",
-    )
-    session["burn"] = {"exhausts_before_reset": True}
-    claude.append(session)
+    ))
 
     rendered = strip_tmux_styles(AGENT_STATUS.render_tmux(doc, 160, now=NOW))
 
-    self.assertIn("Claude ·~70%@1h30m (Fable 5h ▼30% reset ", rendered)
+    self.assertIn("Claude ·~70%@1h30m (Fable 5h ·9% reset ", rendered)
 
   def test_tmux_keeps_weekly_unless_session_window_is_the_constraint(
     self,
   ) -> None:
+    session_reset = "2026-08-20T01:00:00Z"
+    exhausting = {"exhausts_before_reset": True}
     cases = {
-      "plenty left": (observation(99, reset_at="2026-08-20T01:00:00Z"), 70),
-      "weekly lower": (observation(15, reset_at="2026-08-20T01:00:00Z"), 10),
+      "plenty left": (observation(99, reset_at=session_reset), 70, None),
+      "at threshold": (observation(10, reset_at=session_reset), 70, None),
+      "burn alone": (observation(84, reset_at=session_reset), 90, exhausting),
+      "weekly lower": (observation(8, reset_at=session_reset), 5, None),
       "period ended": (
         observation(0, period="ended", reset_at="2026-08-19T21:00:00Z"),
         70,
+        None,
       ),
     }
-    for name, (session, weekly) in cases.items():
+    for name, (session, weekly, burn) in cases.items():
       with self.subTest(name):
         doc = report()
         claude = doc["services"]["claude_code"]["limits"]
         claude[0]["last_observation"] = session
+        if burn is not None:
+          claude[0]["burn"] = burn
         claude[1]["last_observation"] = observation(weekly)
 
         rendered = strip_tmux_styles(
