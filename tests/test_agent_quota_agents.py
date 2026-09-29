@@ -409,6 +409,7 @@ class AgentViewTest(unittest.TestCase):
     self.assertIn("Bash: …test · ", output)    # Now folded, keeps its end
     self.assertNotIn(" Now ", output.splitlines()[0] + " ")
     self.assertIn(" Eff ", output.splitlines()[0] + " ")
+    self.assertIn(" med ", output)     # as wide as its heading allows
     self.assertIn("▸\u00a0working", output)          # legend when glyphs show
     with patch.object(AGENTS, "display_width", return_value=200):
       wide = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 1000)
@@ -429,6 +430,10 @@ class AgentViewTest(unittest.TestCase):
                      {"claude": "cl", "codex": "co", "cursor": "cu"})
     self.assertEqual(AGENTS.unique_prefixes(["high", "medium", "mixed",
                                              "max"])["medium"], "me")
+    self.assertEqual(AGENTS.unique_prefixes(["high", "low", "xhigh",
+                                             "mixed", "max"], 3),
+                     {"high": "hig", "low": "low", "xhigh": "xhi",
+                      "mixed": "mix", "max": "max"})
     self.assertEqual(AGENTS.unique_suffix_length(
       ["aaaa1234", "bbbb1234", "cccc5678"]), 5)
 

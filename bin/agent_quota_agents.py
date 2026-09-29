@@ -1488,7 +1488,8 @@ def render(agents, cache, quota, now, verbose=False, color=False,
       "idle": now - agent["last_seen"],
     })
   providers = unique_prefixes([e["agent"]["provider"] for e in entries], 2)
-  efforts = unique_prefixes([e["agent"]["effort"] for e in entries])
+  # Three characters: the compact "Eff" heading sets that width anyway.
+  efforts = unique_prefixes([e["agent"]["effort"] for e in entries], 3)
   dirs = dir_labels(e["agent"].get("cwd") for e in entries)
   suffix = unique_suffix_length([e["agent"]["id"] for e in entries
                                  if not e["agent"].get("group")])
