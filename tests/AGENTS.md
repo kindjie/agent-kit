@@ -45,7 +45,18 @@ missing/invalid/duplicate daily data, cached freshness, optional lookup
 failure isolation, and app-server method selection. Compact table tests cover
 constraints first, recent-burn precedence, credit history warm-up, stale/ended
 observations, and visible refresh errors. Detailed output assertions exercise
-the verbose renderer.
+the verbose renderer. Timeline tests cover quota names without the default
+weekly window, day grouping in time order with aligned columns, notes
+(`N% left`, burn rates, credits, `stale`), exhausted quotas and the reset
+that restores them, merged simultaneous events, inactive accounts (the
+reset that frees a blocked account highlighted, earlier ones `blocked`,
+past resets only when likely available), hidden routine 5h items and
+noteworthy ones shown, colour that only adds escape codes (urgency,
+per-account colours, dim lines, plain output for pipes, `NO_COLOR` and
+`TERM=dumb`), the unmerged JSON events, and the CLI paths. Archived-account
+tests cover the `Likely available` line and explicit `RESET … ago` in the
+text modes, accounts still blocked by a spent account-wide bucket, and
+model buckets blocked by a spent account bucket.
 
 Run the local agent collector and summary-cache suite:
 

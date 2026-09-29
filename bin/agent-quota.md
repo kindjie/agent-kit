@@ -32,7 +32,34 @@ without passing a flag. Ordinary quota queries never start summarization.
   remain visible. Ended quota periods show unknown remaining capacity.
 - `--verbose` (also accepted with `--brief`) emits detailed text including
   observation timestamps, projections, bindings, and velocity. It cannot
-  be combined with `--compact` or `--models`.
+  be combined with `--compact`, `--models` or `--timeline`.
+- `--timeline` lists upcoming events grouped by day in local time, in
+  aligned columns: when, time, label, quota, account and a note. Labels
+  are `RESET`, `EXHAUSTED` (empty now) and `BURN` (a quota or credits
+  projected to run out at recent burn, listed only when that comes before
+  the reset and only for fresh observations of the checked accounts).
+  Quotas are named `Claude`, `Claude 5h`, `Fable`, `Codex` and so on;
+  weekly is the default window and goes unnamed. Notes say what each event
+  means: `N% left` for the checked accounts, `was N%` (last known,
+  unverified) for other accounts, `→ 100%` (`→ ~100%` for other accounts)
+  on a reset that restores an exhausted bucket or frees a blocked account,
+  `blocked` on a reset while spent account-wide buckets still block the
+  account, and `stale` when a checked account's data is not fresh. Events
+  with the same moment, type, account and meaning merge
+  (`Claude, Fable … was 0% / 56% → ~100%`). 5h items appear only when low
+  (under 10%), exhausted, running out, or freeing an account.
+  On a terminal the timeline is styled: `EXHAUSTED` bold red reverse,
+  `BURN` bold red within 24 hours and bold yellow later, `RESET` bold
+  green, restoring resets highlighted in bold green, quota names bold,
+  each account in its own colour, and unverified or stale lines dim italic.
+  Piped output, `NO_COLOR` and `TERM=dumb` get plain text.
+- `--timeline --compact` emits the same events as one-line JSON, unmerged
+  and unfiltered (5h items included), for tools that must not parse text:
+  `{"schema_version": 1, "generated_at": ..., "events": [...]}`. Each event
+  has `at`, `type` (`reset`, `burn`, `exhausted`), `provider`, `account`,
+  `active`, `quota`, `limit_id`, `short_window`, `remaining_percent` (or
+  `remaining_credits` with `unit` `credits`), `unit`, `restores`,
+  `blocked`, `stale` and `rate_per_hour`. Events are in time order.
 - Both text modes list archived accounts when any exist; see
   [Accounts not checked now](#accounts-not-checked-now).
 - `--cached` reads and reevaluates the derived cache without querying a
@@ -177,15 +204,27 @@ that file can still race with collection. This tool never switches accounts.
 the one its service just checked, newest check first, under `Other accounts
 (last checked; not verified now)`. Each account shows its label, short key,
 plan, and check time; each of its buckets shows the last known remaining
-percentage and its recorded reset, marked `(PASSED)` once that reset time is
-behind the report's `generated_at`, `(in <duration>)` while it is ahead, and
-`reset time UNKNOWN` when none was recorded.
+percentage and its recorded reset: `(in <duration>)` while it is ahead,
+`reset time UNKNOWN` when none was recorded, and, once the reset is behind
+the report's `generated_at`, `RESET <time> (<duration> ago)` followed by
+either `likely 100% now (was N%)` or `was N%, blocked`.
 
-`(PASSED)` means only that the recorded period ended, which is the strongest
-claim available without signing in: the account is not queried, and switching
-back is what confirms a reset. Snapshots are re-evaluated against
-`generated_at` in JSON output too, so `period_relation` is never a stale
-`current`. Selecting one provider drops the other's archive.
+An account is `LIKELY AVAILABLE` when at least one bucket has reset since
+its check and no account-wide bucket is still at 0%. Both text modes then
+lead with a `Likely available (reset since last check; not verified):` line
+naming it, since that usually means full quota on the other account. This is
+the strongest claim available without signing in: the account is not
+queried, and switching back is what confirms a reset.
+
+Model-scoped buckets, such as Fable, are sub-limits of the account: their
+use also counts against the account-wide buckets. While an account-wide
+bucket is at 0%, a model bucket that still has capacity reads `Blocked` in
+`--brief` and `blocked` in archived snapshots and `--timeline`.
+`--timeline` also lists an unqueried account's resets since its check
+(`<duration> ago`), but only when the account is likely available, and
+highlights them. For an account still blocked by spent account-wide
+buckets it instead highlights the reset of the last of them, when the
+account becomes usable, and marks earlier resets `blocked`.
 
 The tmux component appends, per service, the soonest weekly reset among
 those archived accounts when it falls within 36 hours, as `alt reset <time>`

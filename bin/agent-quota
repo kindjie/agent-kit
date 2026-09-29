@@ -18,6 +18,7 @@ import queue
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -2049,18 +2050,108 @@ def stale_marker(observation: dict[str, Any]) -> str:
   return "" if state == "fresh" else f" [{str(state).upper()}]"
 
 
+def spent_account_buckets(service: dict[str, Any]) -> list[str]:
+  """Account-wide buckets at 0% in their current period.
+
+  Model-scoped buckets such as Fable are sub-limits: their use also counts
+  against the account-wide buckets, so a spent account bucket blocks them
+  whatever their own remaining percentage says.
+  """
+  name = str(service.get("display_name", service.get("service_id")))
+  spent = []
+  for limit in service.get("limits", []):
+    if not isinstance(limit, dict):
+      continue
+    observation = limit.get("last_observation")
+    observation = observation if isinstance(observation, dict) else {}
+    scope = (limit.get("bucket") or {}).get("scope_kind")
+    if (scope in (None, "account")
+        and observation.get("period_relation") == "current"
+        and observation.get("remaining_percent") == 0):
+      spent.append(service_label(limit, name))
+  return spent
+
+
+def sub_limit_blocked(limit: dict[str, Any], service: dict[str, Any]) -> bool:
+  """A model bucket with capacity left, blocked by a spent account bucket."""
+  observation = limit.get("last_observation") or {}
+  scope = (limit.get("bucket") or {}).get("scope_kind")
+  return (scope not in (None, "account")
+          and bool(observation.get("remaining_percent"))
+          and bool(spent_account_buckets(service)))
+
+
+def archived_availability(
+  service: dict[str, Any], now: datetime,
+) -> dict[str, Any]:
+  """Resets an unqueried account has passed since it was last checked.
+
+  The account is likely available when at least one bucket has reset and
+  no account-wide bucket is still exhausted; an exhausted model-scoped
+  bucket leaves the account usable for other models.
+  """
+  name = str(service.get("display_name", service.get("service_id")))
+  resets: list[dict[str, Any]] = []
+  blocked: list[dict[str, Any]] = []
+  for limit in service.get("limits", []):
+    if not isinstance(limit, dict):
+      continue
+    observation = limit.get("last_observation")
+    observation = observation if isinstance(observation, dict) else {}
+    relation = observation.get("period_relation")
+    reset = parse_timestamp(observation.get("reset_at"))
+    scope = (limit.get("bucket") or {}).get("scope_kind")
+    if relation == "ended" and reset is not None and reset <= now:
+      resets.append({"limit": limit, "reset": reset,
+                     "label": service_label(limit, name),
+                     "was": observation.get("remaining_percent")})
+    elif (relation == "current" and scope in (None, "account")
+          and observation.get("remaining_percent") == 0):
+      blocked.append(limit)
+  return {
+    "resets": resets,
+    "blocked": [service_label(limit, name) for limit in blocked],
+    "likely_available": bool(resets) and not blocked,
+  }
+
+
+def likely_available_line(document: dict[str, Any]) -> str | None:
+  """One line naming unqueried accounts whose quota has likely refilled."""
+  now = parse_timestamp(document.get("generated_at")) or utc_now()
+  items = []
+  for service in archived_accounts(document, now):
+    availability = archived_availability(service, now)
+    if not availability["likely_available"]:
+      continue
+    name = str(service.get("display_name", service.get("service_id")))
+    account = service["account"]
+    resets = ", ".join(
+      f"{item['label'].removeprefix(name + ' ')} reset "
+      f"{format_duration((now - item['reset']).total_seconds())} ago"
+      for item in availability["resets"])
+    items.append(f"{name} {account.get('label', 'UNKNOWN')} "
+                 f"({account.get('plan', 'UNKNOWN')}): {resets}")
+  if not items:
+    return None
+  return ("Likely available (reset since last check; not verified): "
+          + "; ".join(items) + ".")
+
+
 def other_account_lines(document: dict[str, Any]) -> list[str]:
   """Describe accounts seen before but not checked in this report."""
   now = parse_timestamp(document.get("generated_at"))
+  moment = now or utc_now()
   lines: list[str] = []
   for service in archived_accounts(document, now):
     account = service["account"]
     name = str(service.get("display_name", service.get("service_id")))
     ident = account["key"][:8] if account.get("key") else "workspace unknown"
+    availability = archived_availability(service, moment)
     lines.append(
       f"  {account.get('label', 'UNKNOWN')} [{ident}] "
       f"({account.get('plan', 'UNKNOWN')}); checked "
       f"{account.get('observed_at', 'UNKNOWN')}."
+      + (" LIKELY AVAILABLE." if availability["likely_available"] else "")
     )
     for limit in service.get("limits", []):
       if not isinstance(limit, dict):
@@ -2069,6 +2160,17 @@ def other_account_lines(document: dict[str, Any]) -> list[str]:
       observation = observation if isinstance(observation, dict) else {}
       relation = observation.get("period_relation")
       reset = observation.get("reset_at")
+      label = service_label(limit, name)
+      remaining = format_percent(observation.get("remaining_percent"))
+      passed = parse_timestamp(reset)
+      if relation == "ended" and passed is not None:
+        ago = format_duration((moment - passed).total_seconds())
+        if availability["likely_available"]:
+          outcome = f"likely 100% now (was {remaining})"
+        else:
+          outcome = f"was {remaining}, blocked"
+        lines.append(f"    {label}: RESET {reset} ({ago} ago); {outcome}.")
+        continue
       if relation == "current":
         due = format_duration((limit.get("pace") or {}).get(
           "reset_in_seconds"
@@ -2078,11 +2180,10 @@ def other_account_lines(document: dict[str, Any]) -> list[str]:
         state = f"reset {reset} (PASSED)"
       else:
         state = "reset time UNKNOWN"
-      lines.append(
-        f"    {service_label(limit, name)}: last known "
-        f"{format_percent(observation.get('remaining_percent'))} "
-        f"remaining; {state}."
-      )
+      remaining += " remaining"
+      if relation == "current" and sub_limit_blocked(limit, service):
+        remaining += " (blocked)"
+      lines.append(f"    {label}: last known {remaining}; {state}.")
   if lines:
     lines.insert(0, "Other accounts (last checked; not verified now):")
   return lines
@@ -2115,6 +2216,8 @@ def render_brief(document: dict[str, Any]) -> str:
           alerts.append(f"{label}: recent burn exhausts before reset{marker}")
         elif pace.get("state") == "behind":
           alerts.append(f"{label}: projected exhaustion before reset{marker}")
+        if sub_limit_blocked(limit, service):
+          state = "Blocked"
       rows.append([label + marker, remaining, reset, state])
     refresh = service.get("refresh") or {}
     if refresh.get("status") == "failed":
@@ -2159,6 +2262,9 @@ def render_brief(document: dict[str, Any]) -> str:
       notes.append(f"Token lookup failed: {usage['error']}")
 
   lines = ["Attention: " + "; ".join(alerts) + "."] if alerts else []
+  available = likely_available_line(document)
+  if available:
+    lines.append(available)
   for service_id in ("claude_code", "codex"):
     if service_id in document.get("services", {}):
       if lines:
@@ -2185,6 +2291,389 @@ def render_brief(document: dict[str, Any]) -> str:
   return "\n".join(lines)
 
 
+# A short-window (5h) event is shown only if it is noteworthy; this matches
+# the tmux component's 5h threshold.
+SHORT_WINDOW_LOW_PERCENT = 10
+
+
+def timeline_quota(limit: dict[str, Any], name: str) -> str:
+  """Short quota name: Claude, Claude 5h, Fable, Codex.
+
+  Weekly is the default window and goes unnamed.
+  """
+  bucket = limit.get("bucket") or {}
+  service = "Claude" if name.startswith("Claude") else name
+  if bucket.get("scope_kind") not in (None, "account"):
+    service = str(bucket.get("name") or service)
+  window = str((limit.get("window") or {}).get("label") or "")
+  if window.lower() in ("", "weekly"):
+    return service
+  return f"{service} {window[:1].upper()}{window[1:]}"
+
+
+SGR = {"bold": "1", "dim": "2", "italic": "3", "reverse": "7",
+       "red": "31", "green": "32", "yellow": "33", "blue": "34",
+       "magenta": "35", "cyan": "36"}
+# Distinguish accounts without reusing the red/yellow/green urgency colours.
+ACCOUNT_COLOURS = ("cyan", "magenta", "blue")
+
+
+def use_color(stream: Any) -> bool:
+  """Colour only an interactive terminal, honouring NO_COLOR and TERM=dumb."""
+  if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
+    return False
+  try:
+    return bool(stream.isatty())
+  except (AttributeError, ValueError):
+    return False
+
+
+def paint(text: str, styles: tuple[str, ...], on: bool) -> str:
+  if not on or not styles or not text:
+    return text
+  return f"\033[{';'.join(SGR[style] for style in styles)}m{text}\033[0m"
+
+
+def timeline_clock(moment: datetime, tz: Any = None) -> str:
+  return moment.astimezone(tz).strftime("%a %d %b %H:%M")
+
+
+def unblock_moment(service: dict[str, Any]) -> datetime | None:
+  """When an account's spent account-wide buckets have all reset, if known.
+
+  That is when an account blocked by a spent bucket becomes usable again.
+  """
+  resets = []
+  for limit in service.get("limits", []):
+    if not isinstance(limit, dict):
+      continue
+    observation = limit.get("last_observation") or {}
+    scope = (limit.get("bucket") or {}).get("scope_kind")
+    if (scope in (None, "account")
+        and observation.get("period_relation") == "current"
+        and observation.get("remaining_percent") == 0):
+      reset = parse_timestamp(observation.get("reset_at"))
+      if reset is None:
+        return None
+      resets.append(reset)
+  return max(resets) if resets else None
+
+
+def timeline_event(moment: datetime, order: int, kind: str, quota: str,
+                   **fields: Any) -> dict[str, Any]:
+  """One unmerged event; the text view merges and filters these."""
+  event = {"moment": moment, "order": order, "type": kind, "quota": quota,
+           "provider": None, "account": "account unknown", "active": True,
+           "limit_id": None, "remaining": None, "unit": "percent",
+           "restores": False, "blocked": False, "stale": False,
+           "rate": None, "short_window": False}
+  event.update(fields)
+  return event
+
+
+def timeline_limit_events(
+  limit: dict[str, Any], name: str, base: dict[str, Any],
+  unblock: datetime | None, now: datetime,
+) -> list[dict[str, Any]]:
+  observation = limit.get("last_observation") or {}
+  if (observation.get("period_relation") != "current"
+      or observation.get("window_not_started")):
+    return []
+  active = base["active"]
+  remaining = observation.get("remaining_percent")
+  seconds = (limit.get("window") or {}).get("duration_seconds") or 0
+  fields = dict(base, limit_id=limit.get("limit_id"), remaining=remaining,
+                short_window=0 < seconds <= 86400,
+                stale=active and observation.get("freshness") != "fresh")
+  quota = timeline_quota(limit, name)
+  events = []
+  burn = limit.get("burn") or {}
+  exhausts = parse_timestamp(burn.get("exhausts_at"))
+  if remaining == 0:
+    if active:
+      events.append(timeline_event(now, 0, "exhausted", quota, **fields))
+  elif (active and exhausts is not None and burn.get("exhausts_before_reset")
+        and not fields["stale"]):
+    rate = burn.get("rate_percent_per_hour")
+    events.append(timeline_event(max(exhausts, now), 1, "burn", quota,
+                                 **dict(fields, rate=rate)))
+  reset = parse_timestamp(observation.get("reset_at"))
+  if reset is not None and reset > now:
+    # While spent account-wide buckets block the account, a reset before
+    # the last of them frees nothing; that last reset frees the account.
+    if unblock is not None and reset < unblock:
+      flags = {"blocked": True}
+    elif unblock is not None and reset == unblock:
+      flags = {"restores": True}
+    else:
+      flags = {"restores": remaining == 0}
+    events.append(timeline_event(reset, 2, "reset", quota,
+                                 **dict(fields, **flags)))
+  return events
+
+
+def timeline_credit_events(
+  service: dict[str, Any], name: str, base: dict[str, Any], now: datetime,
+) -> list[dict[str, Any]]:
+  events = []
+  for credit in service.get("credits", []):
+    if not isinstance(credit, dict):
+      continue
+    pace = credit.get("pace") or {}
+    exhausts = parse_timestamp(pace.get("exhausts_at"))
+    if exhausts is None or credit.get("freshness", "fresh") != "fresh":
+      continue
+    balance = credit_balance(credit.get("balance"))
+    events.append(timeline_event(
+      max(exhausts, now), 1, "burn", f"{name} Credits", **dict(
+        base, unit="credits", rate=pace.get("rate_credits_per_hour"),
+        remaining=float(balance) if balance is not None else None)))
+  return events
+
+
+def timeline_past_resets(
+  service: dict[str, Any], name: str, base: dict[str, Any], now: datetime,
+) -> list[dict[str, Any]]:
+  """Resets an unqueried account passed since its last check.
+
+  Only an account that is likely available again is listed: a past reset
+  behind a still-spent bucket changes nothing until that bucket resets.
+  """
+  availability = archived_availability(service, now)
+  if not availability["likely_available"]:
+    return []
+  events = []
+  for item in availability["resets"]:
+    limit = item["limit"]
+    seconds = (limit.get("window") or {}).get("duration_seconds") or 0
+    events.append(timeline_event(
+      item["reset"], 2, "reset", timeline_quota(limit, name), **dict(
+        base, limit_id=limit.get("limit_id"), remaining=item["was"],
+        restores=True, short_window=0 < seconds <= 86400)))
+  return events
+
+
+def timeline_events(document: dict[str, Any], now: datetime
+                    ) -> list[dict[str, Any]]:
+  """Every event for the checked and archived accounts, unmerged, in order."""
+  services = document.get("services", {})
+  sources = [(services[sid], sid, True) for sid in ("claude_code", "codex")
+             if isinstance(services.get(sid), dict)]
+  sources += [(item, item.get("service_id"), False)
+              for item in archived_accounts(document, now)]
+  events: list[dict[str, Any]] = []
+  for service, service_id, active in sources:
+    name = str(service.get("display_name", service_id or "?"))
+    account = service.get("account")
+    account = account if isinstance(account, dict) else {}
+    base = {"provider": service_id, "active": active,
+            "account": str(account.get("label") or "account unknown")}
+    unblock = unblock_moment(service)
+    for limit in service.get("limits", []):
+      if isinstance(limit, dict):
+        events += timeline_limit_events(limit, name, base, unblock, now)
+    if active:
+      events += timeline_credit_events(service, name, base, now)
+    else:
+      events += timeline_past_resets(service, name, base, now)
+  events.sort(key=lambda event: (event["moment"], event["order"]))
+  return events
+
+
+def timeline_document(document: dict[str, Any]) -> dict[str, Any]:
+  """Machine-readable timeline: every event, unmerged and unfiltered."""
+  now = parse_timestamp(document.get("generated_at")) or utc_now()
+  return {
+    "schema_version": 1,
+    "generated_at": iso_utc(now),
+    "events": [{
+      "at": iso_utc(event["moment"]), "type": event["type"],
+      "provider": event["provider"], "account": event["account"],
+      "active": event["active"], "quota": event["quota"],
+      "limit_id": event["limit_id"], "short_window": event["short_window"],
+      f"remaining_{event['unit']}" if event["unit"] == "credits"
+      else "remaining_percent": event["remaining"],
+      "unit": event["unit"], "restores": event["restores"],
+      "blocked": event["blocked"], "stale": event["stale"],
+      "rate_per_hour": event["rate"],
+    } for event in timeline_events(document, now)],
+  }
+
+
+def noteworthy(event: dict[str, Any]) -> bool:
+  """Short-window items are noise unless they need attention."""
+  if not event["short_window"] or event["type"] != "reset":
+    return True
+  remaining = event["remaining"]
+  return bool(event["restores"]) or (
+    event["active"] and remaining is not None
+    and remaining < SHORT_WINDOW_LOW_PERCENT)
+
+
+def note_parts(event: dict[str, Any]) -> tuple[str, str, str]:
+  """(head, value, tail) of an event's note; merging joins the values."""
+  if event["type"] == "exhausted":
+    return "", "", ""
+  remaining = event["remaining"]
+  if remaining is None:
+    value = ""
+  elif event["unit"] == "credits":
+    value = f"{remaining:,.2f}"
+  else:
+    value = format_percent(remaining)
+  if event["active"]:
+    head, tail = "", " → 100%" if event["restores"] else " left"
+  else:
+    head, tail = "was ", " → ~100%" if event["restores"] else ""
+  extras = []
+  if event["blocked"]:
+    extras.append("blocked")
+  if event["rate"] is not None:
+    rate = event["rate"]
+    extras.append(f"{rate:,.2f}/h" if event["unit"] == "credits"
+                  else f"{rate}%/h")
+  if event["stale"]:
+    extras.append("stale")
+  return head, value, tail + "".join(", " + extra for extra in extras)
+
+
+def merge_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+  """Join events that share a moment, type, account and meaning."""
+  rows: dict[tuple, dict[str, Any]] = {}
+  for event in events:
+    head, value, tail = note_parts(event)
+    key = (event["moment"], event["order"], event["type"], event["account"],
+           event["active"], event["restores"], event["stale"], head, tail)
+    row = rows.get(key)
+    if row is None:
+      rows[key] = dict(event, quotas=[event["quota"]],
+                       values=[value] if value else [], head=head, tail=tail)
+    else:
+      row["quotas"].append(event["quota"])
+      if value:
+        row["values"].append(value)
+  for row in rows.values():
+    values = " / ".join(row["values"])
+    row["note"] = (f"{row['head']}{values}{row['tail']}" if values
+                   else row["tail"].lstrip(", ").strip())
+    row["quota"] = ", ".join(row["quotas"])
+  return list(rows.values())
+
+
+def timeline_when(moment: datetime, now: datetime) -> str:
+  seconds = (moment - now).total_seconds()
+  if seconds < 0:
+    return format_duration(-seconds) + " ago"
+  return "now" if seconds == 0 else "in " + format_duration(seconds)
+
+
+def timeline_day(moment: datetime, now: datetime, tz: Any) -> str:
+  day = moment.astimezone(tz).date()
+  offset = (day - now.astimezone(tz).date()).days
+  names = {-1: "Yesterday", 0: "Today", 1: "Tomorrow"}
+  return names.get(offset, moment.astimezone(tz).strftime("%a %d %b"))
+
+
+def timeline_line(row: dict[str, Any], now: datetime, tz: Any,
+                  account_colour: str, widths: tuple[int, ...],
+                  color: bool) -> str:
+  """One row in aligned columns: when, time, label, quota, account, note.
+
+  Padding sits outside the escape codes, so the plain text is identical
+  whether or not colour is on.
+  """
+  seconds = (row["moment"] - now).total_seconds()
+  soon = 0 <= seconds < 86400
+  highlight = row["restores"]
+  quiet: tuple[str, ...] = ()
+  if (not row["active"] and not highlight) or row["stale"]:
+    quiet = ("dim", "italic")
+  label = row["type"].upper()
+  note_style: tuple[str, ...] = ("dim", "italic")
+  if label == "EXHAUSTED":
+    label_style: tuple[str, ...] = ("bold", "reverse", "red")
+  elif label == "BURN":
+    label_style = ("bold", "red" if soon else "yellow")
+  else:
+    label_style = ("bold", "green")
+  if highlight:
+    when_style: tuple[str, ...] = ("bold", "green")
+    note_style = ("bold", "green")
+  elif seconds == 0:
+    when_style = ("bold", "red")
+  else:
+    when_style = ("bold",) if soon else ()
+  if quiet:
+    label_style = (*quiet, label_style[-1])
+    when_style = quiet
+  when_width, label_width, quota_width, who_width = widths
+  time_of_day = row["moment"].astimezone(tz).strftime("%H:%M")
+  cells = [
+    (timeline_when(row["moment"], now), when_style, when_width),
+    (time_of_day, quiet, 5),
+    (label, label_style, label_width),
+    (row["quota"], quiet or ("bold",), quota_width),
+    (row["account"], (*quiet, account_colour), who_width),
+    (row["note"], note_style, 0),
+  ]
+  parts = [paint(text, style, color) + " " * (width - len(text))
+           for text, style, width in cells if text]
+  return ("    " + "  ".join(parts)).rstrip()
+
+
+def render_timeline(document: dict[str, Any], tz: Any = None,
+                    color: bool = False) -> str:
+  """Upcoming resets and projected run-outs, grouped by day.
+
+  Run-out times come from each quota's recent burn and appear only when a
+  quota would run out before it resets. Accounts other than the one each
+  service last checked contribute their last known resets, unverified.
+  """
+  now = parse_timestamp(document.get("generated_at")) or utc_now()
+  events = timeline_events(document, now)
+  hidden = any(not noteworthy(event) for event in events)
+  rows = merge_events([event for event in events if noteworthy(event)])
+  colours: dict[str, str] = {}
+  for event in events:
+    colours.setdefault(event["account"], ACCOUNT_COLOURS[
+      len(colours) % len(ACCOUNT_COLOURS)])
+  zone = now.astimezone(tz).tzname() or "local"
+  lines = [paint("Timeline", ("bold",), color) + paint(
+    f" ({zone}; now {timeline_clock(now, tz)})", ("dim",), color)]
+  widths = (max([9, *(len(timeline_when(row["moment"], now)) for row in rows)]),
+            *(max((len(row[field]) for row in rows), default=0)
+              for field in ("type", "quota", "account")))
+  day = None
+  for row in rows:
+    heading = timeline_day(row["moment"], now, tz)
+    if heading != day:
+      day = heading
+      lines.append("  " + paint(heading, ("bold",), color))
+    lines.append(timeline_line(row, now, tz, colours[row["account"]],
+                               widths, color))
+  if not rows:
+    lines.append("  No upcoming resets or projected run-outs.")
+  footer = []
+  if any(row["type"] == "burn" for row in rows):
+    footer += [
+      "BURN extrapolates the last "
+      f"{BURN_RECENT_SECONDS // 3600}h of use and is listed only when a "
+      "quota",
+      "would run out before it resets.",
+    ]
+  if hidden:
+    footer.append("5h resets are shown only when low, exhausted, running out"
+                  " or freeing an account.")
+  if any(not row["active"] for row in rows):
+    footer.append("Other accounts: \"was\" is the last known value, "
+                  "unverified" + ("; ~100% follows a reset." if any(
+                    row["restores"] for row in rows) else "."))
+  if footer:
+    lines.extend(["", *(paint(line, ("dim", "italic"), color)
+                        for line in footer)])
+  return "\n".join(lines)
+
+
 def render_verbose(document: dict[str, Any]) -> str:
   generated = document.get("generated_at", "UNKNOWN")
   lines = [
@@ -2195,6 +2684,9 @@ def render_verbose(document: dict[str, Any]) -> str:
     "Recent-burn exhaustion overrides SURPLUS; stale/unknown data or "
     "RESET SOON alone do not justify speeding up.",
   ]
+  available = likely_available_line(document)
+  if available:
+    lines.append(available)
   services = document.get("services", {})
   for service_id in ("claude_code", "codex"):
     if service_id in services:
@@ -2645,6 +3137,13 @@ def main(argv: list[str] | None = None) -> int:
     action="store_true",
     help="one-line canonical JSON",
   )
+
+  parser.add_argument(
+    "--timeline",
+    action="store_true",
+    help="upcoming resets and projected run-outs by day; with --compact, "
+    "the events as JSON",
+  )
   parser.add_argument(
     "--verbose",
     action="store_true",
@@ -2748,8 +3247,12 @@ def main(argv: list[str] | None = None) -> int:
     version=f"%(prog)s {VERSION}",
   )
   args = parser.parse_args(argv)
-  if args.verbose and (args.compact or args.models):
-    parser.error("--verbose cannot be used with --compact or --models")
+  if args.verbose and (args.compact or args.models or args.timeline):
+    parser.error(
+      "--verbose cannot be used with --compact, --models or --timeline")
+  if args.timeline and (args.models or args.agents or args.brief):
+    parser.error("--timeline cannot be used with --models, --agents or "
+                 "--brief")
   if args.cached and args.no_cache:
     parser.error("--cached and --no-cache cannot be used together")
   if not 0 < args.agent_days <= 30 or not 1 <= args.agent_limit <= 100:
@@ -2833,6 +3336,11 @@ def main(argv: list[str] | None = None) -> int:
   status = exit_status(document, args.provider, args.strict)
   if args.verbose:
     print(render_verbose(document))
+  elif args.timeline and args.compact:
+    print(json.dumps(timeline_document(document), separators=(",", ":"),
+                     ensure_ascii=False))
+  elif args.timeline:
+    print(render_timeline(document, color=use_color(sys.stdout)))
   elif args.brief:
     print(render_brief(document))
   elif args.compact:

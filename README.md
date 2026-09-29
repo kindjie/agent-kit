@@ -15,7 +15,7 @@ Nothing here assumes that repository.
 
 | Command | Does |
 | --- | --- |
-| `agent-quota` | Reports Claude Code and Codex subscription quota, credits and pace as JSON or compact tables |
+| `agent-quota` | Reports Claude Code and Codex subscription quota, credits and pace as JSON, compact tables or a reset and run-out timeline |
 | `agent-status` | Renders that report as a Claude Code status line or a tmux component |
 | `claude-status.sh` | Claude Code `statusLine` entry point |
 | `claude-ctx.sh` | tmux status entry point |
