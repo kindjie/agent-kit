@@ -448,8 +448,9 @@ that is not there; this is the usual case for another program reading the
 table. Otherwise Work takes whatever width the other columns leave, up to
 120 characters, shows the brief label when that is too narrow, and
 truncates only when neither fits. Activity is not proof that a process is
-running. Mixed models or effort levels are shown as mixed; missing metadata
-is unknown, never inferred from current configuration.
+running. Model and effort are the latest the transcript records; `--compact`
+and `--verbose` list every one seen. Missing metadata is unknown, never
+inferred from current configuration.
 
 Each row also shows where the agent is, derived from its transcript without
 model calls:
@@ -464,7 +465,9 @@ model calls:
 - **Now**: for a working agent, plan progress such as `2/5 Run tests` when
   the agent keeps a Claude Code `TodoWrite` list or a Codex `update_plan`
   plan, otherwise its pending tool call (`Bash: make test`, or the tools a
-  Codex script calls), or `thinking`.
+  Codex script calls), or `thinking`. Commands, paths and URLs are
+  clipped from the left of the detail (`Bash: …&& git push`), since their
+  end says most; multi-line commands show their first line.
 - **15m**: uncached tokens in the last 15 minutes. Rows are ordered busiest
   first, then by state and recency; children stay beneath their parents.
 
@@ -577,12 +580,12 @@ before each batch and defers on mismatch or unknown identity. This reduces
 the switching race but cannot prevent a login change after the check.
 
 Automatic calls require verified subscription authentication and fresh,
-complete quota for every applicable account/model bucket, more than 5%
-remaining, no behind-pace projection, and no recent-burn exhaustion. An
-early window is eligible; an unknown pace is not.
-Missing, stale, failed, or constrained quota defers the summary. Purchased
-credit balance never overrides this gate. The background worker refreshes
-missing or stale quota before choosing a provider. A fresh, explicitly unused
+complete quota with at least 3% remaining in every applicable account/model
+bucket; a spent account bucket therefore blocks its model limits too. Pace
+and recent burn do not gate labels, which are cheap: they are deferred only
+when no provider qualifies. Missing, stale, or failed quota defers the
+summary. Purchased credit balance never overrides this gate. The background
+worker refreshes missing or stale quota before choosing a provider. A fresh, explicitly unused
 Claude five-hour window (zero use, no reset, inactive) does not block calls;
 the weekly and applicable model limits still apply. These checks are
 advisory, not a provider-enforced guarantee against credit spending during

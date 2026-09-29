@@ -159,11 +159,9 @@ retain a model capability the task needs when subscription quota is spent.
 Prefer another provider's subscription headroom when it can do the work
 equally well. Do not compromise necessary testing or review to save credits.
 
-Let `agent-quota` enforce its own background-summary quota gate; this does
-not call for manually disabling its summaries. Avoid credit spending on
-other background labels, redundant reviews, speculative
-exploration outside the task, unnecessary retries, or premium speed without
-a time-sensitive need. As estimated depletion approaches, reduce optional
+Avoid credit spending on redundant reviews, speculative exploration outside
+the task, unnecessary retries, or premium speed without a time-sensitive
+need. As estimated depletion approaches, reduce optional
 work and concurrency; keep enough capacity for required validation and
 completion. Unknown runway calls for bounded work, not an assumption that
 credits are unlimited. Ask before a substantial discretionary spend or a
@@ -186,22 +184,11 @@ Totals are per agent, not parent-plus-children. Seen is transcript activity,
 not proof a process is running; work summaries may be stale. Confirm the
 underlying conversation before taking action or treating work as complete.
 
-Normally use plain `--agents` with summaries enabled. It generates cached
-labels asynchronously with cheap models at low effort and automatically
-defers calls when quota is too scarce or pace is constrained to protect
-productive work. An exhausted provider alone is not a reason to disable
-summaries: the tool can select another eligible provider.
-
 Use `--agents --no-summaries` for an explicit no-model-call requirement or
-when diagnosing summary generation, not as a routine quota precaution.
+when diagnosing summary generation.
 `--agents --cached` also skips transcript scans. `--verbose` shows summary
 provenance; `--compact` gives JSON. Use `--agent-days` or `--agent-limit` to
 adjust the recent-thread view. Local inventory can be truncated.
-
-Automatic labels have their own conservative quota gate: they skip when
-neither provider has more than 5% in every applicable bucket or when freshness
-or pace checks fail. Purchased credits do not override this gate. This is a
-background-label policy, not a rule to stop authorized credit-backed work.
 
 ## Batching and concurrency
 

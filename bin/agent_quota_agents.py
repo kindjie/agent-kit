@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 # Bumped when the label schema changes so cached entries refresh once.
 PROMPT_VERSION = 2
 WORK_LIMIT = 60
@@ -59,12 +59,19 @@ IDLE_AFTER = 60 * 60
 LONG_FACTOR = 3
 LONG_MIN = 10 * 60
 RATE_WINDOW = 15 * 60
+# Summaries run on any provider with at least this percentage left in every
+# applicable bucket.
+SUMMARY_RESERVE = 3
 STATE_RANK = {"working": 0, "stalled": 1, "waiting": 2, "idle": 3,
               "done": 4, "aborted": 4}
 ACTION_KEYS = ("command", "cmd", "description", "file_path", "path",
                "pattern", "url", "query", "prompt", "skill", "subagent_type")
 TOOL_CALL_RE = re.compile(r"\btools\.(\w+)\(")
 CMD_RE = re.compile(r"""\bcmd\s*:\s*(["'`])(.+?)\1""", re.S)
+# Details whose end says the most: the last command of a chain, the file of a
+# path. They are stored longer and clipped from the left of the detail.
+TAIL_KEYS = ("command", "cmd", "file_path", "path", "url")
+ACTION_LIMIT = 160
 
 
 def stamp(value):
@@ -186,25 +193,49 @@ def claude_tokens(raw):
 
 
 def action_summary(name, value):
-  """`Tool: detail` for a tool call, from its input or arguments."""
+  """(`Tool: detail`, tail) for a tool call, from its input or arguments.
+
+  tail is true when the detail's end matters most (see fit_action)."""
   if isinstance(value, str):
     match = CMD_RE.search(value)
     if match:
-      return clean(f"{name}: {match.group(2).splitlines()[0]}", 60)
+      return tail_text(name, match.group(2)), True
     # Codex exec runs a script; without a shell command, name its tools.
     called = list(dict.fromkeys(TOOL_CALL_RE.findall(value)))
     if called:
-      return clean(f"{name}: {', '.join(called)}", 60)
+      return clean(f"{name}: {', '.join(called)}", 60), False
     try:
       value = json.loads(value)
     except ValueError:
-      return clean(f"{name}: {value.splitlines()[0] if value else ''}", 60)
+      return clean(f"{name}: {value.splitlines()[0] if value else ''}",
+                   60), False
   if isinstance(value, dict):
     for key in ACTION_KEYS:
       detail = value.get(key)
       if isinstance(detail, str) and detail.strip():
-        return clean(f"{name}: {detail.strip().splitlines()[0]}", 60)
-  return clean(str(name), 60)
+        if key in TAIL_KEYS:
+          return tail_text(name, detail), True
+        return clean(f"{name}: {detail.strip().splitlines()[0]}", 60), False
+  return clean(str(name), 60), False
+
+
+def tail_text(name, detail):
+  """`Tool: detail` from the detail's first line, keeping its end."""
+  lines = detail.strip().splitlines() or [""]
+  return fit_action(clean(f"{name}: {lines[0]}", 10 ** 6), ACTION_LIMIT,
+                    True)
+
+
+def fit_action(text, limit, tail=False):
+  """Clip an action to limit, from the left of its detail when tail is set:
+  `Bash: …&& git push` keeps the tool name and the end of the command."""
+  if not tail or len(text) <= limit:
+    return clean(text, limit)
+  name, sep, detail = text.partition(": ")
+  room = limit - len(name) - 3
+  if not sep or room < 4:
+    return "…" + text[-(limit - 1):].lstrip()
+  return f"{name}: …{detail[-room:].lstrip()}"
 
 
 def plan_progress(items, text_key):
@@ -257,6 +288,7 @@ def order_by_activity(agents):
 
 def parse_session(path, provider):
   warnings, models, efforts, speeds = set(), set(), set(), set()
+  latest = {"model": None, "effort": None}
   agent = {
     "provider": provider,
     "id": path.stem.removeprefix("agent-"),
@@ -274,7 +306,8 @@ def parse_session(path, provider):
   start, previous, totals = None, None, dict.fromkeys(TOKEN_KEYS, 0)
   messages, seen_messages, requests, request_times = [], set(), {}, {}
   status = {"state": None, "turn_started": None, "last_event": 0,
-            "action": None, "progress": None, "durations": []}
+            "action": None, "action_tail": False, "progress": None,
+            "durations": []}
   pending, codex_events = {}, []
 
   def end_turn(when, seconds=None):
@@ -332,7 +365,8 @@ def parse_session(path, provider):
         status["last_event"] = max(status["last_event"], when)
       event = payload.get("type")
       if kind == "event_msg" and event == "task_started":
-        status.update(state="working", turn_started=when, action=None)
+        status.update(state="working", turn_started=when, action=None,
+                      action_tail=False)
         pending.clear()
       elif kind == "event_msg" and event == "task_complete":
         try:
@@ -356,15 +390,17 @@ def parse_session(path, provider):
           status["progress"] = plan_progress(plan, "step") or \
             status["progress"]
         pending[payload.get("call_id")] = (when or 0,
-                                           action_summary(name, value))
+                                           *action_summary(name, value))
       elif kind == "response_item" and event in ("function_call_output",
                                                   "custom_tool_call_output"):
         pending.pop(payload.get("call_id"), None)
       if kind == "turn_context":
         if isinstance(payload.get("model"), str):
           models.add(payload["model"])
+          latest["model"] = payload["model"]
         if isinstance(payload.get("effort"), str):
           efforts.add(payload["effort"])
+          latest["effort"] = payload["effort"]
         if isinstance(payload.get("service_tier"), str):
           speeds.add(payload["service_tier"])
       if kind == "response_item" and payload.get("role") == "user":
@@ -404,8 +440,8 @@ def parse_session(path, provider):
               todos = (item.get("input") or {}).get("todos")
               status["progress"] = plan_progress(todos, "content") or \
                 status["progress"]
-            pending[item.get("id")] = (when or 0,
-                                       action_summary(name, item.get("input")))
+            pending[item.get("id")] = (
+              when or 0, *action_summary(name, item.get("input")))
             status["state"] = "working"
         if message.get("stop_reason") in ("end_turn", "stop_sequence"):
           status["state"] = "waiting"
@@ -428,9 +464,11 @@ def parse_session(path, provider):
         model = message.get("model")
         if isinstance(model, str) and not model.startswith("<"):
           models.add(model)
+          latest["model"] = model
         effort = row.get("perTurnEffort") or row.get("effort")
         if isinstance(effort, str):
           efforts.add(effort)
+          latest["effort"] = effort
         raw = message.get("usage") or {}
         speed = raw.get("speed") or raw.get("service_tier")
         if isinstance(speed, str):
@@ -449,17 +487,15 @@ def parse_session(path, provider):
     for mid, usage in requests.items()
   ] if provider == "claude" else codex_events[-500:]
   if status["state"] == "working" and pending:
-    status["action"] = max(pending.values())[1]
+    _, status["action"], status["action_tail"] = max(pending.values())
   if child and status["state"] == "waiting":
     status["state"] = "done"
   agent["status"] = status
   agent["models"] = sorted(models)
   agent["efforts"] = sorted(efforts)
-  agent["effort"] = (
-    next(iter(efforts))
-    if len(efforts) == 1
-    else ("mixed" if efforts else "unknown")
-  )
+  # The table shows what the agent runs now; the lists keep the history.
+  agent["model"] = latest["model"] or "unknown"
+  agent["effort"] = latest["effort"] or "unknown"
   agent["speeds"] = sorted(speeds)
   agent["label"] = clean(agent["label"] or agent["id"])
   agent["key"] = provider + ":" + agent["id"]
@@ -503,17 +539,11 @@ def quota_block(service):
       obs.get("freshness") != "fresh" or obs.get("period_relation") != "current"
     ):
       return "quota stale or period unknown"
+    # Pace and burn do not gate: labels are cheap, and a provider with this
+    # much left in every applicable bucket is not blocked by any of them.
     left = obs.get("remaining_percent")
-    if not isinstance(left, (float, int)) or left <= 5:
-      return "quota reserve (5% minimum)"
-    if (limit.get("pace") or {}).get("state") not in (
-      "surplus",
-      "on_pace",
-      "early",
-    ):
-      return "quota pace constrained or unknown"
-    if (limit.get("burn") or {}).get("exhausts_before_reset"):
-      return "recent burn exhausts quota before reset"
+    if not isinstance(left, (float, int)) or left < SUMMARY_RESERVE:
+      return f"under {SUMMARY_RESERVE}% left"
   return None
 
 
@@ -557,8 +587,8 @@ def summary_providers(agent, document, cross_provider=True):
       (item["last_observation"]["remaining_percent"] for item in limits),
       default=0,
     )
-    # Safety gates already reject unhealthy pace/burn. Rank healthy providers
-    # by their tightest bucket; prefer the source provider on equal headroom.
+    # Rank eligible providers by their tightest bucket; prefer the source
+    # provider on equal headroom.
     eligible.append((remaining, provider == agent["provider"], provider))
   eligible.sort(reverse=True)
   return [item[2] for item in eligible], "; ".join(reasons) or None
@@ -1016,6 +1046,7 @@ def view_agents(cache, args, now):
                            + (progress.get("current") or ""), 40).strip()
     elif agent["state"] in ("working", "stalled"):
       agent["now"] = status.get("action") or "thinking"
+      agent["now_tail"] = bool(status.get("action_tail"))
     else:
       agent["now"] = "—"
     agent["recent_tokens"] = recent_tokens(agent.get("token_events"), now)
@@ -1174,11 +1205,7 @@ def render(agents, cache, quota, now, verbose=False, color=False,
   width = display_width()
   entries = []
   for agent, depth in ordered:
-    model = (
-      agent["models"][0]
-      if len(agent["models"]) == 1
-      else ("mixed" if agent["models"] else "unknown")
-    )
+    model = agent.get("model") or "unknown"
     usage = agent["tokens"] or {}
     excerpt = agent["work_source"] == "excerpt"
     entries.append({
@@ -1225,7 +1252,7 @@ def render(agents, cache, quota, now, verbose=False, color=False,
       cells = {
         "agent": label,
         "state": state_text(agent, state, "state_glyphs" in steps, quota),
-        "now": clean(current, 28),
+        "now": fit_action(current, 28, agent.get("now_tail")),
         "model": clean(entry["model"], 8 if "short_model" in steps else 14),
         "effort": (efforts[agent["effort"]] if "effort_prefix" in steps
                    else agent["effort"]),
@@ -1246,14 +1273,13 @@ def render(agents, cache, quota, now, verbose=False, color=False,
         "seen": ("bold", "green") if entry["idle"] < 300
         else ("dim",) if entry["idle"] > 3600 else (),
       }
-      work, brief = entry["work"], entry["brief"]
+      folded = None
       if ("fold_now" in steps and state in ("working", "stalled")
           and current not in ("—", "thinking")):
-        work = f"{current} · {work}"
-        brief = f"{current} · {brief}" if brief else brief
+        folded = (current, agent.get("now_tail"))
       rows.append([cells[key] for _, key in columns])
       styles.append([cell_styles.get(key, ()) for _, key in columns])
-      works.append((work, brief))
+      works.append((folded, entry["work"], entry["brief"]))
     headers = [header for header, _ in columns]
     return headers, rows, styles, works, [key for _, key in columns]
 
@@ -1282,8 +1308,17 @@ def render(agents, cache, quota, now, verbose=False, color=False,
     else max(WORK_MIN, min(LABEL_BOUND, width - reserve))
   )
   work_index = keys.index("work")
-  for row, (work, brief) in zip(rows, works):
-    row[work_index] = fit(work, brief, work_width)
+  for row, (folded, work, brief) in zip(rows, works):
+    if folded:
+      # A folded action gets what the shortest label leaves, or half of Work
+      # when that is too little, clipped so a command keeps its end.
+      spare = work_width - 3 - min(len(work), len(brief or work))
+      budget = min(28, spare if spare >= 12 else work_width // 2)
+      action = fit_action(folded[0], budget, folded[1])
+      row[work_index] = action + " · " + fit(work, brief,
+                                             work_width - len(action) - 3)
+    else:
+      row[work_index] = fit(work, brief, work_width)
   lines = (
     quota.text_table(headers, rows, styles, color)
     if rows

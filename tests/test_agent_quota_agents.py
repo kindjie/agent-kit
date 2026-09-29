@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import re
@@ -196,13 +197,36 @@ class AgentViewTest(unittest.TestCase):
   def test_action_summaries_prefer_commands_then_tool_names(self):
     self.assertEqual(AGENTS.action_summary(
       "exec", 'await tools.exec_command({cmd:"make test"})'),
-      "exec: make test")
+      ("exec: make test", True))
     self.assertEqual(AGENTS.action_summary(
       "exec", "const r = await tools.wait({id: 1}); tools.read_file(x)"),
-      "exec: wait, read_file")
+      ("exec: wait, read_file", False))
     self.assertEqual(AGENTS.action_summary(
-      "Read", {"file_path": "/a/b.py"}), "Read: /a/b.py")
-    self.assertEqual(AGENTS.action_summary("Agent", {}), "Agent")
+      "Read", {"file_path": "/a/b.py"}), ("Read: /a/b.py", True))
+    self.assertEqual(AGENTS.action_summary(
+      "Agent", {"description": "Review the plan"}),
+      ("Agent: Review the plan", False))
+    self.assertEqual(AGENTS.action_summary("Agent", {}), ("Agent", False))
+
+  def test_commands_and_paths_keep_their_end(self):
+    command = "cd ~/git/agent-changelog && " + "x" * 200 + " && git push"
+    text, tail = AGENTS.action_summary("Bash", {"command": command})
+    self.assertTrue(tail)
+    self.assertEqual(len(text), AGENTS.ACTION_LIMIT)
+    self.assertTrue(text.startswith("Bash: …x"))
+    fitted = AGENTS.fit_action(text, 28, tail)
+    self.assertEqual(fitted, "Bash: …xxxxxxxxx && git push")
+    self.assertLessEqual(len(fitted), 28)
+    # Heredocs and multi-line scripts are named by their first line.
+    text, _ = AGENTS.action_summary(
+      "Bash", {"command": "python3 - <<'EOF'\nprint(1)\nEOF"})
+    self.assertEqual(text, "Bash: python3 - <<'EOF'")
+    # Other details, and progress, keep their start.
+    self.assertEqual(AGENTS.fit_action("Agent: " + "y" * 40, 12),
+                     "Agent: yyyy…")
+    # A tool name too long to leave room clips the whole text.
+    self.assertEqual(AGENTS.fit_action("A" * 30 + ": cmd", 12, True),
+                     "…" + ("A" * 30 + ": cmd")[-11:])
 
   def test_agent_alerts_for_stalls_and_dominance(self):
     stalled = dict(self.work_row("a", "Fix build", "Fix"), state="stalled",
@@ -251,10 +275,11 @@ class AgentViewTest(unittest.TestCase):
       return agent
     working = row("0a1b2c3d9cf6", "Fix the build pipeline", "Fix build",
                   state="working", turn_age=720, now="Bash: make test",
+                  now_tail=True,
                   recent_tokens=1_200_000, effort="medium")
     waiting = row("01a0aaaa4b37", "Review PR", "Review", state="waiting",
                   turn_age=60, provider="codex", key="codex:01a0aaaa4b37",
-                  models=["codex-auto-review"])
+                  models=["codex-auto-review"], model="codex-auto-review")
     child = row("01a0bbbb61d4", "Subagent pass", "Pass", state="done",
                 provider="codex", key="codex:01a0bbbb61d4",
                 parent_id="01a0aaaa4b37")
@@ -303,7 +328,7 @@ class AgentViewTest(unittest.TestCase):
     self.assertIn("cl:9cf6", output)
     self.assertIn("└co:61d4", output)
     self.assertIn("▸ 12m", output)
-    self.assertIn("Bash: make test", output)    # Now folded into Work
+    self.assertIn("Bash: …test · ", output)    # Now folded, keeps its end
     self.assertNotIn(" Now ", output.splitlines()[0] + " ")
     self.assertIn(" Eff ", output.splitlines()[0] + " ")
     self.assertIn("▸ working", output)          # legend when glyphs show
@@ -332,7 +357,8 @@ class AgentViewTest(unittest.TestCase):
   def test_unknown_state_model_and_effort_render_in_full(self):
     agent = dict(self.work_row("x1", "Work", "Work"), state="paused",
                  turn_age=None, long_turn=False, now="—", recent_tokens=0,
-                 models=["brand-new-model-9"], effort="hyper")
+                 models=["brand-new-model-9"], model="brand-new-model-9",
+                 effort="hyper")
     self.assertEqual(AGENTS.state_text(agent, "paused", True, AGENT_QUOTA),
                      "paused")
     with patch.object(AGENTS, "display_width", return_value=200):
@@ -454,17 +480,22 @@ class AgentViewTest(unittest.TestCase):
         message(5),
         message(7),
         message(7),
+        dict(message(3), effort="medium",
+             message={**message(3)["message"], "id": "m2",
+                      "model": "opus"}),
       ],
       "parent/subagents/agent-child.jsonl",
     )
     agent = AGENTS.parse_session(path, "claude")
     self.assertEqual(agent["id"], "child")
     self.assertEqual(agent["parent_id"], "parent")
-    self.assertEqual(agent["tokens"]["total"], 137)
-    self.assertEqual(agent["tokens"]["input"], 130)
-    self.assertEqual(agent["tokens"]["cached"], 100)
-    self.assertEqual(agent["effort"], "high")
-    self.assertEqual(agent["models"], ["sonnet"])
+    self.assertEqual(agent["tokens"]["total"], 137 + 133)
+    self.assertEqual(agent["tokens"]["input"], 260)
+    self.assertEqual(agent["tokens"]["cached"], 200)
+    # The table shows the latest model and effort; lists keep the history.
+    self.assertEqual((agent["model"], agent["effort"]), ("opus", "medium"))
+    self.assertEqual(agent["models"], ["opus", "sonnet"])
+    self.assertEqual(agent["efforts"], ["high", "medium"])
 
   def test_codex_fork_baseline_and_repeated_counters(self):
     def tokens(stamp, total):
@@ -563,13 +594,13 @@ class AgentViewTest(unittest.TestCase):
       agent, document, cross_provider=False
     )
     self.assertEqual(providers, ["codex"])
-    document["services"]["codex"] = service([5])
+    document["services"]["codex"] = service([90, 2.9])
     providers, _ = AGENTS.summary_providers(agent, document)
     self.assertEqual(providers, ["claude"])
-    document["services"]["codex"] = service([5.1])
+    document["services"]["codex"] = service([3])
     providers, _ = AGENTS.summary_providers(agent, document)
     self.assertEqual(providers, ["claude", "codex"])
-    document["services"]["codex"] = service([5])
+    document["services"]["codex"] = service([2])
     document["services"]["claude_code"] = service([0])
     providers, reason = AGENTS.summary_providers(agent, document)
     self.assertEqual(providers, [])
@@ -649,17 +680,24 @@ class AgentViewTest(unittest.TestCase):
       ],
     }
     self.assertIsNone(AGENTS.quota_block(service))
-    service["limits"][0]["pace"]["state"] = "early"
+    # Pace and burn never defer a provider that has 3% left.
+    limit = service["limits"][0]
+    limit["pace"]["state"] = "behind"
+    limit["burn"]["exhausts_before_reset"] = True
+    limit["last_observation"]["remaining_percent"] = 3
     self.assertIsNone(AGENTS.quota_block(service))
-    service["limits"][0]["pace"]["state"] = "unknown"
-    self.assertIsNotNone(AGENTS.quota_block(service))
-    service["limits"][0]["pace"]["state"] = "on_pace"
-    service["limits"][0]["burn"]["exhausts_before_reset"] = True
-    self.assertIsNotNone(AGENTS.quota_block(service))
-    service["limits"][0]["burn"] = {}
+    limit["last_observation"]["remaining_percent"] = 2.5
+    self.assertEqual(AGENTS.quota_block(service), "under 3% left")
+    limit["last_observation"]["remaining_percent"] = 50
     service["limits"][0]["last_observation"]["freshness"] = "stale"
     self.assertIsNotNone(AGENTS.quota_block(service))
     self.assertIsNotNone(AGENTS.quota_block({}))
+    limit["last_observation"]["freshness"] = "fresh"
+    fable = copy.deepcopy(limit)
+    fable["bucket"] = {"scope_kind": "model"}
+    limit["last_observation"]["remaining_percent"] = 0
+    service["limits"].append(fable)
+    self.assertEqual(AGENTS.quota_block(service), "under 3% left")
 
   def test_batches_match_ids_and_reject_malformed_results(self):
     jobs = [
@@ -1013,6 +1051,7 @@ class AgentViewTest(unittest.TestCase):
       "id": ident,
       "parent_id": None,
       "models": ["opus-5"],
+      "model": "opus-5",
       "effort": "high",
       "tokens": {"total": 1000, "input": 900, "cached": 800},
       "work": work,

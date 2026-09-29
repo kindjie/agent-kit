@@ -121,7 +121,9 @@ Compaction tests render at every width from 200 down and require the applied
 steps to be a prefix of the ladder, no line over the width from 60 columns
 up, derived short forms that grow on collision, single-width glyphs, unknown
 states, models and efforts in full, and the legend only with glyphs. A cache
-test keeps summaries across a version change.
+test keeps summaries across a version change. Action tests keep the end of
+commands and paths, and the start of other details; parser tests show the
+latest model and effort. Gate tests defer summaries only under 3% left.
 
 Run the status-renderer suite from the repository root:
 
