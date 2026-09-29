@@ -65,6 +65,14 @@ without passing a flag. Ordinary quota queries never start summarization.
 - `--cached` reads and reevaluates the derived cache without querying a
   service.
 
+An option that cannot affect the chosen mode is an error, not silently
+ignored: agent-only options (`--agent-days`, `--agent-limit`,
+`--no-summaries`, `--no-cross-provider-summaries`) require `--agents`;
+`--models` rejects `--cached`, `--no-cache`, `--strict`, `--cache-file` and
+`--timeout`; and `--timeout` and `--claude-timeout` cannot be combined with
+`--cached` outside `--agents`, which queries nothing. Abbreviated option
+names are recognized.
+
 Renderers consume JSON or the derived cache. They must never parse `--brief`.
 An unsupported `schema_version` is an error, not a best-effort input.
 

@@ -3112,6 +3112,58 @@ def agents_module():
   return module
 
 
+def given_options(parser: argparse.ArgumentParser,
+                  argv: list[str]) -> dict[str, str]:
+  """Options typed on the command line, as {dest: option string}.
+
+  Resolves the abbreviations argparse accepts, so `--agent-d 5` counts as
+  --agent-days.
+  """
+  options = {text: action.dest for action in parser._actions
+             for text in action.option_strings if text.startswith("--")}
+  given = {}
+  for token in argv:
+    if token == "--":
+      break
+    if not token.startswith("--"):
+      continue
+    name = token.split("=", 1)[0]
+    matches = [text for text in options if text == name] or [
+      text for text in options if text.startswith(name)]
+    if len(matches) == 1:
+      given[options[matches[0]]] = matches[0]
+  return given
+
+
+# Options that can only change the agent listing.
+AGENT_ONLY = ("agent_days", "agent_limit", "no_summaries",
+              "no_cross_provider_summaries", "agent_refresh")
+# Quota-report options that --models, which reads no quota, cannot use.
+NOT_WITH_MODELS = ("cached", "no_cache", "strict", "cache_file", "timeout")
+# Service query timeouts; --cached queries nothing outside --agents.
+QUERY_TIMEOUTS = ("timeout", "claude_timeout")
+
+
+def validate_flags(parser: argparse.ArgumentParser, args: argparse.Namespace,
+                   argv: list[str]) -> None:
+  """Reject options that cannot affect the chosen mode instead of ignoring
+  them, so a mistyped command fails rather than printing a different
+  report."""
+  given = given_options(parser, argv)
+  if not args.agents:
+    for dest in AGENT_ONLY:
+      if dest in given:
+        parser.error(f"{given[dest]} requires --agents")
+  if args.models:
+    for dest in NOT_WITH_MODELS:
+      if dest in given:
+        parser.error(f"--models cannot be used with {given[dest]}")
+  if args.cached and not args.agents:
+    for dest in QUERY_TIMEOUTS:
+      if dest in given:
+        parser.error(f"{given[dest]} cannot be used with --cached")
+
+
 def main(argv: list[str] | None = None) -> int:
   parser = argparse.ArgumentParser(
     prog="agent-quota",
@@ -3257,8 +3309,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.error("--cached and --no-cache cannot be used together")
   if not 0 < args.agent_days <= 30 or not 1 <= args.agent_limit <= 100:
     parser.error("--agent-days must be >0 and <=30; --agent-limit must be 1–100")
-  if args.agent_refresh and not args.agents:
-    parser.error("--agent-refresh requires --agents")
+  validate_flags(parser, args, sys.argv[1:] if argv is None else argv)
   if args.agents:
     if args.models:
       parser.error("--agents cannot be combined with --models")

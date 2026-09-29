@@ -58,6 +58,11 @@ tests cover the `Likely available` line and explicit `RESET … ago` in the
 text modes, accounts still blocked by a spent account-wide bucket, and
 model buckets blocked by a spent account bucket.
 
+Flag-validation tests cover agent-only options without `--agents`
+(including abbreviated and `=` forms), options `--models` cannot use, query
+timeouts with `--cached`, and meaningful combinations that must still parse
+with their defaults.
+
 Run the local agent collector and summary-cache suite:
 
 ```bash

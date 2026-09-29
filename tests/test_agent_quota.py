@@ -1752,6 +1752,47 @@ class ClaudeAuthStatusTest(unittest.TestCase):
 
 
 
+
+class FlagValidationTest(unittest.TestCase):
+  def rejected(self, *argv: str) -> str:
+    stderr = io.StringIO()
+    with self.assertRaises(SystemExit) as raised, \
+         patch("sys.stderr", stderr):
+      AGENT_QUOTA.main(list(argv))
+    self.assertEqual(raised.exception.code, 2)
+    return stderr.getvalue()
+
+  def test_agent_only_flags_require_agents(self):
+    for flag in (["--no-summaries"], ["--agent-days", "5"],
+                 ["--agent-limit", "3"], ["--no-cross-provider-summaries"],
+                 ["--agent-d", "5"], ["--agent-days=5"]):
+      message = self.rejected("--cached", *flag)
+      self.assertIn("requires --agents", message, flag)
+
+  def test_models_rejects_cache_and_quota_options(self):
+    for flag in (["--cached"], ["--no-cache"], ["--strict"],
+                 ["--cache-file", "x.json"], ["--timeout", "3"]):
+      message = self.rejected("--models", *flag)
+      self.assertIn("--models cannot be used with", message, flag)
+
+  def test_query_timeouts_have_no_effect_with_cached(self):
+    for flag in (["--timeout", "3"], ["--claude-timeout", "3"]):
+      message = self.rejected("--cached", *flag)
+      self.assertIn("cannot be used with --cached", message, flag)
+
+  def test_meaningful_combinations_still_parse(self):
+    calls = []
+    agents = SimpleNamespace(main=lambda args, *_: calls.append(args) or 0)
+    with patch.object(AGENT_QUOTA, "agents_module", return_value=agents):
+      self.assertEqual(AGENT_QUOTA.main(
+        ["--agents", "--cached", "--no-summaries", "--agent-days", "5",
+         "--agent-limit", "3", "--claude-timeout", "3"]), 0)
+    self.assertEqual(calls[0].agent_days, 5)
+    self.assertEqual(calls[0].agent_limit, 3)
+    with patch.object(AGENT_QUOTA, "agents_module", return_value=agents):
+      AGENT_QUOTA.main(["--agents"])
+    self.assertEqual((calls[1].agent_days, calls[1].agent_limit), (1, 20))
+
 def timeline_limit(
   limit_id: str,
   label: str,
