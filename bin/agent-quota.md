@@ -60,6 +60,26 @@ without passing a flag. Ordinary quota queries never start summarization.
   `active`, `quota`, `limit_id`, `short_window`, `remaining_percent` (or
   `remaining_credits` with `unit` `credits`), `unit`, `restores`,
   `blocked`, `stale` and `rate_per_hour`. Events are in time order.
+- `--live` keeps `--timeline` or `--agents` on screen, redrawing every
+  `--interval` seconds (default 30, minimum 5) on the terminal's alternate
+  screen, and restores the terminal on exit or Ctrl-C. It re-reads caches
+  each redraw but queries the services only when the cached quota is over
+  five minutes old, and never with `--cached`; in agents mode it starts the
+  background summary worker at most every five minutes. A status line shows
+  the interval and the quota data's age. Rows that are new or changed since
+  the previous redraw are shown reversed: a timeline row by its moment,
+  type, account and quota (relative times ticking do not count), an agent
+  row by its state and current action. Agents mode adds a header per
+  provider: the binding bucket (or the one with least left), its run-out
+  or reset, and the share of the last 15 minutes' tokens by the busiest
+  agents. When output is not a terminal, `--live` prints one frame and
+  exits. It requires `--timeline` or `--agents` and cannot be combined with
+  `--compact`, `--brief` or `--models`.
+- `--notify` (with `--live`) rings the terminal bell and posts a desktop
+  notification (`osascript` on macOS, `notify-send` on Linux) once per
+  event: a quota reset passing, an inactive account likely available, a
+  BURN within an hour, an agent turning stalled, or one agent using over
+  70% of its provider's last 15 minutes of tokens (at most hourly).
 - `--color {auto,always,never}` colours the text views (`--brief`,
   `--verbose`, `--timeline`, `--agents`, `--models --brief`). `auto`, the
   default, colours an interactive terminal unless `NO_COLOR` is set or

@@ -204,6 +204,45 @@ class AgentViewTest(unittest.TestCase):
       "Read", {"file_path": "/a/b.py"}), "Read: /a/b.py")
     self.assertEqual(AGENTS.action_summary("Agent", {}), "Agent")
 
+  def test_agent_alerts_for_stalls_and_dominance(self):
+    stalled = dict(self.work_row("a", "Fix build", "Fix"), state="stalled",
+                   recent_tokens=0, status={"turn_started": 5})
+    busy = dict(self.work_row("b", "Refactor", "Refactor"), state="working",
+                recent_tokens=900_000)
+    other = dict(self.work_row("c", "Docs", "Docs"), state="working",
+                 recent_tokens=100_000)
+    sent = set()
+    alerts = AGENTS.agent_alerts({"claude:a": "working"},
+                                 [stalled, busy, other], 7200, sent)
+    self.assertEqual(alerts, ["claude:a stalled: Fix build",
+                              "claude:b is using 90% of recent claude "
+                              "tokens"])
+    self.assertEqual(AGENTS.agent_alerts({"claude:a": "stalled"},
+                                         [stalled, busy, other], 7300,
+                                         sent), [])
+
+  def test_live_header_names_the_outlook_and_busiest_agents(self):
+    limit = {"limit_id": "c:week", "window": {"label": "weekly"},
+             "bucket": {"scope_kind": "account"},
+             "last_observation": {"remaining_percent": 30},
+             "burn": {"exhausts_before_reset": True,
+                      "exhausts_at": AGENT_QUOTA.iso_utc(
+                        AGENT_QUOTA.datetime.fromtimestamp(
+                          1000 + 7200, AGENT_QUOTA.timezone.utc))},
+             "pace": {}}
+    document = {"services": {"claude_code": {
+      "display_name": "Claude Code", "binding_limit_id": "c:week",
+      "limits": [limit]}}}
+    agents = [dict(self.work_row("a", "x", "x"), recent_tokens=750),
+              dict(self.work_row("b", "y", "y"), recent_tokens=250)]
+    header = AGENTS.live_header(document, agents, AGENT_QUOTA, 1000)
+    self.assertEqual(header, ["Claude Code · weekly 30% left · runs out ~2h "
+                              "0m · 15m: claude:a 75%, claude:b 25%"])
+    document["services"]["claude_code"]["binding_limit_id"] = None
+    limit["last_observation"]["period_relation"] = "current"
+    self.assertIn("weekly 30% left", AGENTS.live_header(
+      document, agents, AGENT_QUOTA, 1000)[0])
+
   def test_display_status_derives_stalled_idle_and_long(self):
     base = {"state": "working", "turn_started": 0, "last_event": 0,
             "action": "Bash: make", "progress": None,

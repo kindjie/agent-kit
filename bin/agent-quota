@@ -2645,7 +2645,7 @@ def timeline_day(moment: datetime, now: datetime, tz: Any) -> str:
 
 def timeline_line(row: dict[str, Any], now: datetime, tz: Any,
                   account_colour: str, widths: tuple[int, ...],
-                  color: bool) -> str:
+                  color: bool, changed: bool = False) -> str:
   """One row in aligned columns: when, time, label, quota, account, note.
 
   Padding sits outside the escape codes, so the plain text is identical
@@ -2675,6 +2675,8 @@ def timeline_line(row: dict[str, Any], now: datetime, tz: Any,
   if quiet:
     label_style = (*quiet, label_style[-1])
     when_style = quiet
+  if changed:
+    label_style = ("reverse", *label_style)
   when_width, label_width, quota_width, who_width = widths
   time_of_day = row["moment"].astimezone(tz).strftime("%H:%M")
   cells = [
@@ -2690,18 +2692,31 @@ def timeline_line(row: dict[str, Any], now: datetime, tz: Any,
   return ("    " + "  ".join(parts)).rstrip()
 
 
+def timeline_rows(document: dict[str, Any], now: datetime
+                  ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+  """(events, displayed rows, whether any routine event was hidden)."""
+  events = timeline_events(document, now)
+  hidden = any(not noteworthy(event) for event in events)
+  return events, merge_events([event for event in events
+                               if noteworthy(event)]), hidden
+
+
+def timeline_row_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
+  """A row's identity across redraws; its relative time is not part of it."""
+  return (iso_utc(row["moment"]), row["type"], row["account"], row["quota"])
+
+
 def render_timeline(document: dict[str, Any], tz: Any = None,
-                    color: bool = False) -> str:
+                    color: bool = False, marked: Any = frozenset()) -> str:
   """Upcoming resets and projected run-outs, grouped by day.
 
   Run-out times come from each quota's recent burn and appear only when a
   quota would run out before it resets. Accounts other than the one each
   service last checked contribute their last known resets, unverified.
+  Rows whose key is in `marked` are highlighted as changed.
   """
   now = parse_timestamp(document.get("generated_at")) or utc_now()
-  events = timeline_events(document, now)
-  hidden = any(not noteworthy(event) for event in events)
-  rows = merge_events([event for event in events if noteworthy(event)])
+  events, rows, hidden = timeline_rows(document, now)
   colours: dict[str, str] = {}
   for event in events:
     colours.setdefault(event["account"], ACCOUNT_COLOURS[
@@ -2719,7 +2734,8 @@ def render_timeline(document: dict[str, Any], tz: Any = None,
       day = heading
       lines.append("  " + paint(heading, ("bold",), color))
     lines.append(timeline_line(row, now, tz, colours[row["account"]],
-                               widths, color))
+                               widths, color,
+                               timeline_row_key(row) in marked))
   if not rows:
     lines.append("  No upcoming resets or projected run-outs.")
   footer = []
@@ -3195,6 +3211,161 @@ def agents_module():
   return module
 
 
+# --live: redraw every interval; query services only when the cached quota
+# is older than LIVE_QUOTA_REFRESH, and never with --cached.
+LIVE_INTERVAL = 30
+LIVE_MIN_INTERVAL = 5
+LIVE_QUOTA_REFRESH = 300
+ENTER_SCREEN, LEAVE_SCREEN = "\033[?1049h\033[?25l", "\033[?25h\033[?1049l"
+
+
+def live_document(args: argparse.Namespace, cache_path: Path,
+                  now: float) -> dict[str, Any]:
+  """The quota document for one live frame, refreshed only when stale."""
+  try:
+    age = now - cache_path.stat().st_mtime
+  except OSError:
+    age = float("inf")
+  previous = None if args.no_cache else load_cache(cache_path)
+  if not args.cached and (previous is None or age > LIVE_QUOTA_REFRESH):
+    with cache_lock(cache_path) as acquired:
+      if acquired:
+        previous = load_cache(cache_path)
+        document = build_document(
+          args.provider, Path(args.claude_file).expanduser(),
+          args.claude_bin, args.claude_timeout, args.codex_bin,
+          args.timeout, previous)
+        write_cache(cache_path, document)
+        return document
+  if previous is None:
+    return {"generated_at": iso_utc(), "services": {}}
+  return select_services(reevaluate_document(previous), args.provider)
+
+
+def notify(message: str, title: str = "agent-quota") -> None:
+  """Terminal bell plus a desktop notification where one is available."""
+  sys.stdout.write("\a")
+  sys.stdout.flush()
+  if sys.platform == "darwin":
+    command = ["osascript", "-e", "on run argv", "-e",
+               "display notification (item 2 of argv) with title "
+               "(item 1 of argv)", "-e", "end run", title, message]
+  elif shutil.which("notify-send"):
+    command = ["notify-send", title, message]
+  else:
+    return
+  try:
+    subprocess.run(command, capture_output=True, timeout=10)
+  except (OSError, subprocess.TimeoutExpired):
+    pass
+
+
+def timeline_alerts(previous: dict[tuple, dict[str, Any]],
+                    rows: list[dict[str, Any]], now: datetime,
+                    sent: set[tuple]) -> list[str]:
+  """Resets that just happened, accounts freed, and BURNs within an hour."""
+  alerts = []
+  current = {timeline_row_key(row): row for row in rows}
+  for key, row in previous.items():
+    if (row["type"] == "reset" and row["moment"] <= now
+        and key not in current and ("reset", key) not in sent):
+      sent.add(("reset", key))
+      alerts.append(f"{row['quota']} reset for {row['account']}")
+  for key, row in current.items():
+    if row["type"] == "burn" and (row["moment"] - now).total_seconds() <= 3600:
+      if ("burn", key) not in sent:
+        sent.add(("burn", key))
+        alerts.append(f"{row['quota']} for {row['account']} runs out "
+                      + timeline_when(row["moment"], now))
+    if row["restores"] and not row["active"] and row["moment"] <= now:
+      if ("free", row["account"]) not in sent:
+        sent.add(("free", row["account"]))
+        alerts.append(f"{row['account']} is likely available again")
+  return alerts
+
+
+def fit_screen(lines: list[str], height: int) -> list[str]:
+  """Keep the header visible: drop what does not fit, and say so."""
+  if len(lines) <= height:
+    return lines
+  kept = lines[:max(1, height - 1)]
+  return kept + [f"… {len(lines) - len(kept)} more lines"]
+
+
+def run_live(args: argparse.Namespace, cache_path: Path,
+             out: Any = None, clock: Any = time.time,
+             sleep: Any = time.sleep) -> int:
+  """Redraw --timeline or --agents until interrupted."""
+  out = out or sys.stdout
+  interval = args.interval or LIVE_INTERVAL
+  view = "timeline" if args.timeline else "agents"
+  previous_rows: dict[tuple, Any] = {}
+  previous_states: dict[str, Any] = {}
+  sent: set[tuple] = set()
+  first, last_summaries = True, 0.0
+  out.write(ENTER_SCREEN)
+  try:
+    while True:
+      now = clock()
+      moment = datetime.fromtimestamp(now, timezone.utc)
+      document = live_document(args, cache_path, now)
+      if view == "timeline":
+        document["generated_at"] = iso_utc(moment)
+        _, rows, _ = timeline_rows(document, moment)
+        keys = {timeline_row_key(row): row for row in rows}
+        marked = frozenset() if first else frozenset(
+          set(keys) - set(previous_rows))
+        body = render_timeline(document, color=args.color_on, marked=marked)
+        alerts = timeline_alerts(previous_rows, rows, moment, sent)
+        previous_rows = keys
+      else:
+        module = agents_module()
+        frame = module.agent_frame(args, SimpleNamespace(**globals()),
+                                   Path(__file__).resolve(), now)
+        agents = frame["agents"]
+        states = {agent["key"]: (agent.get("state"), agent.get("now"))
+                  for agent in agents}
+        marked = frozenset() if first else frozenset(
+          key for key, value in states.items()
+          if previous_states.get(key) != value)
+        header = module.live_header(document, agents,
+                                    SimpleNamespace(**globals()), now,
+                                    args.color_on)
+        body = "\n".join([*header, "", module.render(
+          agents, frame["cache"], SimpleNamespace(**globals()), now,
+          args.verbose, args.color_on, marked)])
+        alerts = module.agent_alerts(
+          {key: value[0] for key, value in previous_states.items()},
+          agents, now, sent)
+        previous_states = states
+        if frame["command"] and now - last_summaries >= 300:
+          module.start_summaries(frame["command"])
+          last_summaries = now
+      try:
+        age = format_duration(now - cache_path.stat().st_mtime)
+      except OSError:
+        age = "UNKNOWN"
+      status = paint(
+        f"agent-quota --{view} --live · every "
+        f"{f'{interval:g}s' if interval < 60 else format_duration(interval)} "
+        f"· quota data {age} old · Ctrl-C to quit", ("dim",), args.color_on)
+      size = shutil.get_terminal_size((100, 40))
+      lines = fit_screen([status, "", *body.splitlines()], size.lines - 1)
+      out.write("\033[H\033[2J" + "\n".join(lines) + "\n")
+      out.flush()
+      if args.notify and not first:
+        for alert in alerts:
+          notify(alert)
+      first = False
+      sleep(interval)
+  except KeyboardInterrupt:
+    pass
+  finally:
+    out.write(LEAVE_SCREEN)
+    out.flush()
+  return 0
+
+
 def given_options(parser: argparse.ArgumentParser,
                   argv: list[str]) -> dict[str, str]:
   """Options typed on the command line, as {dest: option string}.
@@ -3245,6 +3416,17 @@ def validate_flags(parser: argparse.ArgumentParser, args: argparse.Namespace,
     for dest in QUERY_TIMEOUTS:
       if dest in given:
         parser.error(f"{given[dest]} cannot be used with --cached")
+  if args.live:
+    if not (args.timeline or args.agents):
+      parser.error("--live requires --timeline or --agents")
+    for dest in ("compact", "brief", "models"):
+      if dest in given:
+        parser.error(f"--live cannot be used with {given[dest]}")
+  for dest in ("interval", "notify"):
+    if dest in given and not args.live:
+      parser.error(f"{given[dest]} requires --live")
+  if args.interval is not None and args.interval < LIVE_MIN_INTERVAL:
+    parser.error(f"--interval must be at least {LIVE_MIN_INTERVAL} seconds")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -3284,6 +3466,23 @@ def main(argv: list[str] | None = None) -> int:
     action="store_true",
     help="upcoming resets and projected run-outs by day; with --compact, "
     "the events as JSON",
+  )
+  parser.add_argument(
+    "--live",
+    action="store_true",
+    help="keep --timeline or --agents on screen, redrawing every --interval",
+  )
+  parser.add_argument(
+    "--interval",
+    type=float,
+    help=f"seconds between --live redraws (default {LIVE_INTERVAL}, "
+    f"minimum {LIVE_MIN_INTERVAL})",
+  )
+  parser.add_argument(
+    "--notify",
+    action="store_true",
+    help="with --live: bell and desktop notification on resets, freed "
+    "accounts, imminent run-outs and stalled or dominant agents",
   )
   parser.add_argument(
     "--verbose",
@@ -3406,6 +3605,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.error("--color needs a text view (--brief, --verbose, --timeline, "
                  "--agents or --models --brief)")
   args.color_on = resolve_color(args.color or "auto", sys.stdout)
+  if args.live and sys.stdout.isatty():
+    return run_live(args, Path(args.cache_file).expanduser()
+                    if args.cache_file else default_cache_path())
   if args.agents:
     if args.models:
       parser.error("--agents cannot be combined with --models")

@@ -2256,5 +2256,155 @@ class TimelineTest(unittest.TestCase):
     with self.assertRaises(SystemExit), patch("sys.stderr", io.StringIO()):
       AGENT_QUOTA.main(["--cached", "--timeline", "--brief"])
 
+
+class LiveTest(unittest.TestCase):
+  def args(self, **overrides) -> SimpleNamespace:
+    values = dict(timeline=True, agents=False, interval=None, notify=False,
+                  color_on=False, cached=True, no_cache=False, provider="all",
+                  verbose=False)
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+  def document(self, burn: bool) -> dict[str, Any]:
+    limits = [timeline_limit("c:week", "weekly", 40, timedelta(days=2),
+                             runs_out_in=timedelta(minutes=30) if burn
+                             else None)]
+    return {"services": {"claude_code": timeline_service(
+      "Claude Code", "me@example.test", "max", limits)}}
+
+  def run_frames(self, documents, **overrides) -> tuple[str, list[str]]:
+    out, sent = io.StringIO(), []
+    frames = iter(documents)
+    sleeps = iter([None] * (len(documents) - 1) + [KeyboardInterrupt()])
+
+    def sleep(_):
+      step = next(sleeps)
+      if step:
+        raise step
+    with patch.object(AGENT_QUOTA, "live_document",
+                      side_effect=lambda *_: next(frames)), \
+         patch.object(AGENT_QUOTA, "notify", side_effect=sent.append):
+      code = AGENT_QUOTA.run_live(self.args(**overrides), Path("/none"),
+                                  out=out, clock=lambda: NOW.timestamp(),
+                                  sleep=sleep)
+    self.assertEqual(code, 0)
+    return out.getvalue(), sent
+
+  def test_loop_uses_the_alternate_screen_and_restores_it(self):
+    output, _ = self.run_frames([self.document(False)])
+    self.assertTrue(output.startswith(AGENT_QUOTA.ENTER_SCREEN))
+    self.assertTrue(output.endswith(AGENT_QUOTA.LEAVE_SCREEN))
+    self.assertIn("agent-quota --timeline --live · every 30s", output)
+    self.assertIn("Timeline", output)
+
+  def test_later_frames_mark_new_rows_and_alert(self):
+    output, sent = self.run_frames(
+      [self.document(False), self.document(True)], color_on=True,
+      notify=True)
+    first, second = output.split("\033[H\033[2J")[1:]
+    self.assertNotIn("\x1b[7;", first)
+    self.assertIn("\x1b[7;1;31mBURN\x1b[0m", second)
+    self.assertEqual(len(sent), 1)
+    self.assertIn("runs out in 30m", sent[0])
+
+  def test_alerts_need_notify(self):
+    _, sent = self.run_frames([self.document(False), self.document(True)])
+    self.assertEqual(sent, [])
+
+  def test_quota_is_queried_only_when_stale_and_not_cached(self):
+    built = []
+    with tempfile.TemporaryDirectory() as tmp:
+      path = Path(tmp) / "report.json"
+      path.write_text("{}")
+      old = path.stat().st_mtime
+      with patch.object(AGENT_QUOTA, "load_cache", return_value={"x": 1}), \
+           patch.object(AGENT_QUOTA, "reevaluate_document",
+                        side_effect=lambda doc, *_: {"services": {}}), \
+           patch.object(AGENT_QUOTA, "select_services",
+                        side_effect=lambda doc, _: doc), \
+           patch.object(AGENT_QUOTA, "write_cache"), \
+           patch.object(AGENT_QUOTA, "build_document",
+                        side_effect=lambda *a: built.append(a) or {}):
+        args = SimpleNamespace(cached=False, no_cache=False, provider="all",
+                               claude_file="x", claude_bin="c",
+                               claude_timeout=1, codex_bin="x", timeout=1)
+        AGENT_QUOTA.live_document(args, path, old + 60)
+        self.assertEqual(built, [])
+        AGENT_QUOTA.live_document(args, path, old + 600)
+        self.assertEqual(len(built), 1)
+        args.cached = True
+        AGENT_QUOTA.live_document(args, path, old + 600)
+        self.assertEqual(len(built), 1)
+
+  def test_timeline_alerts(self):
+    moment = NOW
+    reset = {"type": "reset", "moment": NOW - timedelta(minutes=1),
+             "account": "me", "quota": "Claude", "restores": False,
+             "active": True}
+    burn = {"type": "burn", "moment": NOW + timedelta(minutes=20),
+            "account": "me", "quota": "Codex", "restores": False,
+            "active": True}
+    freed = {"type": "reset", "moment": NOW - timedelta(hours=2),
+             "account": "old", "quota": "Codex", "restores": True,
+             "active": False}
+    previous = {AGENT_QUOTA.timeline_row_key(reset): reset}
+    sent: set = set()
+    alerts = AGENT_QUOTA.timeline_alerts(previous, [burn, freed], moment,
+                                         sent)
+    self.assertEqual(alerts, ["Claude reset for me",
+                              "Codex for me runs out in 20m",
+                              "old is likely available again"])
+    self.assertEqual(AGENT_QUOTA.timeline_alerts(previous, [burn, freed],
+                                                 moment, sent), [])
+
+  def test_screen_fitting_keeps_the_top(self):
+    lines = [str(n) for n in range(10)]
+    self.assertEqual(AGENT_QUOTA.fit_screen(lines, 20), lines)
+    self.assertEqual(AGENT_QUOTA.fit_screen(lines, 4),
+                     ["0", "1", "2", "… 7 more lines"])
+
+  def test_notifications_use_the_platform_tool(self):
+    with patch.object(AGENT_QUOTA.sys, "platform", "darwin"), \
+         patch.object(AGENT_QUOTA.subprocess, "run") as run, \
+         patch("sys.stdout", io.StringIO()):
+      AGENT_QUOTA.notify("hello")
+    self.assertEqual(run.call_args.args[0][0], "osascript")
+    self.assertEqual(run.call_args.args[0][-1], "hello")
+    with patch.object(AGENT_QUOTA.sys, "platform", "linux"), \
+         patch.object(AGENT_QUOTA.shutil, "which", return_value="/x"), \
+         patch.object(AGENT_QUOTA.subprocess, "run") as run, \
+         patch("sys.stdout", io.StringIO()) as out:
+      AGENT_QUOTA.notify("hello")
+    self.assertEqual(run.call_args.args[0], ["notify-send", "agent-quota",
+                                             "hello"])
+    self.assertEqual(out.getvalue(), "\a")
+
+  def test_live_flag_rules(self):
+    for argv, message in (
+        (["--cached", "--live"], "--live requires --timeline or --agents"),
+        (["--cached", "--timeline", "--live", "--compact"],
+         "--live cannot be used with --compact"),
+        (["--cached", "--timeline", "--interval", "10"],
+         "--interval requires --live"),
+        (["--cached", "--timeline", "--notify"], "--notify requires --live"),
+        (["--cached", "--timeline", "--live", "--interval", "2"],
+         "at least 5 seconds")):
+      stderr = io.StringIO()
+      with self.assertRaises(SystemExit), patch("sys.stderr", stderr):
+        AGENT_QUOTA.main(argv)
+      self.assertIn(message, stderr.getvalue(), argv)
+
+  def test_live_prints_once_when_not_a_terminal(self):
+    document = {"schema_version": 3, "generated_at": AGENT_QUOTA.iso_utc(NOW),
+                "services": {}}
+    with patch.object(AGENT_QUOTA, "load_cache", return_value=document), \
+         patch.object(AGENT_QUOTA, "reevaluate_document",
+                      side_effect=lambda doc, *_: doc), \
+         patch.object(AGENT_QUOTA, "run_live") as live, \
+         patch("builtins.print") as printed:
+      AGENT_QUOTA.main(["--cached", "--timeline", "--live"])
+    live.assert_not_called()
+    self.assertTrue(printed.call_args.args[0].startswith("Timeline"))
+
 if __name__ == "__main__":
   unittest.main()

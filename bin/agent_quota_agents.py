@@ -1064,7 +1064,8 @@ STATE_STYLES = {"working": ("green",), "stalled": ("bold", "red"),
                 "aborted": ("red",)}
 
 
-def render(agents, cache, quota, now, verbose=False, color=False):
+def render(agents, cache, quota, now, verbose=False, color=False,
+           marked=frozenset()):
   def short(value):
     if value is None:
       return "—"
@@ -1120,13 +1121,7 @@ def render(agents, cache, quota, now, verbose=False, color=False):
       else "—"
     )
     prefix = ("  " * min(depth, 3) + "└─") if depth else ""
-    identifier = agent["id"]
-    short_id = (
-      identifier
-      if len(identifier) <= 9
-      else (identifier[:4] + "…" + identifier[-4:])
-    )
-    label = prefix + agent["provider"] + ":" + short_id
+    label = prefix + short_label(agent)
     age = quota.format_duration(max(0, now - agent["last_seen"]))
     state = agent.get("state") or "—"
     state_text = state
@@ -1152,7 +1147,8 @@ def render(agents, cache, quota, now, verbose=False, color=False):
     idle = now - agent["last_seen"]
     styles.append([
       ("cyan",) if agent["provider"] == "claude" else ("magenta",),
-      STATE_STYLES.get(state, ()),
+      ("reverse", *STATE_STYLES.get(state, ())) if agent["key"] in marked
+      else STATE_STYLES.get(state, ()),
       (),
       ("dim", "italic") if agent["work_source"] == "excerpt" else (),
       (), (), (),
@@ -1276,18 +1272,7 @@ def quota_needs_refresh(document):
 
 def main(args, quota, script):
   now = time.time()
-  quota_path = (
-    Path(args.cache_file).expanduser()
-    if args.cache_file
-    else (quota.default_cache_path())
-  )
-  path = (
-    Path(args.agent_cache_file).expanduser()
-    if args.agent_cache_file
-    else (quota_path.with_name("agents-v1.json"))
-  )
-  if path.resolve() == quota_path.resolve():
-    raise ValueError("agent and quota caches must use different paths")
+  path, quota_path = agent_paths(args, quota)
   # --no-cache is documented as scanning without reading or writing caches,
   # so start from an empty one rather than last run's observations.
   cache = empty_cache() if args.no_cache else load_cache(path)
@@ -1355,6 +1340,67 @@ def main(args, quota, script):
       )
     return 0
 
+  frame = agent_frame(args, quota, script, now, cache, path, quota_path)
+  agents, cache, command = frame["agents"], frame["cache"], frame["command"]
+  if args.compact:
+    print(
+      json.dumps(public_document(agents, cache, now), separators=(",", ":"))
+    )
+  else:
+    print(render(agents, cache, quota, now, args.verbose,
+                 getattr(args, "color_on", False)))
+  sys.stdout.flush()
+  start_summaries(command)
+  return 0
+
+
+def agent_paths(args, quota):
+  """(agent cache path, quota cache path)."""
+  quota_path = (
+    Path(args.cache_file).expanduser()
+    if args.cache_file
+    else (quota.default_cache_path())
+  )
+  path = (
+    Path(args.agent_cache_file).expanduser()
+    if args.agent_cache_file
+    else (quota_path.with_name("agents-v1.json"))
+  )
+  if path.resolve() == quota_path.resolve():
+    raise ValueError("agent and quota caches must use different paths")
+  return path, quota_path
+
+
+def start_summaries(command):
+  if not command:
+    return
+  try:
+    subprocess.Popen(
+      command,
+      stdin=subprocess.DEVNULL,
+      stdout=subprocess.DEVNULL,
+      stderr=subprocess.DEVNULL,
+      start_new_session=True,
+      close_fds=True,
+    )
+  except OSError as exc:
+    print(
+      "Summary worker could not start: " + clean(exc, 100), file=sys.stderr
+    )
+
+
+def agent_frame(args, quota, script, now, cache=None, path=None,
+                quota_path=None):
+  """Scan and build the agent view without printing.
+
+  Returns the agents, the cache, the quota document and the command for a
+  background summary worker when summaries are due (None otherwise); the
+  caller decides whether to start it.
+  """
+  if path is None or quota_path is None:
+    path, quota_path = agent_paths(args, quota)
+  if cache is None:
+    cache = empty_cache() if args.no_cache else load_cache(path)
   if not args.cached:
     if args.no_cache:
       cache = collect(
@@ -1392,14 +1438,7 @@ def main(args, quota, script):
         not args.no_cross_provider_summaries,
       )
       agent["summary_status"] = None if eligible else reason
-  if args.compact:
-    print(
-      json.dumps(public_document(agents, cache, now), separators=(",", ":"))
-    )
-  else:
-    print(render(agents, cache, quota, now, args.verbose,
-                 getattr(args, "color_on", False)))
-  sys.stdout.flush()
+  command = None
   if (
     not args.cached
     and not args.no_cache
@@ -1444,20 +1483,103 @@ def main(args, quota, script):
       ]
       if args.no_cross_provider_summaries:
         command.append("--no-cross-provider-summaries")
-      try:
-        subprocess.Popen(
-          command,
-          stdin=subprocess.DEVNULL,
-          stdout=subprocess.DEVNULL,
-          stderr=subprocess.DEVNULL,
-          start_new_session=True,
-          close_fds=True,
-        )
-      except OSError as exc:
-        print(
-          "Summary worker could not start: " + clean(exc, 100), file=sys.stderr
-        )
-  return 0
+  return {"agents": agents, "cache": cache, "document": document,
+          "command": command}
+
+
+def short_label(agent):
+  """provider:id as the table shows it: long IDs keep both ends."""
+  identifier = agent["id"]
+  short = (identifier if len(identifier) <= 9
+           else identifier[:4] + "…" + identifier[-4:])
+  return agent["provider"] + ":" + short
+
+
+def outlook_limit(service):
+  """The binding bucket, or the current bucket with the least left."""
+  limits = [item for item in service.get("limits", [])
+            if isinstance(item, dict)]
+  binding = next((item for item in limits
+                  if item.get("limit_id") == service.get("binding_limit_id")),
+                 None)
+  if binding:
+    return binding
+  current = [item for item in limits
+             if (item.get("last_observation") or {}).get("period_relation")
+             == "current"
+             and (item.get("last_observation") or {}).get("remaining_percent")
+             is not None]
+  return min(current, key=lambda item: item["last_observation"][
+    "remaining_percent"], default=None)
+
+
+def live_header(document, agents, quota, now, color=False):
+  """Per provider: the binding bucket's outlook and the busiest agents."""
+  lines = []
+  for service_id, provider in (("claude_code", "claude"), ("codex", "codex")):
+    service = (document.get("services") or {}).get(service_id)
+    if not isinstance(service, dict):
+      continue
+    name = str(service.get("display_name", service_id))
+    limit = outlook_limit(service)
+    parts = [quota.paint(name, ("bold",), color)]
+    if limit:
+      observation = limit.get("last_observation") or {}
+      burn = limit.get("burn") or {}
+      label = quota.service_label(limit, name).removeprefix(name + " ")
+      left = quota.format_percent(observation.get("remaining_percent"))
+      parts.append(f"{label} {left} left")
+      exhausts = quota.parse_timestamp(burn.get("exhausts_at"))
+      if burn.get("exhausts_before_reset") and exhausts:
+        parts.append(quota.paint(
+          "runs out ~" + quota.format_duration(exhausts.timestamp() - now),
+          ("bold", "red"), color))
+      else:
+        parts.append("resets in " + quota.format_duration(
+          (limit.get("pace") or {}).get("reset_in_seconds")))
+    busy = sorted((a for a in agents if a["provider"] == provider
+                   and a.get("recent_tokens")),
+                  key=lambda a: -a["recent_tokens"])
+    total = sum(a["recent_tokens"] for a in busy)
+    if total:
+      top = ", ".join(
+        f"{short_label(a)} {100 * a['recent_tokens'] / total:.0f}%"
+        for a in busy[:3])
+      parts.append(f"15m: {top}")
+    lines.append(" · ".join(parts))
+  return lines
+
+
+def agent_alerts(previous, agents, now, sent):
+  """Alert texts for stalls and one agent dominating recent use.
+
+  `previous` maps agent keys to their last state; `sent` records alert keys
+  already delivered so each alert is sent once per session (a dominance
+  alert at most hourly).
+  """
+  alerts = []
+  totals = {}
+  for agent in agents:
+    totals[agent["provider"]] = totals.get(agent["provider"], 0) + (
+      agent.get("recent_tokens") or 0)
+  for agent in agents:
+    label = short_label(agent)
+    if agent.get("state") == "stalled" and previous.get(agent["key"]) not in (
+        None, "stalled"):
+      key = ("stalled", agent["key"], agent.get("status", {}).get(
+        "turn_started"))
+      if key not in sent:
+        sent.add(key)
+        alerts.append(f"{label} stalled: {clean(agent.get('work') or '', 50)}")
+    total = totals.get(agent["provider"], 0)
+    recent = agent.get("recent_tokens") or 0
+    if total >= 100_000 and recent >= 0.7 * total:
+      key = ("dominant", agent["key"], int(now // 3600))
+      if key not in sent:
+        sent.add(key)
+        alerts.append(f"{label} is using {100 * recent / total:.0f}% of "
+                      f"recent {agent['provider']} tokens")
+  return alerts
 
 
 def claude_observation(args, quota, quota_path):

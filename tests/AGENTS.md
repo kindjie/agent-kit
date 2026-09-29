@@ -69,6 +69,12 @@ colours and alerts in `--brief`, keyword highlighting in `--verbose`, the
 models brief, and `--color` rejected for JSON output; each checks that
 removing the escape codes leaves the plain output unchanged.
 
+Live tests drive `run_live` with a fake clock and sleep: the alternate
+screen entered and restored, later frames marking new rows, alerts only
+with `--notify`, quota queried only when stale and not `--cached`, alert
+rules, screen fitting, notification commands per platform, the `--live`
+flag rules, and one plain frame when output is not a terminal.
+
 Run the local agent collector and summary-cache suite:
 
 ```bash
@@ -79,24 +85,25 @@ This covers per-agent token normalization and deduplication, copied/forked
 history, model and effort metadata, image omission and newest-first text
 limits, local seven-day token averages, source-cache reuse and deletion,
 quota/authentication gates, summary cooldown and failure retention, two-call
-concurrency across all displayed rows, batches of three with exact ID
-matching and per-thread bounds, background quota refresh, unused
-Claude session windows, bounded CLI responses, and cache-only CLI behavior. Model calls
-in this suite are mocked or use local fake executables; no credits are spent.
-Account mismatch defers both providers at selection and before each batch. Provider-selection
-tests cover tightest-bucket ranking, cross-provider
+concurrency across all displayed rows, batches of three with exact ID matching
+and per-thread bounds, background quota refresh, unused Claude session
+windows, bounded CLI responses, and cache-only CLI behavior. Model calls in
+this suite are mocked or use local fake executables; no credits are spent.
+Account mismatch defers both providers at selection and before each batch.
+Provider-selection tests cover tightest-bucket ranking, cross-provider
 provenance, the same-provider opt-out, and initial summaries for idle agents.
 Label tests cover the summary/brief pair from one call, briefs that are
 missing, overlong, or the wrong type, and the prompt-schema hash that
-refreshes stored labels once. Status tests cover Claude Code turns, pending
-tool calls and `TodoWrite` progress, Codex turns, script actions,
-`update_plan` progress, aborts and per-event token deltas, derived
-stalled/idle/long states, the uncached 15-minute rate, busiest-first
-ordering, and the State/Now/15m columns with colour.
-Renderer tests cover width resolution
-(`COLUMNS`, terminal, unconstrained pipe), the measured Work width, the
-brief substituted for a label that will not fit, ellipsis only when neither
-fits, and trailing-hour totals in the footer.
+refreshes stored labels once. Live-helper tests cover stall and dominance
+alerts and the per-provider quota header, including its fallback bucket.
+Status tests cover Claude Code turns, pending tool calls and `TodoWrite`
+progress, Codex turns, script actions, `update_plan` progress, aborts and per-
+event token deltas, derived stalled/idle/long states, the uncached 15-minute
+rate, busiest-first ordering, and the State/Now/15m columns with colour.
+Renderer tests cover width resolution (`COLUMNS`, terminal, unconstrained
+pipe), the measured Work width, the brief substituted for a label that will
+not fit, ellipsis only when neither fits, and trailing-hour totals in the
+footer.
 
 Run the status-renderer suite from the repository root:
 
