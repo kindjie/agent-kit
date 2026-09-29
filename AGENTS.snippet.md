@@ -46,6 +46,10 @@ commands. Pass `--agent $(agent-id show)` on every call that writes.
 
 - Before starting work, check `agent-task list --here` for a task that
   covers it; claim it, or create one and claim it.
+- While you hold a claim, watch the task for messages addressed to you:
+  keep `agent-task watch` running in the background where your tool
+  allows, or read `show --after` at each milestone and before you close,
+  release or hand off.
 - When you delegate, give the delegate the task ID and its own ID from
   `agent-id new <label>`; a subagent otherwise writes as you.
 - When agents collaborate on an ongoing task, add them as helpers and

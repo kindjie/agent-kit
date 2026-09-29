@@ -238,7 +238,9 @@ git repositories. A class fixture initializes a tasks/changelog pair once,
 then each test copies it to a fresh temporary directory. Tests use a temporary
 global git config with signing off and disable system git config. The setup,
 lifecycle, records, commands, transitions and watch suites cover identity,
-initialization, task claims, permissions, help, closing and watch cursors.
+initialization, task claims, permissions, help, checklist corrections
+(re-checking, owner-only unchecking, and edits confined to the checklist),
+closing and watch cursors.
 The recovery and cross suites exercise real git signing children, index
 locks, staged deletions, journals, and cross-repository races. The privacy
 suite scans tracked and new files;

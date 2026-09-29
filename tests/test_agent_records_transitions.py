@@ -15,6 +15,11 @@ class TransitionTest(RecordsFixture):
   def run_task(self, agent, *args, code=0):
     return self.run_cmd("agent-task", "--agent", agent, *args, code=code)
 
+  def git_head(self):
+    return subprocess.run(["git", "-C", str(self.tasks), "rev-parse",
+                           "HEAD"], env=self.env, check=True,
+                          capture_output=True, text=True).stdout
+
   def expire(self, task):
     path = next(self.tasks.glob(task + "-*.md"))
     text = path.read_text()
@@ -89,6 +94,9 @@ class TransitionTest(RecordsFixture):
     self.run_task("agent-a", "check", task, "docs", "--na", "No docs",
                   code=1)
     force("agent-a", "check", task, "docs", "--na", "No docs")
+    self.run_task("agent-a", "uncheck", task, "docs", "--reason", "wrong",
+                  code=1)
+    force("agent-a", "uncheck", task, "docs", "--reason", "wrong")
     self.run_task("agent-a", "link", task, "--ref", "note", code=1)
     force("agent-a", "link", task, "--ref", "note")
     self.run_task("agent-a", "handoff", task, "--to", "agent-d",
@@ -127,6 +135,74 @@ class TransitionTest(RecordsFixture):
     self.run_task("agent-a", "claim", task)
     self.run_task("agent-a", "close", task, "abandoned", "--reason",
                   "no longer needed")
+
+  def test_uncheck_and_recheck_correct_checklist(self):
+    self.init()
+    task = self.task("Corrections", "--check", "extra item", "--known",
+                     "- [ ] docs: documentation updated")
+    self.run_task("agent-a", "claim", task)
+    self.run_task("agent-a", "helper", "add", task, "agent-c")
+    self.run_task("agent-a", "check", task, "docs", "--na", "No docs")
+    shown = self.run_cmd("agent-task", "show", task)
+    self.assertIn("- [x] docs: n/a -- No docs", shown)
+    self.assertIn("## Known\n\n- [ ] docs: documentation updated\n", shown)
+    self.run_task("agent-a", "check", task, "docs", "--evidence", "README",
+                  "--reason", "docs were updated")
+    shown = self.run_cmd("agent-task", "show", task)
+    self.assertIn("- [x] docs: documentation updated -- evidence: README",
+                  shown)
+    self.assertIn("Rechecked docs: docs were updated", shown)
+    self.run_task("agent-c", "check", task, "5", "--evidence", "ref")
+    self.assertIn("Checked extra item\n",
+                  self.run_cmd("agent-task", "show", task))
+    self.run_task("agent-c", "uncheck", task, "5", "--reason", "no",
+                  code=1)
+    self.run_task("agent-b", "uncheck", task, "5", "--reason", "no",
+                  code=1)
+    self.run_task("agent-a", "uncheck", task, "docs", code=2)
+    self.run_task("agent-a", "uncheck", task, "docs", "--reason",
+                  "ticked in error")
+    shown = self.run_cmd("agent-task", "show", task)
+    self.assertIn("- [ ] docs: documentation updated\n- [ ] work", shown)
+    self.assertIn("Unchecked docs: ticked in error", shown)
+    self.run_task("agent-a", "uncheck", task, "docs", "--reason", "again",
+                  code=1)
+    self.run_task("agent-a", "uncheck", task, "5", "--reason", "not done")
+    self.assertIn("- [ ] extra item\n",
+                  self.run_cmd("agent-task", "show", task))
+    self.run_task("agent-a", "uncheck", task, "9", "--reason", "none",
+                  code=1)
+    self.run_task("agent-a", "uncheck", task, "\u00b2", "--reason", "none",
+                  code=1)
+    head = self.git_head()
+    self.run_task("agent-a", "uncheck", task, "5", "--reason", "again",
+                  code=1)
+    self.assertEqual(self.git_head(), head)
+    self.run_cmd("agent-task", "lint")
+
+  def test_added_checks_keep_their_text_and_section(self):
+    self.init()
+    task = self.task("Added", "--check", "docs: API page", "--check",
+                     "first", "--check", "target", "--check", "other")
+    self.run_task("agent-a", "claim", task)
+    self.run_task("agent-a", "check", task, "5", "--evidence", "page")
+    self.run_task("agent-a", "uncheck", task, "5", "--reason", "not yet")
+    shown = self.run_cmd("agent-task", "show", task)
+    self.assertIn("- [ ] docs: API page\n", shown)
+    self.assertIn("- [ ] docs: documentation updated\n", shown)
+    self.run_task("agent-a", "check", task, "6", "--evidence",
+                  "a\u2028- [ ] fake")
+    self.run_task("agent-a", "check", task, "7", "--evidence", "done")
+    shown = self.run_cmd("agent-task", "show", task)
+    self.assertIn("- [x] target -- evidence: done\n- [ ] other\n", shown)
+    self.run_task("agent-a", "set", task, "--known", "- [ ] other")
+    self.run_task("agent-a", "set", task, "--remove-check", "8")
+    self.run_task("agent-a", "set", task, "--add-check", "last")
+    shown = self.run_cmd("agent-task", "show", task)
+    self.assertIn("## Known\n\n- [ ] other\n", shown)
+    self.assertIn("- [x] target -- evidence: done\n- [ ] last\n\n## Log",
+                  shown)
+    self.run_cmd("agent-task", "lint")
 
   def test_unowned_set_and_block_force(self):
     self.init()

@@ -233,9 +233,11 @@ priority, severity, repository keys, review, links and related task IDs.
 completion checks are merged, cleanup, docs and work-reviewed. A completed
 task needs evidence for every applicable check. For work without repository
 changes, create with `--no-changes` and mark inapplicable checks with
-`check --na REASON`. The review field is separate from the work-reviewed
-check. `agent-task --help` summarizes transitions; each subcommand's
-`--help` describes its options.
+`check --na REASON`. `check` also takes an optional `--reason` to log;
+checking an item again rewrites its evidence, and the owner can `uncheck
+--reason` one ticked in error. The review field is separate from the
+work-reviewed check. `agent-task --help` summarizes transitions; each
+subcommand's `--help` describes its options.
 
 Changelog entries are `entries/YYYY-MM-DD-HHMM-scope-slug.md`; mistakes are
 `mistakes/YYYY-MM-DD-slug.md`. Their headers record the event, location,

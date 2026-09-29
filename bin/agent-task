@@ -160,6 +160,13 @@ def parser():
   check.add_argument("item")
   check.add_argument("--evidence")
   check.add_argument("--na")
+  check.add_argument("--reason")
+  uncheck = add("uncheck", "Untick a completion item; owner only; writes "
+                "task commit.", "agent-task --agent owner uncheck T-0001 "
+                "docs --reason wrong")
+  uncheck.add_argument("task")
+  uncheck.add_argument("item")
+  uncheck.add_argument("--reason", required=True)
   link = add("link", "Link a PR, reference, document or task; writes commit.",
              "agent-task --agent helper link T-0001 --ref note")
   link.add_argument("task")
@@ -201,7 +208,7 @@ def parser():
   recover.add_argument("--discard", action="append", default=[])
   add("lint", "Check record formats; writes nothing.", "agent-task lint")
   for name in ("claim", "release", "handoff", "helper", "status", "set",
-               "check", "link", "close"):
+               "check", "uncheck", "link", "close"):
     sub.choices[name].add_argument("--force", metavar="REASON", help=FORCE_TEXT)
   option_help = {
     "path": "dedicated records directory to initialize",

@@ -33,6 +33,13 @@ so without its own ID it writes as you.
   `agent-task claim T-NNNN`. Claims expire; claim again to extend.
 - **Progress:** `agent-task log T-NNNN 'what changed'` at milestones, not
   every step. `status` moves between in-progress, in-review and blocked.
+- **While you hold a claim, watch it:** others may address you on the task
+  with `log --to`. Where your tool can wait in the background (Claude
+  Code's background Bash re-invokes you when it exits), keep
+  `agent-task watch T-NNNN --for <your id> --until message` running and
+  re-arm it from the cursor it prints. Otherwise read
+  `agent-task show T-NNNN --after <cursor>` at each milestone, and always
+  before you close, release or hand off.
 - **Finish:** tick the completion checks (`check T-NNNN merged --evidence
   ...`, or `--na 'reason'`), then `close T-NNNN done --reason ...`. The
   review check wants a real review.
@@ -42,6 +49,26 @@ so without its own ID it writes as you.
 Your session plan (`TodoWrite`, `update_plan`) is separate: it tracks steps
 within one session. Tasks are for work other agents or later sessions need
 to see.
+
+## Correcting records
+
+Every task correction adds a log line, so the record keeps what
+happened; where a command takes no reason, `log` one. Changelog entries
+have no log: say why in an entry's `--notes`, or for a mistake, in a
+`log` line on its task.
+
+| Mistake | Correction |
+| --- | --- |
+| Wrong evidence or n/a reason | `check` the item again; `--reason` says why |
+| Item ticked in error | `uncheck T-NNNN <item> --reason ...` (owner only) |
+| Task closed too early | `reopen T-NNNN --reason ...` |
+| Wrong status or owner | `status`, `release` or `handoff` |
+| Wrong title, priority, severity or repository | `set ... --reason ...` |
+| Wrong added check | `set --remove-check N`, then `--add-check` |
+| Wrong PR or reference link | `link --demote` or `--remove`, `--reason` |
+| Wrong log message | `log` a correction; the log is append-only |
+| Wrong changelog entry field | `agent-changelog update ... --notes ...` |
+| Wrong mistake record field | `agent-changelog mistake update ...` |
 
 ## Working with other agents on a task
 

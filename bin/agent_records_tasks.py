@@ -220,8 +220,39 @@ def checklist(body):
   match = re.search(r"(?s)## Done when\n(.*?)\n## Log", body)
   if not match:
     raise RecordsError("missing completion checklist", 2)
-  return match, [line for line in match.group(1).splitlines()
+  return match, [line for line in match.group(1).split("\n")
                  if line.startswith("- [")]
+
+
+def checklist_item(body, item):
+  """(index, line, fixed (key, label) or None, key) of a checklist item."""
+  _, lines = checklist(body)
+  index = (int(item) - 1 if re.fullmatch(r"[0-9]+", item) else next(
+    (i for i, line in enumerate(lines) if line.startswith(
+      "- [ ] " + item + ":") or line.startswith("- [x] " + item + ":")), -1))
+  if not 0 <= index < len(lines):
+    raise RecordsError("checklist item not found", 1)
+  line = lines[index]
+  content = line[6:]
+  fixed = (FIXED[index] if index < len(FIXED) and
+           content.startswith(FIXED[index][0] + ":") else None)
+  key = (fixed[0] if fixed else
+         content.split(" -- evidence: ", 1)[0].split(": n/a -- ", 1)[0])
+  return index, line, fixed, key
+
+
+def replace_check(body, index, replacement):
+  """Replace, or with None remove, the index-th checklist line, leaving
+  other sections alone."""
+  match, _ = checklist(body)
+  lines = match.group(1).split("\n")
+  position = [i for i, line in enumerate(lines)
+              if line.startswith("- [")][index]
+  if replacement is None:
+    del lines[position]
+  else:
+    lines[position] = replacement
+  return body[:match.start(1)] + "\n".join(lines) + body[match.end(1):]
 
 
 def close_ready(fields, body, changes, ident, state):
@@ -402,43 +433,44 @@ def alter_task(root, args, agent, push, changes=None):
                 ("\n\n" if section and value else "") + value +
                 "\n" + body[end:])
     if args.add_check:
-      body = body.replace("\n## Log", "\n- [ ] " +
-                          one_line(args.add_check) + "\n\n## Log", 1)
+      match, _ = checklist(body)
+      section = match.group(1).rstrip("\n")
+      body = (body[:match.start(1)] + section + "\n- [ ] " +
+              one_line(args.add_check) + "\n" + body[match.end(1):])
     if args.remove_check:
-      match, lines = checklist(body)
+      _, lines = checklist(body)
       index = args.remove_check - 1
       if index < 4 or index >= len(lines):
         raise RecordsError("cannot remove fixed or missing check", 1)
-      body = body.replace(lines[index] + "\n", "", 1)
+      body = replace_check(body, index, None)
     body = append_log(body, agent, "Set task fields" +
                       (": " + args.reason if args.reason else ""))
   elif command == "check":
     forced_action = permission(fields, agent, command, force, helper=True)
-    match, lines = checklist(body)
-    index = (int(args.item) - 1 if args.item.isdigit() else next(
-      (i for i, line in enumerate(lines) if line.startswith(
-        "- [ ] " + args.item + ":") or line.startswith(
-        "- [x] " + args.item + ":")), -1))
-    if not 0 <= index < len(lines):
-      raise RecordsError("checklist item not found", 1)
+    index, line, fixed, key = checklist_item(body, args.item)
     if bool(args.evidence) == bool(args.na):
       raise RecordsError("give --evidence or --na", 2)
     if args.na and fields.get("produces-changes") == "yes" and index in (0, 3):
       raise RecordsError("this item needs evidence", 1)
-    line = lines[index]
-    content = line[6:]
-    fixed = next(((key, label) for key, label in FIXED
-                  if content.startswith(key + ":")), None)
-    key = (fixed[0] if fixed else
-           content.split(" -- evidence: ", 1)[0].split(": n/a -- ", 1)[0])
     if args.na:
       replacement = "- [x] " + key + ": n/a -- " + one_line(args.na)
     else:
       base = (key + ": " + fixed[1] if fixed else key)
       replacement = ("- [x] " + base + " -- evidence: " +
                      one_line(args.evidence))
-    body = body.replace(line, replacement, 1)
-    body = append_log(body, agent, "Checked " + key)
+    body = replace_check(body, index, replacement)
+    body = append_log(body, agent, (
+      "Rechecked " if line.startswith("- [x] ") else "Checked ") + key +
+      (": " + one_line(args.reason) if args.reason else ""))
+  elif command == "uncheck":
+    forced_action = permission(fields, agent, command, force)
+    index, line, fixed, key = checklist_item(body, args.item)
+    if not line.startswith("- [x] "):
+      raise RecordsError("checklist item is not checked: " + key, 1)
+    body = replace_check(body, index, "- [ ] " + (
+      key + ": " + fixed[1] if fixed else key))
+    body = append_log(body, agent, "Unchecked " + key + ": " +
+                      one_line(args.reason))
   elif command == "link":
     forced_action = permission(fields, agent, command, force, helper=True,
                                unowned=True)
