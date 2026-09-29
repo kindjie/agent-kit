@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 # Bumped when the label schema changes so cached entries refresh once.
 PROMPT_VERSION = 2
 WORK_LIMIT = 60
@@ -322,6 +322,11 @@ def parse_session(path, provider):
     kind = row.get("type")
     payload = row.get("payload") or {}
     when = stamp(row.get("timestamp"))
+    # Where the session started names its project or worktree; later rows
+    # follow the shell into scratch and subdirectories.
+    cwd = row.get("cwd") if provider == "claude" else payload.get("cwd")
+    if not agent.get("cwd") and isinstance(cwd, str) and cwd.strip():
+      agent["cwd"] = cwd
     if provider == "codex" and kind == "session_meta":
       agent["id"] = payload.get("id") or agent["id"]
       start = stamp(payload.get("timestamp"))
@@ -497,6 +502,7 @@ def parse_session(path, provider):
   agent["model"] = latest["model"] or "unknown"
   agent["effort"] = latest["effort"] or "unknown"
   agent["speeds"] = sorted(speeds)
+  agent.setdefault("cwd", None)
   agent["label"] = clean(agent["label"] or agent["id"])
   agent["key"] = provider + ":" + agent["id"]
   agent["warnings"] = sorted(warnings)
@@ -1104,7 +1110,8 @@ STATE_STYLES = {"working": ("green",), "stalled": ("bold", "red"),
 # Table compaction, applied in this order and only while the table is too
 # wide for the terminal: cheapest information loss first.
 COMPACTION = ("drop_cache", "drop_seen", "state_glyphs", "short_ids",
-              "drop_tokens", "effort_prefix", "fold_now", "short_model")
+              "short_dir", "drop_tokens", "effort_prefix", "fold_now",
+              "short_model", "drop_dir")
 WORK_MIN = 16
 # Compaction continues until Work has this much room: the work label is the
 # most informative column, so a barely-visible one counts as needing space.
@@ -1120,6 +1127,35 @@ STATE_LEGEND = {
   "done": ("✓", "done"),
   "aborted": ("✗", "aborted"),
 }
+
+
+def dir_labels(paths, home=None):
+  """Last path segment per distinct directory, `~` for home, with parent
+  segments added only where two directories would otherwise look alike."""
+  home = str(home or Path.home())
+  labels, depth = {}, {}
+  paths = {path for path in paths if path}
+  for path in paths:
+    depth[path] = 1
+  while True:
+    for path in paths:
+      if path == home:
+        labels[path] = "~"
+        continue
+      parts = [part for part in path.split("/") if part]
+      labels[path] = "/".join(parts[-depth[path]:]) or "/"
+    seen = {}
+    for path in paths:
+      seen.setdefault(labels[path], []).append(path)
+    clashes = [group for group in seen.values() if len(group) > 1]
+    grown = False
+    for group in clashes:
+      for path in group:
+        if depth[path] < len([part for part in path.split("/") if part]):
+          depth[path] += 1
+          grown = True
+    if not grown:
+      return labels
 
 
 def unique_prefixes(values, minimum=1):
@@ -1220,11 +1256,15 @@ def render(agents, cache, quota, now, verbose=False, color=False,
     })
   providers = unique_prefixes([e["agent"]["provider"] for e in entries])
   efforts = unique_prefixes([e["agent"]["effort"] for e in entries])
+  dirs = dir_labels(e["agent"].get("cwd") for e in entries)
   suffix = unique_suffix_length([e["agent"]["id"] for e in entries])
 
   def build(steps):
     """Headers, rows, styles and work texts for a set of compactions."""
-    columns = [("Agent", "agent"), ("State", "state")]
+    columns = [("Agent", "agent")]
+    if "drop_dir" not in steps:
+      columns.append(("Dir", "dir"))
+    columns.append(("State", "state"))
     if "fold_now" not in steps:
       columns.append(("Now", "now"))
     columns += [("Work", "work"), ("Model", "model"),
@@ -1251,6 +1291,8 @@ def render(agents, cache, quota, now, verbose=False, color=False,
           short_label(agent)
       cells = {
         "agent": label,
+        "dir": clean(dirs.get(agent.get("cwd")) or "—",
+                     10 if "short_dir" in steps else 20),
         "state": state_text(agent, state, "state_glyphs" in steps, quota),
         "now": fit_action(current, 28, agent.get("now_tail")),
         "model": clean(entry["model"], 8 if "short_model" in steps else 14),
@@ -1343,6 +1385,8 @@ def render(agents, cache, quota, now, verbose=False, color=False,
                  "for 20m; (long) = over 3x the agent's usual turn.")
   if "fold_now" not in steps:
     notes.append("Now = current action or plan.")
+  if "drop_dir" not in steps:
+    notes.append("Dir = where the session started.")
   lines.extend(["", *notes])
   if cache.get("scan_truncated"):
     lines.append(

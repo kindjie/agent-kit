@@ -145,7 +145,8 @@ class AgentViewTest(unittest.TestCase):
   def codex_rows(self, ending):
     rows = [
       {"type": "session_meta", "timestamp": "2026-08-19T20:59:00Z",
-       "payload": {"id": "x", "timestamp": "2026-08-19T20:59:00Z"}},
+       "payload": {"id": "x", "timestamp": "2026-08-19T20:59:00Z",
+                   "cwd": "/src/git/app"}},
       {"type": "event_msg", "timestamp": "2026-08-19T21:00:00Z",
        "payload": {"type": "task_started", "turn_id": "t"}},
       {"type": "response_item", "timestamp": "2026-08-19T21:01:00Z",
@@ -179,6 +180,7 @@ class AgentViewTest(unittest.TestCase):
       self.transcript(self.codex_rows(None), "w.jsonl"), "codex")
     self.assertEqual(working["status"]["state"], "working")
     self.assertEqual(working["status"]["action"], "exec: cargo test")
+    self.assertEqual(working["cwd"], "/src/git/app")
     self.assertEqual(working["status"]["progress"],
                      {"done": 1, "total": 2, "current": "Test"})
     self.assertEqual([(e["tokens"], e["cached"])
@@ -270,7 +272,8 @@ class AgentViewTest(unittest.TestCase):
   def ladder_agents(self):
     def row(ident, work, brief, **fields):
       agent = self.work_row(ident, work, brief)
-      agent.update(recent_tokens=0, turn_age=None, long_turn=False, now="—")
+      agent.update(recent_tokens=0, turn_age=None, long_turn=False, now="—",
+                   cwd="/src/git/dotfiles-housekeeping")
       agent.update(fields)
       return agent
     working = row("0a1b2c3d9cf6", "Fix the build pipeline", "Fix build",
@@ -293,10 +296,12 @@ class AgentViewTest(unittest.TestCase):
       ("drop_seen", "Seen" not in header),
       ("state_glyphs", "▸" in table),
       ("short_ids", "claude:" not in table),
+      ("short_dir", "dotfiles-…" in table or "Dir" not in header),
       ("drop_tokens", "Tokens" not in header),
       ("effort_prefix", " medium " not in table),
       ("fold_now", "Now" not in header),
-      ("short_model", "codex-a…" in table)) if present]
+      ("short_model", "codex-a…" in table),
+      ("drop_dir", "Dir" not in header)) if present]
 
   def test_compaction_follows_the_ladder_only_as_needed(self):
     agents = self.ladder_agents()
@@ -353,6 +358,15 @@ class AgentViewTest(unittest.TestCase):
                                              "max"])["medium"], "me")
     self.assertEqual(AGENTS.unique_suffix_length(
       ["aaaa1234", "bbbb1234", "cccc5678"]), 5)
+
+  def test_dir_labels_use_the_last_segment_unless_ambiguous(self):
+    labels = AGENTS.dir_labels(
+      ["/h/git/app", "/h/work/app", "/h/git/dotfiles", "/h", None],
+      home="/h")
+    self.assertEqual(labels, {"/h/git/app": "git/app",
+                              "/h/work/app": "work/app",
+                              "/h/git/dotfiles": "dotfiles", "/h": "~"})
+    self.assertEqual(AGENTS.dir_labels(["/"]), {"/": "/"})
 
   def test_unknown_state_model_and_effort_render_in_full(self):
     agent = dict(self.work_row("x1", "Work", "Work"), state="paused",
@@ -475,12 +489,13 @@ class AgentViewTest(unittest.TestCase):
           "type": "user",
           "sessionId": "parent",
           "agentId": "child",
+          "cwd": "/src/git/parser",
           "message": {"content": "Review the parser"},
         },
         message(5),
         message(7),
         message(7),
-        dict(message(3), effort="medium",
+        dict(message(3), effort="medium", cwd="/scratch/work",
              message={**message(3)["message"], "id": "m2",
                       "model": "opus"}),
       ],
@@ -489,6 +504,8 @@ class AgentViewTest(unittest.TestCase):
     agent = AGENTS.parse_session(path, "claude")
     self.assertEqual(agent["id"], "child")
     self.assertEqual(agent["parent_id"], "parent")
+    # The starting directory, not where the shell later moved.
+    self.assertEqual(agent["cwd"], "/src/git/parser")
     self.assertEqual(agent["tokens"]["total"], 137 + 133)
     self.assertEqual(agent["tokens"]["input"], 260)
     self.assertEqual(agent["tokens"]["cached"], 200)

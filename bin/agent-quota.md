@@ -462,6 +462,11 @@ model calls:
   agent's median turn, and at least ten minutes. A turn starts at a user
   prompt (Claude Code) or `task_started` (Codex) and ends at an end-turn
   stop or `task_complete`.
+- **Dir**: the directory the session started in (`cwd` in `--compact`),
+  shown by its last segment, `~` for home, with parent segments added only
+  where two directories would otherwise look alike (`git/app`,
+  `work/app`). Later `cd`s are ignored: they wander into scratch and
+  subdirectories, while the start names the project or worktree.
 - **Now**: for a working agent, plan progress such as `2/5 Run tests` when
   the agent keeps a Claude Code `TodoWrite` list or a Codex `update_plan`
   plan, otherwise its pending tool call (`Bash: make test`, or the tools a
@@ -477,16 +482,16 @@ The transcript cannot show a process that died mid-turn: it reads as
 When a terminal width applies and the table would leave Work under 30
 columns, it compacts one step at a time, in this order, stopping as soon as
 it fits: drop Cache; drop Seen (State's age covers it); show State as a
-glyph and compact age (`▸` working, `⬥` waiting, `∙` idle, `!` stalled,
-`✓` done, `✗` aborted, `+` for a long turn) with a generated legend; shorten
+glyph and compact age (`▸` working, `⬥` waiting, `∙` idle, `!` stalled, `✓`
+done, `✗` aborted, `+` for a long turn) with a generated legend; shorten
 agent IDs to the shortest unique provider prefix and ID suffix (`cl:9cf6`,
-growing on collision); drop lifetime Tokens; shorten efforts to their
-shortest unique prefix among the rows shown (`Eff`); fold Now into Work;
-shorten model names with an ellipsis. Short forms are derived from the
-values shown, never from a fixed table, so new models, efforts, states or
-providers appear in full rather than mis-abbreviated. Glyphs are Unicode
-width N or Na without emoji forms. Piped output is unconstrained and never
-compacted. The footer wraps to the width.
+growing on collision); clip Dir to 10 columns; drop lifetime Tokens; shorten
+efforts to their shortest unique prefix among the rows shown (`Eff`); fold
+Now into Work; shorten model names with an ellipsis; drop Dir. Short forms
+are derived from the values shown, never from a fixed table, so new models,
+efforts, states or providers appear in full rather than mis-abbreviated.
+Glyphs are Unicode width N or Na without emoji forms. Piped output is
+unconstrained and never compacted. The footer wraps to the width.
 
 The agent cache keeps work summaries across cache-version changes; only the
 parsed sessions are rebuilt.
