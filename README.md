@@ -21,6 +21,9 @@ Nothing here assumes that repository.
 | `claude-ctx.sh` | tmux status entry point |
 | `agent-speak.sh` | Spoken attention notification, with mute control |
 | `md-preview` | Local GitHub-style Markdown preview served on loopback |
+| `agent-id` | Derives or mints agent IDs and manages repository keys |
+| `agent-task` | Creates, claims, hands off and closes task records |
+| `agent-changelog` | Tracks persistent machine and repository state |
 
 **Skills** (`skills/`)
 
@@ -48,7 +51,7 @@ Nothing here assumes that repository.
 - **[uv](https://docs.astral.sh/uv)** for `md-preview`, which is a PEP 723
   script: uv resolves its pinned dependencies per invocation. Without it the
   wrapper says so and exits 127.
-- `git` — optional, used to locate a repository root.
+- `git` — required for the records commands; optional for other tools.
 - An authenticated `claude` or `codex` CLI for `agent-quota` to report on.
   It reports what it can observe and leaves the rest unknown.
 - Speech is optional: `say` on macOS, `spd-say` or `espeak-ng` on Linux.
@@ -66,7 +69,8 @@ cd ~/src/agent-kit
 **Commands.** Link the whole `bin/` directory, not individual files.
 `claude-ctx.sh`, `claude-status.sh` and `md-preview` locate their siblings
 through the path they were invoked by, so a partial link fails at runtime
-rather than at install time.
+rather than at install time. The records commands also work when linked
+individually because they resolve their Python modules through real paths.
 
 ```sh
 mkdir -p ~/bin/agent-kit
@@ -139,6 +143,91 @@ component blank until the server restarts:
 ```tmux
 set -g status-right "#($HOME/bin/agent-kit/claude-ctx.sh #{window_id} #{client_width})"
 ```
+
+## Agent records
+
+Tasks and changelog entries live in separate, dedicated git repositories.
+Configure their roots with `AGENT_TASKS_DIR` and `AGENT_CHANGELOG_DIR`, or
+put a `records.json` in `${XDG_CONFIG_HOME:-~/.config}/agent-kit/`:
+
+```json
+{
+  "tasks_dir": "/path/to/tasks",
+  "changelog_dir": "/path/to/changelog",
+  "machine": "example-machine",
+  "push": false,
+  "repos": {"/path/to/checkout": "example-repo"}
+}
+```
+
+`--dir` overrides each directory's configured path. `AGENT_MACHINE` overrides
+the machine setting. Without either, the commands use `hostname -s`, which
+can change with network configuration; pin a stable machine name. There are
+no built-in records directories. Initialize each root once:
+
+```sh
+agent-task init /path/to/tasks
+agent-changelog init /path/to/changelog
+agent-task doctor
+agent-changelog doctor
+```
+
+`init --adopt` accepts an existing records-only git repository. Other tracked
+paths need a repeated `--allow PATH`; the marker records these exceptions.
+Both roots must be writable in an agent sandbox, including their lock and
+journal files. `doctor` probes writability and tests git signing in a
+temporary repository. It may open a signing prompt. The commands respect
+the repository's signing settings and hooks; an executable commit or push
+hook makes mutations refuse because it could change unjournaled files.
+
+Task files are `T-0001-slug.md`, moving unchanged in name to `archive/` on
+close. Their `key: value` header holds status, owner, claim expiry, helpers,
+priority, severity, repository keys, review, links and related task IDs.
+`## Known`, `## Plan`, `## Done when` and `## Log` follow. The four fixed
+completion checks are merged, cleanup, docs and work-reviewed. A completed
+task needs evidence for every applicable check. For work without repository
+changes, create with `--no-changes` and mark inapplicable checks with
+`check --na REASON`. The review field is separate from the work-reviewed
+check. `agent-task --help` summarizes transitions; each subcommand's
+`--help` describes its options.
+
+Changelog entries are `entries/YYYY-MM-DD-HHMM-scope-slug.md`; mistakes are
+`mistakes/YYYY-MM-DD-slug.md`. Their headers record the event, location,
+reason, cleanup plan, repository keys and associated task IDs. The `tasks:`
+field is the association authority: tasks do not duplicate it. Open records
+must be closed, mitigated or transferred before their last task closes.
+Records document state but never authorize deleting it.
+
+Give each writer an explicit identity. `agent-id show` derives one from a
+session variable; `agent-id new helper` mints and stores one for a delegated
+agent. The delegating agent can pass this prompt fragment:
+
+```text
+Your agent ID is helper-0123456789abcdef. Work on T-0001.
+Pass --agent helper-0123456789abcdef to every records mutation.
+Use agent-task --agent helper-0123456789abcdef log T-0001
+  --to all 'Progress update' for coordination.
+```
+
+Agents sharing a task may use `helper add`, `log --to`, `show --after` and
+`watch --for` to exchange messages. `watch` prints a cursor to resume from;
+after a log rewrite, scan the full log it prints before resuming. Every
+mutation requires `--agent` or `AGENT_ID`; inherited session variables do
+not silently grant the parent's identity. `--force REASON` is only for the
+human owner's explicit instruction, quoted or cited in the reason. It never
+bypasses a completion gate; close as `cancelled` or `superseded` with a reason
+when completion is not appropriate.
+
+Exit codes are 0 success, 1 refusal with records verified unchanged,
+2 usage or configuration error, 3 committed locally but push failed,
+4 watch timeout, and 5 recovery needed or git operation in progress. A
+mutation commits with explicit paths. `push` defaults to false, including
+for `sync`. With `push: true`, pushes hold the records lock, so readers and
+watch polls can wait behind them. A failed rebase is aborted and reported;
+resolve conflicts manually. If two machines allocate the same task ID and
+`.next-id` conflicts, renumber the local task file and its `id:`, `related:`
+references and changelog `tasks:` values, then run both `lint` commands.
+Never use a records entry itself as permission to remove a worktree or file.
 
 ## What it reads, and what leaves the machine
 

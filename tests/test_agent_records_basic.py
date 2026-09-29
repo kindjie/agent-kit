@@ -1,0 +1,360 @@
+"""End-to-end tests for the agent records commands."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import os
+import json
+import subprocess
+import sys
+import tempfile
+import unittest
+import shutil
+import time
+from pathlib import Path
+
+from tests.agent_records_support import RecordsFixture
+
+
+ROOT = Path(__file__).resolve().parents[1]
+BIN = ROOT / "bin"
+
+
+class SetupTest(RecordsFixture):
+
+  def test_id_derivation_and_registry(self):
+    env = dict(self.env, CLAUDE_CODE_SESSION_ID="same-prefix-111")
+    first = self.run_cmd("agent-id", "show", env=env).strip()
+    env["CLAUDE_CODE_SESSION_ID"] = "same-prefix-222"
+    second = self.run_cmd("agent-id", "show", env=env).strip()
+    self.assertNotEqual(first, second)
+    env = dict(self.env, CODEX_THREAD_ID="thread-value",
+               CODEX_SESSION_ID="session-value")
+    self.assertEqual(self.run_cmd("agent-id", "show", env=env).strip(),
+                     "codex-" + hashlib.sha256(
+                       b"thread-value").hexdigest()[:16])
+    env.pop("CODEX_THREAD_ID")
+    self.assertEqual(self.run_cmd("agent-id", "show", env=env).strip(),
+                     "codex-" + hashlib.sha256(
+                       b"session-value").hexdigest()[:16])
+    for name in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID",
+                 "CODEX_SESSION_ID"):
+      env.pop(name, None)
+    self.run_cmd("agent-id", "show", env=env, code=1)
+    minted = self.run_cmd("agent-id", "new", "helper").strip()
+    self.assertIn(minted, self.run_cmd("agent-id", "recent"))
+    blocked = self.base / "state-file"
+    blocked.write_text("not a directory\n")
+    bad_env = dict(self.env, XDG_STATE_HOME=str(blocked))
+    self.assertEqual(self.run_cmd("agent-id", "new", "helper",
+                                  env=bad_env, code=1), "")
+
+  def test_configuration_precedence_and_machine(self):
+    self.init()
+    cfg = self.base / "agent-kit" / "records.json"
+    cfg.parent.mkdir(exist_ok=True)
+    cfg.write_text(json.dumps({"tasks_dir": "/missing/tasks",
+                               "machine": "configured-machine"}))
+    self.assertIn("configured-machine (config)",
+                  self.run_cmd("agent-id", "machine"))
+    env = dict(self.env, AGENT_MACHINE="environment-machine")
+    self.assertIn("environment-machine (environment)",
+                  self.run_cmd("agent-id", "machine", env=env))
+    self.run_cmd("agent-task", "list")
+    no_env = dict(self.env)
+    no_env.pop("AGENT_TASKS_DIR")
+    self.run_cmd("agent-task", "list", env=no_env, code=2)
+    self.run_cmd("agent-task", "--dir", self.tasks, "list", env=no_env)
+
+  def test_unconfigured_directory_is_usage_error(self):
+    env = dict(self.env)
+    env.pop("AGENT_TASKS_DIR", None)
+    env.pop("AGENT_CHANGELOG_DIR", None)
+    self.run_cmd("agent-task", "list", env=env, code=2)
+    self.run_cmd("agent-changelog", "list", env=env, code=2)
+
+  def test_close_requires_changelog_configuration(self):
+    self.run_cmd("agent-task", "init", self.tasks)
+    self.env["AGENT_TASKS_DIR"] = str(self.tasks)
+    task = self.run_cmd("agent-task", "--agent", "agent-a", "new",
+                        "--title", "Needs changelog").strip()
+    self.run_cmd("agent-task", "--agent", "agent-a", "claim", task)
+    self.run_cmd("agent-task", "--agent", "agent-a", "close", task,
+                 "cancelled", "--reason", "stopped", code=2)
+
+  def test_init_task_claim_and_changelog(self):
+    self.init()
+    self.run_cmd("agent-task", "new", "--title", "Example task", code=2)
+    inherited = dict(self.env, CLAUDE_CODE_SESSION_ID="inherited")
+    self.run_cmd("agent-task", "new", "--title", "Example task",
+                 env=inherited, code=2)
+    task = self.run_cmd("agent-task", "--agent", "agent-a", "new",
+                        "--title", "Example task").strip()
+    self.assertEqual(task, "T-0001")
+    self.run_cmd("agent-task", "--agent", "agent-a", "claim", task)
+    self.assertIn("in-progress", self.run_cmd("agent-task", "show", task))
+    entry = self.run_cmd(
+      "agent-changelog", "--agent", "agent-a", "new", "--scope",
+      "example", "--slug", "scratch", "--kind", "scratch",
+      "--location", "scratch", "--why", "example",
+      "--cleanup-when", "after work", "--cleanup-how", "remove",
+      "--task", task,
+    ).strip()
+    self.assertIn(entry, self.run_cmd("agent-task", "show", task))
+    self.run_cmd("agent-task", "--agent", "agent-a", "close", task,
+                 "cancelled", "--reason", "stopped", code=1)
+    self.run_cmd("agent-changelog", "--agent", "agent-a", "close",
+                 entry, "--what", "removed")
+    self.run_cmd("agent-task", "--agent", "agent-a", "close", task,
+                 "cancelled", "--reason", "stopped")
+    self.assertTrue(list((self.tasks / "archive").glob("T-0001-*.md")))
+
+  def test_help_and_missing_git(self):
+    commands = {
+      "agent-id": ("show", "new", "recent", "machine", "repo-keys",
+                   "repo-rebind"),
+      "agent-task": ("init", "doctor", "new", "show", "list", "next",
+                     "claim", "release", "handoff", "helper", "status",
+                     "set", "check", "link", "log", "close", "reopen",
+                     "watch", "sync", "recover", "lint"),
+      "agent-changelog": ("init", "doctor", "new", "update", "close",
+                          "mistake", "list", "show", "watch", "sync",
+                          "recover", "migrate", "lint"),
+    }
+    for name, subcommands in commands.items():
+      self.run_cmd(name, "--help")
+      for subcommand in subcommands:
+        self.run_cmd(name, subcommand, "--help")
+    for subcommand in ("new", "update"):
+      self.run_cmd("agent-changelog", "mistake", subcommand, "--help")
+    no_git = dict(self.env, PATH="")
+    self.run_cmd("agent-id", "show", env=no_git, code=2)
+    self.run_cmd("agent-task", "doctor", env=no_git, code=2)
+    self.run_cmd("agent-changelog", "doctor", env=no_git, code=2)
+
+  def test_adopt_and_nested_init(self):
+    repository = self.base / "existing"
+    repository.mkdir()
+    subprocess.check_call(["git", "-C", str(repository), "init", "-q"],
+                          env=self.env)
+    (repository / "README.md").write_text("Existing instructions\n")
+    subprocess.check_call(["git", "-C", str(repository), "add", "README.md"],
+                          env=self.env)
+    subprocess.check_call(["git", "-C", str(repository), "commit", "-qm",
+                           "Initial"], env=self.env)
+    self.run_cmd("agent-task", "init", repository, "--adopt")
+    self.assertEqual((repository / "README.md").read_text(),
+                     "Existing instructions\n")
+    self.run_cmd("agent-changelog", "init", repository / "nested", code=2)
+
+  def test_separate_git_dir_checks_hooks_operations_and_index_lock(self):
+    repository = self.base / "separate"
+    gitdir = self.base / "separate-git"
+    subprocess.run(["git", "init", "-q", "--separate-git-dir=" + str(gitdir),
+                    str(repository)], env=self.env, check=True)
+    self.assertTrue((repository / ".git").is_file())
+    hook = gitdir / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 0\n")
+    hook.chmod(0o755)
+    self.run_cmd("agent-task", "init", repository, "--adopt", code=2)
+    hook.unlink()
+    self.run_cmd("agent-task", "init", repository, "--adopt")
+    env = dict(self.env, AGENT_TASKS_DIR=str(repository))
+    (gitdir / "MERGE_HEAD").write_text("in progress\n")
+    self.run_cmd("agent-task", "--agent", "agent-a", "new", "--title",
+                 "Blocked", env=env, code=5)
+    (gitdir / "MERGE_HEAD").unlink()
+    (repository / ".records-journal.json").write_text('{"id":"pending"}')
+    (gitdir / "index.lock").write_text("occupied\n")
+    result = subprocess.run(
+      [sys.executable, str(BIN / "agent-task"), "list"], env=env,
+      cwd=self.base, capture_output=True, text=True)
+    self.assertEqual(result.returncode, 5, result.stderr)
+    self.assertIn("index.lock", result.stderr)
+
+  def test_non_git_records_directory_is_configuration_error(self):
+    directory = self.base / "plain"
+    directory.mkdir()
+    result = subprocess.run(
+      [sys.executable, str(BIN / "agent-task"), "--dir", str(directory),
+       "list"], env=self.env, cwd=self.base, capture_output=True,
+      text=True)
+    self.assertEqual(result.returncode, 2, result.stderr)
+    self.assertIn("git repository", result.stderr)
+    self.assertNotIn("fatal:", result.stderr)
+
+  def test_init_refuses_unrelated_files_and_adopt_allow(self):
+    nonempty = self.base / "nonempty"
+    nonempty.mkdir()
+    (nonempty / "unrelated.txt").write_text("keep\n")
+    self.run_cmd("agent-task", "init", nonempty, code=2)
+    self.assertFalse((nonempty / ".git").exists())
+    repository = self.base / "adopt-extra"
+    repository.mkdir()
+    subprocess.check_call(["git", "-C", str(repository), "init", "-q"],
+                          env=self.env)
+    (repository / "LICENSE").write_text("example\n")
+    subprocess.check_call(["git", "-C", str(repository), "add", "LICENSE"],
+                          env=self.env)
+    subprocess.check_call(["git", "-C", str(repository), "commit", "-qm",
+                           "Initial"], env=self.env)
+    self.run_cmd("agent-task", "init", repository, "--adopt", code=1)
+    self.run_cmd("agent-task", "init", repository, "--adopt", "--allow",
+                 "LICENSE")
+    self.run_cmd("agent-task", "--dir", repository, "lint")
+
+  def test_failed_init_leaves_destination_unchanged(self):
+    config = self.base / "signing-config"
+    config.write_text(
+      "[user]\n\tname = Example User\n\temail = example.invalid\n"
+      "[commit]\n\tgpgsign = true\n"
+      "[gpg]\n\tprogram = /does/not/exist\n")
+    env = dict(self.env, GIT_CONFIG_GLOBAL=str(config))
+    destination = self.base / "failed-init"
+    self.run_cmd("agent-task", "init", destination, env=env, code=1)
+    self.assertFalse(destination.exists())
+
+  def test_concurrent_ids_and_handmade_task(self):
+    self.init()
+    commands = [[sys.executable, str(BIN / "agent-task"), "--agent",
+                 "agent-a", "new", "--title", title]
+                for title in ("First", "Second")]
+    processes = [subprocess.Popen(cmd, cwd=self.base, env=self.env,
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True)
+                 for cmd in commands]
+    results = [process.communicate(timeout=8) for process in processes]
+    self.assertEqual([process.returncode for process in processes], [0, 0],
+                     results)
+    self.assertEqual({result[0].strip() for result in results},
+                     {"T-0001", "T-0002"})
+    first = next(self.tasks.glob("T-*-first.md"))
+    template = first.read_text()
+    original_id = first.name.split("-", 2)[:2]
+    (self.tasks / "T-0010-handmade.md").write_text(
+      template.replace("id: " + "-".join(original_id),
+                       "id: T-0010").replace(
+        "title: First", "title: Handmade"))
+    self.assertEqual(self.run_cmd("agent-task", "--agent", "agent-a", "new",
+                                  "--title", "After hand edit").strip(),
+                     "T-0011")
+
+  def test_repository_basename_collision(self):
+    self.init()
+    first = self.base / "first" / "same"
+    second = self.base / "second" / "same"
+    for path in (first, second):
+      path.mkdir(parents=True)
+      subprocess.check_call(["git", "-C", str(path), "init", "-q"],
+                            env=self.env)
+      (path / "README.md").write_text("example\n")
+      subprocess.check_call(["git", "-C", str(path), "add", "README.md"],
+                            env=self.env)
+      subprocess.check_call(["git", "-C", str(path), "commit", "-qm",
+                             "Initial"], env=self.env)
+    self.run_cmd("agent-task", "--agent", "agent-a", "new", "--title",
+                 "First repo", cwd=first)
+    self.run_cmd("agent-task", "--agent", "agent-a", "new", "--title",
+                 "Second repo", cwd=second, code=2)
+
+  def test_simultaneous_repository_key_claim_has_one_winner(self):
+    first = self.base / "first" / "same"
+    second = self.base / "second" / "same"
+    for path in (first, second):
+      path.mkdir(parents=True)
+      subprocess.check_call(["git", "-C", str(path), "init", "-q"],
+                            env=self.env)
+      (path / "README.md").write_text("example\n")
+      subprocess.check_call(["git", "-C", str(path), "add", "README.md"],
+                            env=self.env)
+      subprocess.check_call(["git", "-C", str(path), "commit", "-qm",
+                             "Initial"], env=self.env)
+    env = dict(self.env, PYTHONPATH=str(BIN))
+    script = ("import sys\n"
+              "from agent_records_core import repo_key, RecordsError\n"
+              "try:\n"
+              "  print(repo_key())\n"
+              "except RecordsError as exc:\n"
+              "  sys.exit(exc.code)\n")
+    command = [sys.executable, "-c", script]
+    processes = [subprocess.Popen(command, cwd=path, env=env,
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True)
+                 for path in (first, second)]
+    results = [process.communicate(timeout=8) for process in processes]
+    self.assertEqual(sorted(process.returncode for process in processes),
+                     [0, 2], results)
+    registry = json.loads((self.base / "agent-kit" /
+                           "repo-keys.json").read_text())
+    self.assertIn(registry["keys"]["same"],
+                  (str(first.resolve()), str(second.resolve())))
+
+  def test_repo_rebind_records_forced_reason_in_registry(self):
+    self.init()
+    original = self.base / "original"
+    replacement = self.base / "replacement"
+    for path in (original, replacement):
+      path.mkdir()
+      subprocess.check_call(["git", "-C", str(path), "init", "-q"],
+                            env=self.env)
+      (path / "README.md").write_text("example\n")
+      subprocess.check_call(["git", "-C", str(path), "add", "README.md"],
+                            env=self.env)
+      subprocess.check_call(["git", "-C", str(path), "commit", "-qm",
+                             "Initial"], env=self.env)
+    self.run_cmd("agent-task", "--agent", "agent-a", "new", "--title",
+                 "Original checkout", cwd=original)
+    self.run_cmd("agent-id", "--agent", "agent-a", "repo-rebind",
+                 "original", replacement, code=1)
+    self.run_cmd("agent-id", "--agent", "agent-a", "repo-rebind",
+                 "original", replacement, "--force", "owner instructed move")
+    registry = json.loads((self.base / "agent-kit" /
+                           "repo-keys.json").read_text())
+    self.assertEqual(registry["keys"]["original"],
+                     str(replacement.resolve()))
+    self.assertEqual(registry["events"][-1]["reason"],
+                     "owner instructed move")
+    self.assertTrue(registry["events"][-1]["forced"])
+    self.assertEqual(registry["events"][-1]["agent"], "agent-a")
+
+  def test_doctor_preserves_records_and_head(self):
+    self.init()
+    before = {path.relative_to(self.tasks): path.read_bytes()
+              for path in self.tasks.iterdir() if path.is_file() and
+              not path.name.startswith(".records")}
+    head = subprocess.check_output(
+      ["git", "-C", str(self.tasks), "rev-parse", "HEAD"],
+      env=self.env).strip()
+    self.run_cmd("agent-task", "doctor")
+    after = {path.relative_to(self.tasks): path.read_bytes()
+             for path in self.tasks.iterdir() if path.is_file() and
+             not path.name.startswith(".records")}
+    self.assertEqual(before, after)
+    self.assertEqual(subprocess.check_output(
+      ["git", "-C", str(self.tasks), "rev-parse", "HEAD"],
+      env=self.env).strip(), head)
+
+  def test_linked_worktree_uses_main_repository_key(self):
+    self.init()
+    main = self.base / "main-checkout"
+    linked = self.base / "linked-checkout"
+    main.mkdir()
+    subprocess.check_call(["git", "-C", str(main), "init", "-q"],
+                          env=self.env)
+    (main / "README.md").write_text("example\n")
+    subprocess.check_call(["git", "-C", str(main), "add", "README.md"],
+                          env=self.env)
+    subprocess.check_call(["git", "-C", str(main), "commit", "-qm",
+                           "Initial"], env=self.env)
+    subprocess.check_call(["git", "-C", str(main), "worktree", "add",
+                           "--detach", "-q", str(linked)], env=self.env)
+    task = self.run_cmd("agent-task", "--agent", "agent-a", "new",
+                        "--title", "Linked", cwd=linked).strip()
+    self.assertIn("repos: main-checkout",
+                  self.run_cmd("agent-task", "show", task))
+    registry = json.loads((self.base / "agent-kit" /
+                           "repo-keys.json").read_text())
+    self.assertEqual(registry["keys"]["main-checkout"], str(main.resolve()))
+    self.run_cmd("agent-id", "--agent", "agent-a", "repo-rebind",
+                 "main-checkout", linked, code=2)

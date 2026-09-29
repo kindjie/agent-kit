@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+"""Manage git-backed machine and repository changelog records."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import sys
+import textwrap
+from pathlib import Path
+
+sys.path.insert(0, str(Path(os.path.realpath(__file__)).parent))
+from agent_records_core import (
+  EXIT_TEXT, FORCE_TEXT, RecordsError, config, directory, doctor, init_repo,
+  duration, one_line, record_locks, require_agent, sync, unexpected_error,
+)
+from agent_records_changelog import (
+  lint_records, list_records, migrate, new_entry, show_record, update_record,
+  watch_record,
+)
+
+
+def parser():
+  details = (
+    textwrap.fill(
+      "Formats: entries/YYYY-MM-DD-HHMM-scope-slug.md has date, machine, "
+      "agent, kind, status, location, why, cleanup-when, cleanup-how, "
+      "repos and tasks fields. mistakes/YYYY-MM-DD-slug.md records "
+      "severity, impact, cause, detection, cleanup and prevention.") +
+    "\n" + textwrap.fill(
+      "Transitions: entry open -> closed with close; mistake open -> "
+      "mitigated -> resolved via mistake update.") + "\n" +
+    textwrap.fill(
+      "Cursor: h:HASH identifies the current file bytes. watch --until "
+      "accepts closed or change; --after resumes from a cursor.")
+  )
+  p = argparse.ArgumentParser(
+    description=textwrap.fill("Manage changelog files and git commits. " +
+                              EXIT_TEXT),
+    epilog=details + "\nExample: agent-changelog list",
+    formatter_class=argparse.RawDescriptionHelpFormatter)
+  p.add_argument("--dir", help="changelog repository root")
+  p.add_argument("--agent", help="explicit actor ID for mutations")
+  p.add_argument("--wait", type=float, default=400,
+                 help="seconds to wait for ordered records locks")
+  p.add_argument("--unlocked", action="store_true",
+                 help="read without lock if unavailable; mark UNVERIFIED")
+  sub = p.add_subparsers(dest="command", required=True, metavar="COMMAND")
+
+  def add(name, description, example):
+    return sub.add_parser(name, description=textwrap.fill(
+                            description + " " + EXIT_TEXT),
+                          epilog=textwrap.fill("Example: " + example),
+                          formatter_class=argparse.RawDescriptionHelpFormatter)
+
+  init = add("init", "Create or adopt dedicated git records repository; "
+             "writes initial commit.",
+             "agent-changelog init /path/to/changelog")
+  init.add_argument("path")
+  init.add_argument("--adopt", action="store_true")
+  init.add_argument("--allow", action="append", default=[])
+  add("doctor", "Check setup; temporary signing probe may prompt.",
+      "agent-changelog doctor")
+  new = add("new", "Create an entry and commit it.",
+            "agent-changelog --agent helper new --scope example --slug work "
+            "--kind scratch --location scratch --why example "
+            "--cleanup-when later --cleanup-how remove")
+  for name in ("scope", "slug", "kind", "location", "why",
+               "cleanup-when", "cleanup-how"):
+    new.add_argument("--" + name, required=True)
+  new.add_argument("--notes")
+  new.add_argument("--repo", action="append")
+  new.add_argument("--task", action="append")
+  update = add("update", "Edit an entry and commit it.",
+               "agent-changelog --agent helper update entries/example.md "
+               "--cleanup-when later")
+  update.add_argument("entry")
+  close = add("close", "Close an entry and commit it.",
+              "agent-changelog --agent helper close entries/example.md "
+              "--what removed")
+  close.add_argument("entry")
+  close.add_argument("--what", required=True)
+  close.add_argument("--force", metavar="REASON", help=FORCE_TEXT)
+  mistake = add("mistake", "Create or edit incident records; writes commits.",
+                "agent-changelog --agent helper mistake new --slug example "
+                "--severity low --scope example --summary issue --impact none "
+                "--cause unknown --detection review --cleanup-options inspect "
+                "--prevention check")
+  mistake_sub = mistake.add_subparsers(dest="mistake_command", required=True)
+  mnew = mistake_sub.add_parser("new", description="Write a mistake file "
+                                "and commit. " +
+                                EXIT_TEXT, epilog="Example: agent-changelog "
+                                "--agent helper mistake new --slug example")
+  for name in ("slug", "scope", "summary", "impact", "cause",
+               "detection", "cleanup-options", "prevention"):
+    mnew.add_argument("--" + name, required=True)
+  mnew.add_argument("--severity", required=True,
+                    choices=["low", "medium", "high", "critical"])
+  mnew.add_argument("--status", choices=["open", "mitigated", "resolved"],
+                    default="open")
+  mnew.add_argument("--repo", action="append")
+  mnew.add_argument("--task", action="append")
+  mupdate = mistake_sub.add_parser("update", description="Edit a mistake "
+                                   "file and commit. " +
+                                   EXIT_TEXT, epilog="Example: agent-changelog "
+                                   "--agent helper mistake update "
+                                   "mistakes/example.md --status mitigated")
+  mupdate.add_argument("entry")
+  mupdate.add_argument("--status", choices=["open", "mitigated", "resolved"])
+  for name in ("cleanup-done", "cause", "prevention"):
+    mupdate.add_argument("--" + name)
+  listing = add("list", "Read entries and optional mistakes; writes nothing.",
+                "agent-changelog list --mistakes")
+  listing.add_argument("--open", action="store_true")
+  listing.add_argument("--machine", nargs="?", const="")
+  listing.add_argument("--kind")
+  listing.add_argument("--repo", action="append")
+  listing.add_argument("--here", action="store_true")
+  listing.add_argument("--task")
+  listing.add_argument("--mistakes", action="store_true")
+  listing.add_argument("--json", action="store_true")
+  show = add("show", "Read one record and cursor; writes nothing.",
+             "agent-changelog show entries/example.md")
+  show.add_argument("entry")
+  watch = add("watch", "Poll one record; writes nothing.",
+              "agent-changelog watch entries/example.md --until closed")
+  watch.add_argument("entry")
+  watch.add_argument("--until", choices=["closed", "change"], required=True)
+  watch.add_argument("--after")
+  watch.add_argument("--timeout", default="540")
+  watch.add_argument("--interval", default="5")
+  add("sync", "Pull with rebase and optionally push; writes git state.",
+      "agent-changelog sync")
+  recover = add("recover", "Resolve a journal; may write records and commit.",
+                "agent-changelog recover --discard entries/example.md")
+  recover.add_argument("--keep", action="append", default=[])
+  recover.add_argument("--discard", action="append", default=[])
+  migrate_cmd = add("migrate", "Add repository keys from JSON map; dry run "
+                    "unless --write.",
+                    "agent-changelog --agent helper migrate "
+                    "--set-repos map.json")
+  migrate_cmd.add_argument("--set-repos", required=True)
+  migrate_cmd.add_argument("--write", action="store_true")
+  add("lint", "Check record formats; writes nothing.",
+      "agent-changelog lint")
+  for target in (update, mupdate):
+    names = (("location", "why", "cleanup-when", "cleanup-how", "notes")
+             if target == update else ())
+    for name in names:
+      target.add_argument("--" + name)
+    for name in ("add-repo", "remove-repo", "add-task", "remove-task",
+                 "transfer", "from-task", "reason"):
+      target.add_argument("--" + name)
+  option_help = {
+    "path": "dedicated changelog directory to initialize",
+    "adopt": "adopt an existing records-only git repository",
+    "allow": "allow an existing tracked path when adopting; repeatable",
+    "scope": "short scope key, or mistake scope text",
+    "slug": "lowercase filename slug",
+    "kind": "worktree, stash, branch, scratch, asset, backup, tool, "
+            "service or other; combine with +",
+    "location": "where the recorded state lives",
+    "why": "reason this state exists",
+    "cleanup_when": "condition under which cleanup is appropriate",
+    "cleanup_how": "steps to clean up after checking current state",
+    "notes": "append notes; use - for multiline standard input",
+    "repo": "associated repository key; repeatable",
+    "task": "associated live task ID; repeatable",
+    "entry": "entry or mistake path relative to records root",
+    "what": "what was done to close the entry",
+    "severity": "mistake severity from low to critical",
+    "summary": "one-line mistake summary",
+    "impact": "observed impact",
+    "cause": "known cause or current understanding",
+    "detection": "how the mistake was discovered",
+    "cleanup_options": "possible cleanup actions",
+    "prevention": "change that could prevent recurrence",
+    "status": "mistake state: open, mitigated or resolved",
+    "cleanup_done": "append dated cleanup action",
+    "open": "list only open records",
+    "machine": "filter by machine; omitted NAME means this machine",
+    "here": "filter by current checkout's repository key",
+    "mistakes": "include mistake records in list",
+    "json": "emit machine-readable JSON",
+    "until": "closed (state condition) or change after the cursor",
+    "after": "resume from h:HASH file-content cursor",
+    "timeout": "watch deadline in seconds; exit 4 on timeout",
+    "interval": "poll interval in seconds, minimum 1",
+    "keep": "keep and commit this journal path; repeatable",
+    "discard": "discard this journal path; repeatable",
+    "set_repos": "JSON mapping from record paths to repository keys",
+    "write": "commit migration; default is dry run",
+    "add_repo": "add a repository key",
+    "remove_repo": "remove a repository key",
+    "add_task": "associate a live task ID",
+    "remove_task": "remove a task; open record needs another live task",
+    "transfer": "replace an associated task with this live task",
+    "from_task": "source task when record has multiple tasks",
+    "reason": "reason logged with task association change",
+  }
+  for command in (*sub.choices.values(), mnew, mupdate):
+    for action in command._actions:
+      if action.help is None:
+        action.help = option_help.get(action.dest, "value for this command")
+  watch.epilog = textwrap.fill(
+    "Cursor h:HASH identifies file bytes. With --after, a changed file "
+    "prints its full header and new cursor, and satisfies change. An "
+    "unlocked result is marked UNVERIFIED.") + "\n" + \
+    textwrap.fill("Example: agent-changelog watch entries/example.md "
+                  "--until change")
+  return p
+
+
+def main():
+  args = parser().parse_args()
+  if not shutil.which("git"):
+    raise RecordsError("git is required", 2)
+  duration(args.wait, "wait")
+  if getattr(args, "force", None) is not None:
+    one_line(args.force, "force reason")
+    if not args.force.strip():
+      raise RecordsError("--force requires an owner instruction reason", 2)
+  cfg = config()
+  if args.command == "init":
+    init_repo(args.path, "changelog", args.adopt, args.allow)
+    return 0
+  root = directory("changelog", args.dir, cfg)
+  tasks = directory("tasks", cfg=cfg)
+  if root is None:
+    raise RecordsError("changelog directory is not configured", 2)
+  naming_task = (
+    (args.command == "new" and bool(args.task)) or
+    (args.command == "mistake" and args.mistake_command == "new" and
+     bool(args.task)) or
+    (args.command in ("update", "mistake") and any(
+      getattr(args, name, None) for name in
+      ("add_task", "remove_task", "transfer"))) or
+    (args.command == "list" and bool(args.task)))
+  if naming_task and tasks is None:
+    raise RecordsError("tasks directory is not configured", 2)
+  if args.command == "doctor":
+    doctor(root, "changelog", cfg.get("push", False), args.wait, tasks)
+    print("ok")
+    return 0
+  if args.command == "watch":
+    return watch_record(root, tasks, args)
+  read = args.command in ("list", "show", "lint") or (
+    args.command == "migrate" and not args.write)
+  agent = "reader" if read else require_agent(args.agent)
+  writes = [] if read else [root]
+  if args.command in ("update", "mistake") and getattr(args, "transfer", None):
+    writes.append(tasks)
+  if args.command == "recover" and tasks:
+    writes.append(tasks)
+  with record_locks(tasks, root, writes, args.wait, agent,
+                    args.command, args.unlocked,
+                    auto_recover=args.command != "recover") as authoritative:
+    if args.command == "new":
+      new_entry(root, tasks, args, agent, cfg.get("push", False))
+    elif args.command == "update":
+      update_record(root, tasks, args, agent, cfg.get("push", False))
+    elif args.command == "close":
+      update_record(root, tasks, args, agent, cfg.get("push", False))
+    elif args.command == "mistake":
+      if args.mistake_command == "new":
+        new_entry(root, tasks, args, agent, cfg.get("push", False), True)
+      else:
+        update_record(root, tasks, args, agent, cfg.get("push", False), True)
+    elif args.command == "list":
+      list_records(root, args, authoritative)
+    elif args.command == "show":
+      show_record(root, args.entry, authoritative)
+    elif args.command == "lint":
+      errors = lint_records(root, tasks)
+      for error in errors:
+        print(error)
+      return 1 if errors else 0
+    elif args.command == "migrate":
+      migrate(root, args, agent, cfg.get("push", False))
+    elif args.command == "sync":
+      sync(root, cfg.get("push", False))
+    elif args.command == "recover":
+      from agent_records_core import (read_journal, resolve_cross,
+                                      recover_single)
+      pending = read_journal(root) or (read_journal(tasks) if tasks else None)
+      if pending:
+        print("journal:", pending.get("operation", pending["id"]))
+        if pending.get("cross") or pending.get("cross_stub"):
+          from agent_records_tasks import lint_tasks
+          resolve_cross(
+            tasks, root, args.keep, args.discard,
+            {"tasks": lambda: lint_tasks(tasks, root),
+             "changelog": lambda: lint_records(root, tasks)})
+        else:
+          recover_single(root, keep=args.keep, discard=args.discard,
+                         validator=lambda: lint_records(root, tasks))
+  return 0
+
+
+if __name__ == "__main__":
+  try:
+    sys.exit(main())
+  except RecordsError as exc:
+    print(str(exc), file=sys.stderr)
+    sys.exit(exc.code)
+  except Exception as exc:
+    sys.exit(unexpected_error(exc))

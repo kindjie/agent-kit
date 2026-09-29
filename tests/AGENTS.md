@@ -189,3 +189,33 @@ with a dash, and that mute round-trips. Lock tests cover the private lock
 directory, reaping a dead holder, speaking after the timeout
 without releasing a live holder's lock, and skipping the lock when its
 directory is not a real one owned by the user.
+
+## Agent Records
+
+Run the records suites from the repository root:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests \
+  -p 'test_agent_records_*.py' -t .
+```
+
+The suites launch the three command scripts in subprocesses against temporary
+git repositories. A class fixture initializes a tasks/changelog pair once,
+then each test copies it to a fresh temporary directory. Tests use a temporary
+global git config with signing off and disable system git config. The setup,
+lifecycle, records, commands, transitions and watch suites cover identity,
+initialization, task claims, permissions, help, closing and watch cursors.
+The recovery and cross suites exercise real git signing children, index
+locks, staged deletions, journals, and cross-repository races. The privacy
+suite scans tracked and new files;
+`AGENT_RECORDS_PRIVACY_DENYLIST` can name a private newline-delimited list
+of additional strings. Keep lock and timeout fixtures short so the full
+suite stays fast.
+
+For a faster records-only run, the optional standard-library runner executes
+independent test classes in parallel. Its worker count defaults to
+`os.cpu_count()` and it uses the same temporary fixtures:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 tests/run_agent_records_parallel.py
+```

@@ -1,0 +1,362 @@
+#!/usr/bin/env python3
+"""Manage git-backed agent task records."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import sys
+import textwrap
+from pathlib import Path
+
+sys.path.insert(0, str(Path(os.path.realpath(__file__)).parent))
+from agent_records_core import (
+  EXIT_TEXT, FORCE_TEXT, RecordsError, config, directory, doctor, init_repo,
+  duration, one_line, record_locks, require_agent, sync, unexpected_error,
+  validate_root,
+)
+from agent_records_tasks import (alter_task, close_task, lint_tasks, new_task,
+                                 task_read, watch_task)
+
+
+def positive_index(value):
+  try:
+    number = int(value)
+  except ValueError:
+    raise argparse.ArgumentTypeError("expected a positive item number")
+  if number < 1:
+    raise argparse.ArgumentTypeError("expected a positive item number")
+  return number
+
+
+def parser():
+  details = (
+    textwrap.fill("Formats: live T-NNNN-slug.md or "
+                  "archive/T-NNNN-slug.md; key: value header, ## Known, "
+                  "## Plan, ## Done when, ## Log.") + "\n"
+    "Transition table (from | to | command):\n"
+    "  open, unowned blocked | in-progress | claim\n"
+    "  expired in-progress/in-review | same status | claim\n"
+    "  owned in-progress/in-review/blocked | live owned status | status\n"
+    "  open | blocked | status --reason\n"
+    "  unowned blocked | open | status --reason\n"
+    "  owned live | open/blocked | release\n"
+    "  owned live | same status, new owner | handoff\n"
+    "  live | done/cancelled/abandoned/superseded | close\n"
+    "  closed | open | reopen\n"
+    "An expired owner or helper has no authority until claim succeeds.\n"
+    + textwrap.fill(
+      "Cursor: N:HASH identifies N consumed log lines. A rewritten log "
+      "prints the full log; scan for lines addressed to you and resume "
+      "with the new cursor. watch --until accepts closed, status=S, "
+      "owner=ID|none, message (requires --for), or change.")
+  )
+  p = argparse.ArgumentParser(
+    description=textwrap.fill("Manage task files and git commits. " +
+                              EXIT_TEXT),
+    epilog=details + "\nExample: agent-task --agent helper new "
+           "--title 'Example task'",
+    formatter_class=argparse.RawDescriptionHelpFormatter)
+  p.add_argument("--dir", help="task records repository root")
+  p.add_argument("--agent", help="explicit actor ID for mutations")
+  p.add_argument("--wait", type=float, default=400,
+                 help="seconds to wait for ordered records locks")
+  p.add_argument("--unlocked", action="store_true",
+                 help="read without lock if unavailable; mark UNVERIFIED")
+  sub = p.add_subparsers(dest="command", required=True, metavar="COMMAND")
+
+  def add(name, description, example):
+    return sub.add_parser(name, description=textwrap.fill(
+                            description + " " + EXIT_TEXT),
+                          epilog=textwrap.fill("Example: " + example),
+                          formatter_class=argparse.RawDescriptionHelpFormatter)
+
+  init = add("init", "Create or adopt a dedicated git records repository; "
+             "writes marker, README and initial commit.",
+             "agent-task init /path/to/tasks")
+  init.add_argument("path")
+  init.add_argument("--adopt", action="store_true")
+  init.add_argument("--allow", action="append", default=[])
+  add("doctor", "Check records setup; probe writes only temporary data and "
+      "may prompt for signing.", "agent-task doctor")
+  new = add("new", "Write a task file and .next-id commit.",
+            "agent-task --agent helper new --title 'Example task'")
+  new.add_argument("--title", required=True)
+  new.add_argument("--no-changes", action="store_true")
+  new.add_argument("--priority", choices=["P0", "P1", "P2", "P3"])
+  new.add_argument("--severity", choices=["n/a", "S1", "S2", "S3", "S4"])
+  new.add_argument("--repo", action="append")
+  new.add_argument("--known")
+  new.add_argument("--plan")
+  new.add_argument("--check", action="append")
+  new.add_argument("--from-design")
+  new.add_argument("--review")
+
+  show = add("show", "Read a task, associations and cursor; writes nothing.",
+             "agent-task show T-0001")
+  show.add_argument("task")
+  show.add_argument("--after")
+  show.add_argument("--no-messages", action="store_true")
+  show.add_argument("--json", action="store_true")
+  listing = add("list", "Read task summaries; writes nothing.",
+                "agent-task list --all")
+  listing.add_argument("--status")
+  listing.add_argument("--owner")
+  listing.add_argument("--unowned", action="store_true")
+  listing.add_argument("--repo", action="append")
+  listing.add_argument("--here", action="store_true")
+  listing.add_argument("--archived", action="store_true")
+  listing.add_argument("--all", action="store_true")
+  listing.add_argument("--with-changes", action="store_true")
+  listing.add_argument("--json", action="store_true")
+  next_cmd = add("next", "Read the highest-priority available task.",
+                 "agent-task next")
+  next_cmd.add_argument("--repo", action="append")
+
+  claim = add("claim", "Claim or extend a task; writes task commit.",
+              "agent-task --agent helper claim T-0001")
+  claim.add_argument("task")
+  claim.add_argument("--hours", default="2")
+  release = add("release", "Release a task; writes task commit.",
+                "agent-task --agent helper release T-0001 --note done")
+  release.add_argument("task")
+  release.add_argument("--status", choices=["open", "blocked"])
+  release.add_argument("--note", required=True)
+  handoff = add("handoff", "Pass a claim; writes task commit.",
+                "agent-task --agent helper handoff T-0001 "
+                "--to peer --note next")
+  handoff.add_argument("task")
+  handoff.add_argument("--to", required=True)
+  handoff.add_argument("--note", required=True)
+  helper = add("helper", "Add or remove a helper; writes task commit.",
+               "agent-task --agent helper helper add T-0001 peer")
+  helper.add_argument("action", choices=["add", "remove"])
+  helper.add_argument("task")
+  helper.add_argument("helper_id")
+  state = add("status", "Transition a live status; writes task commit.",
+              "agent-task --agent helper status T-0001 blocked --reason wait")
+  state.add_argument("task")
+  state.add_argument("state", choices=["open", "in-progress", "in-review",
+                                       "blocked"])
+  state.add_argument("--reason")
+  set_cmd = add("set", "Edit task fields or body; writes task commit.",
+                "agent-task --agent helper set T-0001 --priority P1")
+  set_cmd.add_argument("task")
+  for name in ("title", "review", "known", "plan", "add-repo",
+               "remove-repo", "add-check", "reason"):
+    set_cmd.add_argument("--" + name)
+  set_cmd.add_argument("--remove-check", type=positive_index)
+  set_cmd.add_argument("--priority", choices=["unset", "P0", "P1", "P2", "P3"])
+  set_cmd.add_argument("--severity", choices=["unset", "n/a", "S1", "S2",
+                                                    "S3", "S4"])
+  set_cmd.add_argument("--blocked-on-owner", choices=["yes", "no"])
+  set_cmd.add_argument("--verified")
+  set_cmd.add_argument("--produces-changes", choices=["yes", "no"])
+  check = add("check", "Tick a completion item; writes task commit.",
+              "agent-task --agent helper check T-0001 docs --na 'no docs'")
+  check.add_argument("task")
+  check.add_argument("item")
+  check.add_argument("--evidence")
+  check.add_argument("--na")
+  link = add("link", "Link a PR, reference, document or task; writes commit.",
+             "agent-task --agent helper link T-0001 --ref note")
+  link.add_argument("task")
+  group = link.add_mutually_exclusive_group(required=True)
+  for name in ("pr", "ref", "doc", "related", "demote", "remove"):
+    group.add_argument("--" + name)
+  link.add_argument("--reason")
+  log = add("log", "Append a task message; writes task commit.",
+            "agent-task --agent helper log T-0001 'Progress update'")
+  log.add_argument("task")
+  log.add_argument("text")
+  log.add_argument("--to")
+  log.add_argument("--request", choices=["helper"])
+  close = add("close", "Archive a task after its gates pass; writes commit.",
+              "agent-task --agent helper close T-0001 cancelled --reason done")
+  close.add_argument("task")
+  close.add_argument("state", choices=["done", "cancelled", "abandoned",
+                                       "superseded"])
+  close.add_argument("--reason")
+  close.add_argument("--transfer")
+  close.add_argument("--by")
+  reopen = add("reopen", "Restore a closed task; writes commit.",
+               "agent-task --agent helper reopen T-0001 --reason resumed")
+  reopen.add_argument("task")
+  reopen.add_argument("--reason", required=True)
+  watch = add("watch", "Poll task changes; writes nothing.",
+              "agent-task watch T-0001 --until closed")
+  watch.add_argument("task")
+  watch.add_argument("--for", dest="for_id")
+  watch.add_argument("--after")
+  watch.add_argument("--until")
+  watch.add_argument("--timeout", default="540")
+  watch.add_argument("--interval", default="5")
+  add("sync", "Pull with rebase and optionally push; writes git state.",
+      "agent-task sync")
+  recover = add("recover", "Resolve a pending journal; may write records "
+                "and commit.", "agent-task recover --discard T-0001-task.md")
+  recover.add_argument("--keep", action="append", default=[])
+  recover.add_argument("--discard", action="append", default=[])
+  add("lint", "Check record formats; writes nothing.", "agent-task lint")
+  for name in ("claim", "release", "handoff", "helper", "status", "set",
+               "check", "link", "close"):
+    sub.choices[name].add_argument("--force", metavar="REASON", help=FORCE_TEXT)
+  option_help = {
+    "path": "dedicated records directory to initialize",
+    "adopt": "adopt a records-only existing git repository",
+    "allow": "allow this existing tracked path when adopting; repeatable",
+    "title": "single-line task title",
+    "no_changes": "task produces no repository changes",
+    "priority": "work order: P0 highest through P3, or unset",
+    "severity": "defect impact: S1 worst through S4, n/a or unset",
+    "repo": "repository key; repeat for several",
+    "known": "append to Known; use - for multiline standard input",
+    "plan": "append to Plan; use - for multiline standard input",
+    "check": "additional completion check; repeatable",
+    "from_design": "link design document and require design review",
+    "review": "design review: n/a, required, pending, passed REF, failed REF",
+    "task": "task ID such as T-0001",
+    "after": "resume after N:HASH cursor; rewritten logs print in full",
+    "no_messages": "omit Log content from show output",
+    "json": "emit machine-readable JSON",
+    "status": "filter or release to open or blocked",
+    "owner": "filter by owner ID",
+    "unowned": "include only tasks without a live owner",
+    "here": "filter by current checkout's repository key",
+    "archived": "show only archived tasks",
+    "all": "include live and archived tasks",
+    "with_changes": "include associated changelog entries and mistakes",
+    "hours": "claim duration in hours, default 2, maximum 24",
+    "note": "single-line reason for release or handoff",
+    "to": "new owner ID, or message recipient ID[,ID]",
+    "action": "add or remove a helper",
+    "helper_id": "helper agent ID",
+    "state": "target status or closed state",
+    "reason": "reason logged with this change",
+    "add_repo": "add a repository key",
+    "remove_repo": "remove a repository key",
+    "add_check": "append an additional completion check",
+    "remove_check": "remove a numbered added check (not a fixed check)",
+    "blocked_on_owner": "record a verified current owner block",
+    "verified": "how the owner block was established",
+    "produces_changes": "whether this task produces repository changes",
+    "item": "check key or 1-based checklist number",
+    "evidence": "reference proving this check is complete",
+    "na": "reason this check does not apply",
+    "pr": "PR this task produces; sets produces-changes=yes",
+    "ref": "context reference that is not a produced PR",
+    "doc": "document path reference",
+    "related": "related task ID; updates both records",
+    "demote": "turn a produced PR link into a context reference",
+    "remove": "remove a link or symmetric task relation",
+    "text": "one-line log message",
+    "request": "ask the live owner to add this agent as helper",
+    "transfer": "move open associated records to this live task",
+    "by": "live task that supersedes this one",
+    "for_id": "show lines addressed to this ID or all",
+    "until": ("closed, status=S, owner=ID|none, message (requires "
+              "--for), or change"),
+    "timeout": "watch deadline in seconds; exit 4 on timeout",
+    "interval": "poll interval in seconds, minimum 1",
+    "keep": "keep and commit this journal path; repeatable",
+    "discard": "discard this journal path; repeatable",
+  }
+  for command in sub.choices.values():
+    for action in command._actions:
+      if action.help is None:
+        action.help = option_help.get(action.dest, "value for this command")
+  watch.epilog = textwrap.fill(
+    "Cursor N:HASH counts consumed log lines. If the log was rewritten, "
+    "watch prints its full current log and a new cursor; scan for lines "
+    "addressed to you before resuming. State conditions are checked on "
+    "the first poll. message needs --for and matches a new addressed line. "
+    "change matches any new log line or observed header change.") + "\n" + \
+    textwrap.fill("Example: agent-task watch T-0001 --for helper "
+                  "--until message")
+  return p
+
+
+def main():
+  args = parser().parse_args()
+  if not shutil.which("git"):
+    raise RecordsError("git is required", 2)
+  duration(args.wait, "wait")
+  if getattr(args, "force", None) is not None:
+    one_line(args.force, "force reason")
+    if not args.force.strip():
+      raise RecordsError("--force requires an owner instruction reason", 2)
+  cfg = config()
+  if args.command == "init":
+    init_repo(args.path, "tasks", args.adopt, args.allow)
+    return 0
+  root = directory("tasks", args.dir, cfg)
+  changes = directory("changelog", cfg=cfg)
+  if root is None:
+    raise RecordsError("tasks directory is not configured", 2)
+  if args.command in ("show", "close") or (
+      args.command == "list" and args.with_changes):
+    if changes is None:
+      raise RecordsError("changelog directory is not configured", 2)
+    try:
+      validate_root(changes, "changelog")
+    except RecordsError as exc:
+      raise RecordsError("changelog is unreadable: " + str(exc), 5)
+  if args.command == "doctor":
+    doctor(root, "tasks", cfg.get("push", False), args.wait, changes)
+    print("ok")
+    return 0
+  if args.command == "watch":
+    return watch_task(root, changes, args)
+  read = args.command in ("show", "list", "next", "lint")
+  agent = "reader" if read else require_agent(args.agent)
+  roots_to_write = [] if read else [root]
+  if args.command == "close" and (args.transfer or args.by):
+    roots_to_write.append(changes)
+  if args.command == "recover" and changes:
+    roots_to_write.append(changes)
+  with record_locks(root, changes, roots_to_write, args.wait, agent,
+                    args.command, args.unlocked,
+                    auto_recover=args.command != "recover") as authoritative:
+    if args.command == "new":
+      new_task(root, args, agent, cfg.get("push", False))
+    elif args.command in ("show", "list", "next"):
+      task_read(root, changes, args, authoritative)
+    elif args.command == "lint":
+      errors = lint_tasks(root, changes)
+      for error in errors:
+        print(error)
+      return 1 if errors else 0
+    elif args.command == "sync":
+      sync(root, cfg.get("push", False))
+    elif args.command == "recover":
+      from agent_records_core import (read_journal, resolve_cross,
+                                      recover_single)
+      pending = read_journal(root) or (
+        read_journal(changes) if changes else None)
+      if pending:
+        print("journal:", pending.get("operation", pending["id"]))
+        if pending.get("cross") or pending.get("cross_stub"):
+          from agent_records_changelog import lint_records
+          resolve_cross(
+            root, changes, args.keep, args.discard,
+            {"tasks": lambda: lint_tasks(root, changes),
+             "changelog": lambda: lint_records(changes, root)})
+        else:
+          recover_single(root, keep=args.keep, discard=args.discard,
+                         validator=lambda: lint_tasks(root, changes))
+    elif args.command == "close":
+      close_task(root, changes, args, agent, cfg.get("push", False))
+    else:
+      alter_task(root, args, agent, cfg.get("push", False), changes)
+  return 0
+
+
+if __name__ == "__main__":
+  try:
+    sys.exit(main())
+  except RecordsError as exc:
+    print(str(exc), file=sys.stderr)
+    sys.exit(exc.code)
+  except Exception as exc:
+    sys.exit(unexpected_error(exc))

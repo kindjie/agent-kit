@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""Stable agent identity and repository key registry."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import secrets
+import shutil
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(os.path.realpath(__file__)).parent))
+from agent_records_core import (EXIT_TEXT, FORCE_TEXT, ID_RE, RecordsError,
+                                machine, one_line, private_append, repo_keys,
+                                repo_rebind, session_id, stamp, state_path,
+                                unexpected_error)
+
+
+def parser():
+  p = argparse.ArgumentParser(
+    description="Agent IDs and repository keys. Writes a private state "
+                "registry for new and repo-rebind. " + EXIT_TEXT,
+    epilog="Example: agent-id new helper",
+  )
+  p.add_argument("--agent", help="explicit actor ID for repo-rebind")
+  sub = p.add_subparsers(dest="command", required=True)
+  for name, help_text in (
+    ("show", "Print stable session ID; writes nothing. Example: agent-id show"),
+    ("machine", "Print machine source; writes nothing. "
+     "Example: agent-id machine"),
+    ("repo-keys", "List key registry; writes nothing. "
+     "Example: agent-id repo-keys"),
+  ):
+    sub.add_parser(name, help=help_text,
+                   description=help_text + ". " + EXIT_TEXT)
+  new = sub.add_parser("new",
+                       description="Mint an ID and write the private "
+                       "registry. " + EXIT_TEXT,
+                       epilog="Example: agent-id new helper")
+  new.add_argument("label", help="ID prefix")
+  recent = sub.add_parser("recent", description="List minted IDs; writes "
+                          "nothing. " + EXIT_TEXT,
+                          epilog="Example: agent-id recent --label helper")
+  recent.add_argument("--label")
+  rebind = sub.add_parser(
+    "repo-rebind", description=("Rebind a repository key and write private "
+                                "state. " + EXIT_TEXT),
+    epilog="Example: agent-id --agent helper repo-rebind key "
+    "/path/to/checkout")
+  rebind.add_argument("key")
+  rebind.add_argument("path")
+  rebind.add_argument("--force", metavar="REASON", help=FORCE_TEXT)
+  return p
+
+
+def main():
+  args = parser().parse_args()
+  if not shutil.which("git"):
+    raise RecordsError("git is required", 2)
+  if getattr(args, "force", None) is not None:
+    one_line(args.force, "force reason")
+    if not args.force.strip():
+      raise RecordsError("--force requires an owner instruction reason", 2)
+  if args.command == "show":
+    value, _ = session_id()
+    if not value:
+      raise RecordsError("no session ID; use agent-id new LABEL", 1)
+    print(value)
+  elif args.command == "new":
+    if not ID_RE.fullmatch(args.label):
+      raise RecordsError("invalid label", 2)
+    value = args.label + "-" + secrets.token_hex(8)
+    if not ID_RE.fullmatch(value):
+      raise RecordsError("label is too long", 2)
+    _, source = session_id()
+    row = {"time": stamp(), "id": value, "label": args.label,
+           "cwd": os.getcwd(), "session_variable": source}
+    try:
+      private_append(state_path("agent-ids.log"), json.dumps(row) + "\n")
+    except OSError as exc:
+      raise RecordsError("could not register ID: " + str(exc), 1)
+    print(value)
+  elif args.command == "recent":
+    try:
+      with state_path("agent-ids.log").open("r", encoding="utf-8") as stream:
+        fcntl.flock(stream, fcntl.LOCK_SH)
+        lines = stream.read().splitlines()
+    except FileNotFoundError:
+      lines = []
+    for line in reversed(lines):
+      row = json.loads(line)
+      if not args.label or row["label"] == args.label:
+        print(row["time"], row["id"], row["label"], row["cwd"])
+  elif args.command == "machine":
+    value, source = machine()
+    print(value, "(" + source + ")")
+  elif args.command == "repo-keys":
+    for key, path in sorted(repo_keys().items()):
+      print(key, path)
+  elif args.command == "repo-rebind":
+    agent = args.agent or os.environ.get("AGENT_ID")
+    if not agent or not ID_RE.fullmatch(agent):
+      raise RecordsError("repo-rebind requires --agent ID or AGENT_ID", 2)
+    repo_rebind(args.key, args.path, agent, args.force)
+    print(args.key)
+
+
+if __name__ == "__main__":
+  try:
+    main()
+  except RecordsError as exc:
+    print(str(exc), file=sys.stderr)
+    sys.exit(exc.code)
+  except Exception as exc:
+    sys.exit(unexpected_error(exc))
