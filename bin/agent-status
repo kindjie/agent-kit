@@ -65,7 +65,7 @@ def percentage(value: Any) -> int | float | None:
   if not math.isfinite(number) or not 0 <= number <= 100:
     return None
   rounded = round(number, 3)
-  return int(rounded) if rounded.is_integer() else rounded
+  return int(rounded) if float(rounded).is_integer() else rounded
 
 
 def valid_report(value: Any) -> bool:

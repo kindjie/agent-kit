@@ -116,7 +116,7 @@ def finite_percentage(value: Any) -> float | None:
 
 def compact_number(value: float) -> int | float:
   rounded = round(value, 3)
-  if rounded.is_integer():
+  if float(rounded).is_integer():
     return int(rounded)
   return rounded
 
