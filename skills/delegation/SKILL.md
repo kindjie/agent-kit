@@ -220,6 +220,9 @@ work or broader data sharing.
   inherit local defaults. A fresh CLI session needs the task brief and
   working directory. For Codex use `-C <repo>` and `--sandbox read-only`
   for reviews, or `--sandbox workspace-write` for authorized edits.
+  Run `codex exec` with stdin from `/dev/null` when nothing is piped in:
+  with an open stdin it waits for more input and never starts, which in a
+  background job looks like a hang. `-o <file>` saves the final message.
 - `agent-quota --models --brief` lists each tool's live effort levels and
   the Codex models with defaults and tiers. A model your tool lacks may be
   reachable through the other.
