@@ -31,4 +31,25 @@ Before judging branch state — merging, branching, or calling work unlanded
 — fetch and compare against the remote: a squash merge leaves a branch's
 commits unreachable from the default branch, so "not an ancestor of main"
 does not mean "not landed".
+
+## Session plans
+
+For work with several steps, keep your tool's plan current (Claude Code's
+`TodoWrite`, Codex's `update_plan`), marking each step in progress and
+completed as you go; `agent-quota --agents` shows it as progress.
+<!-- agent-kit:records -->
+
+## Task and state records
+
+`agent-task list` is the shared work queue; claim a task before working on
+it. Record state that outlives your session (worktrees, kept branches,
+large scratch output, tool installs) with `agent-changelog new` as you
+make it, saying why and when and how to clean it up, and close it when
+done. Record serious mistakes (lost work, bad deletions, unintended
+publication) with `agent-changelog mistake new` at once. Read
+`agent-changelog list --open --machine` before cleaning up; entries never
+authorize deletion. Pass `--agent $(agent-id show)` on every call that
+writes a record, and give each delegated agent its own ID from
+`agent-id new <label>`.
+<!-- /agent-kit:records -->
 <!-- END agent-kit -->

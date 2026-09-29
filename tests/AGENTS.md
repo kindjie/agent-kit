@@ -190,6 +190,22 @@ directory, reaping a dead holder, speaking after the timeout
 without releasing a live holder's lock, and skipping the lock when its
 directory is not a real one owned by the user.
 
+## Always-Loaded Rules
+
+Run from the repository root:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_kit_rules
+```
+
+`test_agent_kit_rules.py` installs `AGENTS.snippet.md` into temporary files:
+appending with one blank line, a no-op re-run, replacing a moved snippet in
+place, recognising the released unhashed snippet, refusing an edited one
+unless forced, refusing duplicate, missing or out-of-order markers without
+writing, the records section following both doctors, dry runs, and keeping
+symlinks and permissions. Doctors are stubbed scripts; nothing touches real
+instruction files.
+
 ## Agent Records
 
 Run the records suites from the repository root:

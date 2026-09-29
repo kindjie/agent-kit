@@ -24,6 +24,7 @@ Nothing here assumes that repository.
 | `agent-id` | Derives or mints agent IDs and manages repository keys |
 | `agent-task` | Creates, claims, hands off and closes task records |
 | `agent-changelog` | Tracks persistent machine and repository state |
+| `agent-kit-rules` | Installs or updates the always-loaded rules in agent instructions |
 
 **Skills** (`skills/`)
 
@@ -107,22 +108,38 @@ Several skills defer to rules that bind regardless of which skill is
 running: what blocks a commit, when to re-read review comments, what
 reasoning effort to default to. Each skill states a usable default, so it
 works with nothing installed. To make those rules bind everywhere rather
-than only when a skill triggers, append them to your agent instructions.
-
-[`AGENTS.snippet.md`](AGENTS.snippet.md) holds them, delimited by markers so
-re-running the append is safe:
+than only when a skill triggers, add them to your agent instructions with
+`agent-kit-rules`:
 
 ```sh
-for f in ~/.claude/CLAUDE.md ~/.codex/AGENTS.md; do
-  grep -q 'BEGIN agent-kit' "$f" 2>/dev/null ||
-    { printf '\n'; cat AGENTS.snippet.md; } >> "$f"
-done
+agent-kit-rules --dry-run   # show what would change
+agent-kit-rules             # ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md
+agent-kit-rules path/to/AGENTS.md   # or name the files
 ```
 
-It appends only when the marker is absent, leaves existing content alone,
-and creates the file if it does not exist. Read it first — it is short, and
-it asserts opinions about testing and pushing that you may not share. Your
-own rules take precedence wherever they conflict; the skills say so.
+It writes [`AGENTS.snippet.md`](AGENTS.snippet.md) into each file between
+`BEGIN agent-kit` and `END agent-kit` markers, appending it when absent.
+Read it first — it is short, and it asserts opinions about testing and
+pushing that you may not share. Your own rules take precedence wherever
+they conflict; the skills say so. By default it updates only the files of
+the agents present (`~/.claude`, `~/.codex`), follows symlinks to the real
+file, keeps its permissions, and replaces it atomically.
+
+The task and changelog rules are included only when `agent-task doctor`
+and `agent-changelog doctor` both pass at install time (see
+[Agent records](#agent-records)); agents then read whether the tools apply
+rather than each running the checks. The doctors may open a git signing
+prompt. Output says why the section was left out, and `--records on|off`
+overrides the check. Re-run `agent-kit-rules` after configuring the
+records tools or updating agent-kit.
+
+Re-running is safe, and the snippet may be moved anywhere in the file: it
+is replaced where it stands. The BEGIN marker records a hash of the
+installed text, so a snippet you have edited is refused and left as it is
+(`--force` replaces it; `--dry-run` shows the difference). Snippets
+appended by the earlier README loop are recognised as unedited. Duplicate,
+missing or out-of-order markers are refused; fix them by hand. The exit
+status is 1 when any file was refused.
 
 ## Status lines
 
