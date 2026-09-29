@@ -133,13 +133,16 @@ prompt. Output says why the section was left out, and `--records on|off`
 overrides the check. Re-run `agent-kit-rules` after configuring the
 records tools or updating agent-kit.
 
-Re-running is safe, and the snippet may be moved anywhere in the file: it
-is replaced where it stands. The BEGIN marker records a hash of the
-installed text, so a snippet you have edited is refused and left as it is
-(`--force` replaces it; `--dry-run` shows the difference). Snippets
-appended by the earlier README loop are recognised as unedited. Duplicate,
-missing or out-of-order markers are refused; fix them by hand. The exit
-status is 1 when any file was refused.
+Re-running is safe, and the snippet may be moved anywhere in the file: it is
+replaced where it stands. The BEGIN marker records a hash of the installed
+text, so a snippet you have edited is refused and left as it is (`--force`
+replaces it; `--dry-run` shows the difference). Snippets appended by the
+earlier README loop are recognised as unedited. Markers count only at the
+start of a line and outside fenced code, so documentation that shows them is
+left alone. Duplicate, missing or out-of-order markers are refused; fix them
+by hand. So are files that are not UTF-8, symlink loops and dangling links,
+and a file that changes while it is being updated. Line endings are kept,
+CRLF included. The exit status is 1 when any file was refused.
 
 ## Status lines
 

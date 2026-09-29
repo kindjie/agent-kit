@@ -203,8 +203,10 @@ appending with one blank line, a no-op re-run, replacing a moved snippet in
 place, recognising the released unhashed snippet, refusing an edited one
 unless forced, refusing duplicate, missing or out-of-order markers without
 writing, the records section following both doctors, dry runs, and keeping
-symlinks and permissions. Doctors are stubbed scripts; nothing touches real
-instruction files.
+symlinks and permissions. Regression tests keep CRLF line endings, refuse
+symlink loops, dangling links, non-UTF-8 files and a file changed mid-
+update, and ignore marker examples in fenced or inline code. Doctors are
+stubbed scripts; nothing touches real instruction files.
 
 ## Agent Records
 

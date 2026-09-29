@@ -143,6 +143,60 @@ class RulesTest(unittest.TestCase):
     self.assertIn("agent-kit", real.read_text())
     self.assertEqual(stat.S_IMODE(real.stat().st_mode), 0o640)
 
+  def test_crlf_files_keep_their_line_endings(self):
+    self.target.write_bytes(b"Line one.\r\nLine two.\r\n")
+    self.install()
+    raw = self.target.read_bytes()
+    self.assertTrue(raw.startswith(b"Line one.\r\nLine two.\r\n\r\n"))
+    self.assertNotIn(b"\n", raw.replace(b"\r\n", b""))
+    code, out = self.install(records=True)
+    self.assertEqual(code, 0, out)
+    self.assertIn("replaced", out)
+    self.assertNotIn(b"\n", self.target.read_bytes().replace(b"\r\n", b""))
+    code, out = self.install(records=True)
+    self.assertIn("up to date", out)
+
+  def test_unresolvable_links_are_refused_untouched(self):
+    loop_a, loop_b = self.root / "a.md", self.root / "b.md"
+    loop_a.symlink_to(loop_b)
+    loop_b.symlink_to(loop_a)
+    dangling = self.root / "d.md"
+    dangling.symlink_to(self.root / "missing" / "x.md")
+    code, out = self.install(loop_a, dangling)
+    self.assertEqual(code, 1)
+    self.assertTrue(loop_a.is_symlink() and dangling.is_symlink())
+    self.assertFalse((self.root / "missing").exists())
+    self.assertIn("symlink loop", out)
+    self.assertIn("dangling symlink", out)
+
+  def test_examples_in_code_are_not_installs(self):
+    example = ("# Docs\n\n```md\n<!-- BEGIN agent-kit -->\nexample\n"
+               "<!-- END agent-kit -->\n```\n\nInline: "
+               "`<!-- BEGIN agent-kit -->`.\n")
+    self.target.write_text(example)
+    code, out = self.install(force=True)
+    self.assertEqual(code, 0, out)
+    self.assertIn("appended", out)
+    self.assertTrue(self.target.read_text().startswith(example))
+
+  def test_unreadable_or_racing_files_are_refused(self):
+    self.target.write_bytes(b"caf\xe9\n")
+    code, out = self.install()
+    self.assertEqual((code, self.target.read_bytes()), (1, b"caf\xe9\n"))
+    self.assertIn("not UTF-8", out)
+    self.target.write_text("Mine.\n")
+    planned = RULES.planned
+
+    def racing(text, block, force):
+      self.target.write_text("Mine.\nTheirs.\n")
+      return planned(text, block, force)
+    with patch.object(RULES, "planned", racing):
+      code, out = self.install()
+    self.assertEqual(code, 1)
+    self.assertEqual(self.target.read_text(), "Mine.\nTheirs.\n")
+    self.assertIn("changed by something else", out)
+    self.assertEqual([p.name for p in self.root.iterdir()], ["AGENTS.md"])
+
   def test_default_targets_skip_absent_tools(self):
     home = self.root / "home"
     (home / ".claude").mkdir(parents=True)

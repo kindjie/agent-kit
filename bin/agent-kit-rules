@@ -26,8 +26,13 @@ from pathlib import Path
 
 HERE = Path(os.path.realpath(__file__)).parent
 SNIPPET = HERE.parent / "AGENTS.snippet.md"
-BEGIN_RE = re.compile(r"<!-- BEGIN agent-kit(?: sha256=([0-9a-f]{64}))? -->\n")
+# Markers count only at the start of a line and outside fenced code, so a
+# document that shows them as an example is never taken for an install.
+BEGIN_RE = re.compile(
+  r"^<!-- BEGIN agent-kit(?: sha256=([0-9a-f]{64}))? -->\r?\n", re.M)
 END = "<!-- END agent-kit -->"
+MARKER_RE = re.compile(r"^[ \t]*<!-- (BEGIN|END) agent-kit", re.M)
+FENCE_RE = re.compile(r"^[ \t]*(```|~~~)", re.M)
 RECORDS_RE = re.compile(
   r"<!-- agent-kit:records -->\n(.*?)<!-- /agent-kit:records -->\n", re.S)
 # Bodies of released snippets that predate the hash in the marker.
@@ -37,8 +42,13 @@ RELEASED = {
 DOCTORS = ("agent-task", "agent-changelog")
 
 
+class Refused(Exception):
+  """A file left unchanged, with the reason."""
+
+
 def digest(text: str) -> str:
-  return hashlib.sha256(text.encode()).hexdigest()
+  """Hash with line endings normalised, so CRLF files verify too."""
+  return hashlib.sha256(text.replace("\r\n", "\n").encode()).hexdigest()
 
 
 def records_ready(tools: Path = HERE) -> tuple[bool, str | None]:
@@ -74,17 +84,29 @@ def block(body: str) -> str:
   return f"<!-- BEGIN agent-kit sha256={digest(body)} -->\n{body}{END}"
 
 
+def fenced(text: str) -> list[tuple[int, int]]:
+  """Spans of fenced code blocks; an unclosed fence runs to the end."""
+  marks = [m.start() for m in FENCE_RE.finditer(text)] + [len(text)]
+  return [(marks[i], marks[i + 1]) for i in range(0, len(marks) - 1, 2)]
+
+
 def locate(text: str):
   """(start, end, body, recorded hash) of the one snippet, None when there
   is none, or a string saying why the markers cannot be trusted."""
-  begins = list(BEGIN_RE.finditer(text))
-  ends = [m.start() for m in re.finditer(re.escape(END), text)]
-  stray = len(re.findall(r"<!-- BEGIN agent-kit", text))
-  if not begins and not ends and not stray:
+  spans = fenced(text)
+
+  def live(pos: int) -> bool:
+    return not any(start <= pos < end for start, end in spans)
+
+  marks = [m for m in MARKER_RE.finditer(text) if live(m.start())]
+  begins = [m for m in BEGIN_RE.finditer(text) if live(m.start())]
+  ends = [m.start() for m in re.finditer("^" + re.escape(END), text, re.M)
+          if live(m.start())]
+  if not marks:
     return None
-  if len(begins) != 1 or len(ends) != 1 or stray != 1:
-    return (f"{stray} BEGIN and {len(ends)} END agent-kit markers; "
-            "expected one of each")
+  if len(begins) != 1 or len(ends) != 1 or len(marks) != 2:
+    return (f"{len(marks)} agent-kit markers ({len(begins)} well-formed "
+            f"BEGIN, {len(ends)} END); expected one of each")
   begin, end = begins[0], ends[0]
   if end < begin.end():
     return "agent-kit markers are out of order (END before BEGIN)"
@@ -97,11 +119,16 @@ def planned(text: str, new_block: str, force: bool):
   found = locate(text)
   if isinstance(found, str):
     return None, found + "; fix them by hand"
+  # Keep the file's line endings: CRLF when it uses them throughout.
+  newline = "\r\n" if "\r\n" in text and "\n" not in text.replace(
+    "\r\n", "") else "\n"
+  new_block = new_block.replace("\n", newline)
   if found is None:
     # One blank line between the existing text and the snippet.
-    gap = ("" if not text or text.endswith("\n\n")
-           else "\n" if text.endswith("\n") else "\n\n")
-    return text + gap + new_block + "\n", "appended"
+    blank = text.endswith("\n\n") or text.endswith("\r\n\r\n")
+    gap = ("" if not text or blank
+           else newline if text.endswith("\n") else newline * 2)
+    return text + gap + new_block + newline, "appended"
   start, end, body, recorded = found
   if text[start:end] == new_block:
     return text, "up to date"
@@ -113,16 +140,39 @@ def planned(text: str, new_block: str, force: bool):
   return text[:start] + new_block + text[end:], f"replaced at line {line}"
 
 
-def write(path: Path, text: str) -> None:
-  """Replace the file atomically, keeping its mode; follows symlinks."""
+def resolve(path: Path) -> Path:
+  """The real file behind path; refuses loops and dangling links."""
   real = Path(os.path.realpath(path))
+  if real.is_symlink():
+    raise Refused("symlink loop or unresolvable link")
+  if path.is_symlink() and not real.exists():
+    raise Refused(f"dangling symlink to {real}")
+  return real
+
+
+def read(real: Path) -> tuple[bytes, str]:
+  """Raw bytes and text, line endings untouched."""
+  try:
+    raw = real.read_bytes() if real.exists() else b""
+    return raw, raw.decode("utf-8")
+  except UnicodeDecodeError:
+    raise Refused("not UTF-8 text") from None
+  except OSError as exc:
+    raise Refused(f"cannot read: {exc.strerror or exc}") from None
+
+
+def write(real: Path, text: str, original: bytes) -> None:
+  """Replace the file atomically, keeping its mode and line endings, unless
+  it changed since it was read."""
   real.parent.mkdir(parents=True, exist_ok=True)
   mode = real.stat().st_mode & 0o7777 if real.exists() else 0o644
   fd, tmp = tempfile.mkstemp(dir=real.parent, prefix=f".{real.name}.")
   try:
-    with os.fdopen(fd, "w") as handle:
+    with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
       handle.write(text)
     os.chmod(tmp, mode)
+    if (real.read_bytes() if real.exists() else b"") != original:
+      raise Refused("changed by something else while updating; run again")
     os.replace(tmp, real)
   except BaseException:
     Path(tmp).unlink(missing_ok=True)
@@ -147,13 +197,19 @@ def install(paths: list[Path], records: str, force: bool, dry_run: bool,
   new_block = block(snippet_body(ready))
   refused = 0
   for path in paths:
-    real = Path(os.path.realpath(path))
-    text = real.read_text() if real.exists() else ""
-    result, what = planned(text, new_block, force)
-    shown = str(path) + (f" -> {real}" if path.is_symlink() else "")
-    if result is None:
+    shown = str(path)
+    try:
+      real = resolve(path)
+      shown += f" -> {real}" if path.is_symlink() else ""
+      raw, text = read(real)
+      result, what = planned(text, new_block, force)
+      if result is None:
+        raise Refused(what)
+      if not dry_run and result != text:
+        write(real, result, raw)
+    except Refused as why:
       refused += 1
-      print(f"{shown}: refused: {what}", file=out)
+      print(f"{shown}: refused: {why}", file=out)
       continue
     if dry_run:
       print(f"{shown}: would be {what}", file=out)
@@ -161,8 +217,6 @@ def install(paths: list[Path], records: str, force: bool, dry_run: bool,
         text.splitlines(True), result.splitlines(True), str(path),
         str(path)))
       continue
-    if result != text:
-      write(path, result)
     print(f"{shown}: {what}", file=out)
   return 1 if refused else 0
 
