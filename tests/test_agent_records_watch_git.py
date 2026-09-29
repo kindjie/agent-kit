@@ -240,7 +240,7 @@ class WatchGitTest(RecordsFixture):
     wrapper.write_text(
       "#!/bin/sh\n"
       "if [ \"$7\" = commit ]; then\n"
-      "  ( sleep 1; printf leaked > \"$MARKER\" ) &\n"
+      "  ( sleep 8; printf leaked > \"$MARKER\" ) &\n"
       "  sleep 60\n"
       "fi\n"
       "exec \"$REAL_GIT\" \"$@\"\n")
@@ -248,10 +248,13 @@ class WatchGitTest(RecordsFixture):
     marker = self.base / "leaked"
     env = dict(self.env, PATH=str(fake_bin) + os.pathsep + self.env["PATH"],
                REAL_GIT=shutil.which("git"), MARKER=str(marker),
-               AGENT_RECORDS_GIT_TIMEOUT="0.5")
+               # The group is killed at 5 s, before the 8 s leak; other git
+               # calls keep headroom on a busy machine.
+               AGENT_RECORDS_GIT_TIMEOUT="5")
+    started = time.monotonic()
     self.run_cmd("agent-task", "--agent", "agent-a", "new", "--title",
                  "Timeout", env=env, code=1)
-    time.sleep(1.1)
+    time.sleep(max(0, 8.5 - (time.monotonic() - started)))
     self.assertFalse(marker.exists())
     self.assertFalse(list(self.tasks.glob("T-*.md")))
     self.assertEqual((self.tasks / ".next-id").read_text(), "1\n")

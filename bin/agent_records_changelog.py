@@ -12,7 +12,8 @@ from pathlib import Path
 from agent_records_core import (
   RecordsError, comma, duration, joined, machine, mutate, mutate_cross,
   one_line,
-  parse_document, parse_time, record_locks, render_document, repo_key, slug,
+  parse_document, parse_record_date, record_locks, render_document,
+  repo_key, slug,
   stamp, lint_layout,
 )
 
@@ -341,7 +342,7 @@ def lint_records(root, tasks_root=None):
           errors.append(str(path) + ": missing " + key)
         elif not fields[key]:
           errors.append(str(path) + ": empty " + key)
-      parse_time(fields["date"])
+      parse_record_date(fields["date"])
       if mistake:
         if fields["severity"] not in ("low", "medium", "high", "critical"):
           errors.append(str(path) + ": invalid severity")
@@ -353,7 +354,7 @@ def lint_records(root, tasks_root=None):
         if fields["status"] == "closed" and not fields.get("closed"):
           errors.append(str(path) + ": missing closed line")
         if fields.get("closed"):
-          parse_time(fields["closed"].split(" by ", 1)[0])
+          parse_record_date(fields["closed"].split(" by ", 1)[0])
         if any(k not in KINDS for k in fields["kind"].split(" + ")):
           errors.append(str(path) + ": invalid kind")
       if tasks_root:

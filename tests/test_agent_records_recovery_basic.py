@@ -345,7 +345,9 @@ with core.locks([tasks, changes], [tasks, changes], 1, 'agent-a', 'cross'):
     wrapper.chmod(0o755)
     env = dict(self.env, PATH=str(fake_bin) + os.pathsep + self.env["PATH"],
                REAL_GIT=shutil.which("git"),
-               AGENT_RECORDS_GIT_TIMEOUT="0.5")
+               # Only the commit, which sleeps 60 s after committing, must
+               # time out; other git calls need headroom on a busy machine.
+               AGENT_RECORDS_GIT_TIMEOUT="5")
     task = self.run_cmd("agent-task", "--agent", "agent-a", "new",
                         "--title", "Committed", env=env).strip()
     self.assertEqual(task, "T-0001")

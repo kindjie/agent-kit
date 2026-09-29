@@ -144,6 +144,33 @@ class RecordsTest(RecordsFixture):
                  "--cleanup-done", "No action needed")
     self.run_cmd("agent-changelog", "lint")
 
+  def test_changelog_dates_accept_annotations(self):
+    self.init()
+    entry = self.changes / "entries" / "2026-01-01-0900-example-note.md"
+    header = ("machine: example-machine\nagent: example\nkind: scratch\n"
+              "status: open\nlocation: scratch\nwhy: test\n"
+              "cleanup-when: later\ncleanup-how: remove\n")
+    mistake = self.changes / "mistakes" / "2026-01-01-example.md"
+    mistake.parent.mkdir(exist_ok=True)
+    mistake.write_text(
+      "date: 2026-01-01 (approximate; recorded later)\n"
+      "machine: example-machine\nagent: example\nseverity: low\n"
+      "status: open\nscope: example\nsummary: s\nimpact: none\n"
+      "cause: c\ndetection: d\ncleanup-options: none\n"
+      "cleanup-done: none\nprevention: p\n")
+    for date, code in (("2026-01-01 09:00 -0800 (inferred)", 0),
+                       ("2026-01-01 09:00:30 -0800 (from a log)", 0),
+                       ("2026-01-01 09:00 -0800", 0),
+                       ("2026-01-01 (inferred)", 0),
+                       ("2026-01-01 9am", 1),
+                       ("2026-01-01 09:00 -0800 inferred", 1)):
+      entry.write_text("date: " + date + "\n" + header)
+      subprocess.check_call(["git", "-C", str(self.changes), "add", "-A"],
+                            env=self.env)
+      subprocess.check_call(["git", "-C", str(self.changes), "commit", "-qm",
+                             "Hand entry"], env=self.env)
+      self.run_cmd("agent-changelog", "lint", code=code)
+
   def test_newlines_in_header_and_log_are_refused(self):
     self.init()
     self.run_cmd("agent-task", "--agent", "agent-a", "new", "--title",

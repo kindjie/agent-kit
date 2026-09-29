@@ -66,6 +66,29 @@ def parse_time(value):
   raise RecordsError("invalid timestamp: " + value, 2)
 
 
+ANNOTATED_DATE_RE = re.compile(
+  r"(?P<time>\d{4}-\d{2}-\d{2}(?: [^()]*?)?)(?: \([^()\n]+\))?")
+
+
+def parse_record_date(value):
+  """Parse a changelog date, which may carry a trailing (note) annotation.
+
+  Hand-written records mark reconstructed times, for example
+  `2026-01-01 09:00 -0800 (inferred)`, and older ones give only a date.
+  Task timestamps stay strict; see parse_time.
+  """
+  match = ANNOTATED_DATE_RE.fullmatch(value)
+  if not match:
+    raise RecordsError("invalid timestamp: " + value, 2)
+  text = match.group("time")
+  if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+    try:
+      return datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+      raise RecordsError("invalid timestamp: " + value, 2) from None
+  return parse_time(text)
+
+
 def one_line(value, name="text"):
   if not isinstance(value, str):
     raise RecordsError(name + " must be text", 2)
