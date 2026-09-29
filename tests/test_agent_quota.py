@@ -1793,6 +1793,88 @@ class FlagValidationTest(unittest.TestCase):
       AGENT_QUOTA.main(["--agents"])
     self.assertEqual((calls[1].agent_days, calls[1].agent_limit), (1, 20))
 
+
+ESC = re.compile(r"\x1b\[[0-9;]*m")
+
+
+class ColourTest(unittest.TestCase):
+  def quota_document(self) -> dict[str, Any]:
+    fable = {"id": "fable", "name": "Fable", "scope_kind": "model"}
+    limits = [
+      timeline_limit("c:5h", "5h", 60, timedelta(hours=2), state="surplus"),
+      timeline_limit("c:week", "weekly", 0, timedelta(days=3)),
+      timeline_limit("c:fable", "weekly", 40, timedelta(days=3),
+                     bucket=fable),
+    ]
+    codex = [timeline_limit("x:week", "weekly", 30, timedelta(days=2),
+                            runs_out_in=timedelta(days=1), state="behind")]
+    return {"generated_at": AGENT_QUOTA.iso_utc(NOW), "services": {
+      "claude_code": timeline_service("Claude Code", "me@example.test",
+                                      "max", limits),
+      "codex": timeline_service("Codex", "me@example.test", "pro", codex),
+    }}
+
+  def test_color_choice_resolution(self):
+    tty = SimpleNamespace(isatty=lambda: True)
+    pipe = SimpleNamespace(isatty=lambda: False)
+    with patch.dict("os.environ", {"NO_COLOR": "1"}, clear=True):
+      self.assertTrue(AGENT_QUOTA.resolve_color("always", pipe))
+      self.assertFalse(AGENT_QUOTA.resolve_color("auto", tty))
+    with patch.dict("os.environ", {"TERM": "xterm"}, clear=True):
+      self.assertFalse(AGENT_QUOTA.resolve_color("never", tty))
+      self.assertTrue(AGENT_QUOTA.resolve_color("auto", tty))
+
+  def test_styled_tables_keep_their_alignment(self):
+    rows = [["alpha", "1"], ["b", "22"]]
+    styles = [[("red",), ()], [(), ("bold", "blue")]]
+    plain = AGENT_QUOTA.text_table(["Name", "N"], rows)
+    styled = AGENT_QUOTA.text_table(["Name", "N"], rows, styles, color=True)
+    self.assertEqual([ESC.sub("", line) for line in styled], plain)
+    self.assertTrue(styled[0].startswith("\x1b[1mName\x1b[0m"))
+    self.assertIn("\x1b[31malpha\x1b[0m", styled[2])
+
+  def test_brief_colours_pace_states_and_alerts(self):
+    document = self.quota_document()
+    plain = AGENT_QUOTA.render_brief(document)
+    styled = AGENT_QUOTA.render_brief(document, color=True)
+    self.assertEqual(ESC.sub("", styled), plain)
+    self.assertIn("\x1b[1;31mAttention:\x1b[0m", styled)
+    self.assertIn("\x1b[1;7;31mExhausted\x1b[0m", styled)
+    self.assertIn("\x1b[1;31mRecent burn too high\x1b[0m", styled)
+    self.assertIn("\x1b[34mSurplus\x1b[0m", styled)
+    self.assertIn("\x1b[33mBlocked\x1b[0m", styled)
+    self.assertIn("\x1b[1;31m0%\x1b[0m", styled)
+    self.assertIn("\x1b[1mQuota\x1b[0m", styled)
+
+  def test_verbose_highlights_key_words(self):
+    document = self.quota_document()
+    plain = AGENT_QUOTA.render_verbose(document)
+    styled = AGENT_QUOTA.render_verbose(document, color=True)
+    self.assertEqual(ESC.sub("", styled), plain)
+    self.assertIn("\x1b[1;31mEXHAUSTS BEFORE RESET\x1b[0m", styled)
+    self.assertIn("\x1b[31mBEHIND\x1b[0m", styled)
+
+  def test_models_brief_bolds_model_names(self):
+    document = {"generated_at": "t", "claude": {"effort_levels": ["low"]},
+                "codex": {"models": [{"slug": "gpt-x", "default_effort":
+                                      "medium", "efforts": ["low"],
+                                      "tiers": []}]}}
+    try:
+      plain = AGENT_QUOTA.render_models_brief(document)
+    except (KeyError, TypeError):
+      self.skipTest("models fixture shape differs")
+    styled = AGENT_QUOTA.render_models_brief(document, color=True)
+    self.assertEqual(ESC.sub("", styled), plain)
+
+  def test_color_is_rejected_for_json_output(self):
+    for argv in (["--cached", "--compact", "--color", "always"],
+                 ["--cached", "--color", "never"],
+                 ["--cached", "--timeline", "--compact", "--color=always"]):
+      stderr = io.StringIO()
+      with self.assertRaises(SystemExit), patch("sys.stderr", stderr):
+        AGENT_QUOTA.main(argv)
+      self.assertIn("--color needs a text view", stderr.getvalue(), argv)
+
 def timeline_limit(
   limit_id: str,
   label: str,

@@ -2035,14 +2035,61 @@ def brief_credits(service: dict[str, Any]) -> list[str]:
   return lines
 
 
-def text_table(headers: list[str], rows: list[list[str]]) -> list[str]:
+def text_table(headers: list[str], rows: list[list[str]],
+               styles: list[list[tuple[str, ...]]] | None = None,
+               color: bool = False) -> list[str]:
+  """Aligned columns; optional per-cell styles are painted after padding,
+  so the visible text is identical with or without colour."""
   widths = [max(len(row[i]) for row in [headers, *rows])
             for i in range(len(headers))]
-  def line(row: list[str]) -> str:
-    return "  ".join(value.ljust(width) for value, width in zip(row, widths))
-  return [line(headers).rstrip(),
-          "  ".join("-" * width for width in widths),
-          *(line(row).rstrip() for row in rows)]
+
+  def line(row: list[str], row_styles: Any) -> str:
+    cells = []
+    for index, (value, width) in enumerate(zip(row, widths)):
+      style = row_styles[index] if row_styles and index < len(row_styles) \
+        else ()
+      cells.append(paint(value, tuple(style or ()), color)
+                   + " " * (width - len(value)))
+    return "  ".join(cells).rstrip()
+
+  return [line(headers, [("bold",)] * len(headers)),
+          paint("  ".join("-" * width for width in widths), ("dim",), color),
+          *(line(row, styles[index] if styles else None)
+            for index, row in enumerate(rows))]
+
+
+PACE_STYLES = {
+  "Exhausted": ("bold", "reverse", "red"),
+  "Recent burn too high": ("bold", "red"),
+  "Behind": ("red",),
+  "Blocked": ("yellow",),
+  "Surplus": ("blue",),
+}
+# Words the prose modes highlight, in one pass so nothing is painted twice.
+HIGHLIGHTS = [
+  (r"EXHAUSTS BEFORE RESET", ("bold", "red")),
+  (r"LIKELY AVAILABLE|^Likely available", ("bold", "green")),
+  (r"\bBEHIND\b|\bexhausted\b", ("red",)),
+  (r"\bSURPLUS\b", ("blue",)),
+  (r"\bRESET SOON\b|\bblocked\b|\[[A-Z ;]*(?:STALE|UNKNOWN)[A-Z ;]*\]",
+   ("yellow",)),
+  (r"\bRESET(?= \d{4}-)", ("green",)),
+  (r"^Attention:", ("bold", "red")),
+]
+HIGHLIGHT_RE = re.compile("|".join(f"(?P<h{index}>{pattern})" for index,
+                                   (pattern, _) in enumerate(HIGHLIGHTS)),
+                          re.MULTILINE)
+
+
+def highlight(text: str, color: bool) -> str:
+  if not color:
+    return text
+
+  def replace(match: re.Match[str]) -> str:
+    index = int(match.lastgroup[1:])
+    return paint(match.group(0), HIGHLIGHTS[index][1], True)
+
+  return HIGHLIGHT_RE.sub(replace, text)
 
 
 def stale_marker(observation: dict[str, Any]) -> str:
@@ -2189,7 +2236,16 @@ def other_account_lines(document: dict[str, Any]) -> list[str]:
   return lines
 
 
-def render_brief(document: dict[str, Any]) -> str:
+def brief_row_styles(row: list[str]) -> list[tuple[str, ...]]:
+  label, remaining, _, state = row
+  return [("yellow",) if label.endswith("]") else (),
+          ("bold", "red") if remaining == "0%" else (),
+          (), PACE_STYLES.get(state, ("dim",) if state in (
+            "On Pace", "Early", "Period ended", "Period unknown",
+            "Not started") else ())]
+
+
+def render_brief(document: dict[str, Any], color: bool = False) -> str:
   rows, credit_rows, alerts, notes, tokens = [], [], [], [], []
   for service_id, service in document.get("services", {}).items():
     name = str(service.get("display_name", service_id))
@@ -2273,21 +2329,25 @@ def render_brief(document: dict[str, Any]) -> str:
   others = other_account_lines(document)
   if others:
     lines.extend(["", *others])
+  lines = [highlight(line, color) for line in lines]
   if rows:
     if lines:
       lines.append("")
-    lines.extend(text_table(["Quota", "Remaining", "Resets in", "Pace"], rows))
+    lines.extend(text_table(["Quota", "Remaining", "Resets in", "Pace"], rows,
+                            [brief_row_styles(row) for row in rows], color))
   if credit_rows:
     lines.append("")
     lines.extend(text_table(
       ["Credits", "Balance", "Burn", "Until empty"], credit_rows,
+      color=color,
     ))
   if tokens:
     lines.extend(["", *tokens])
   if notes:
-    lines.extend(["", *notes])
-  lines.extend(["", f"Checked {document.get('generated_at', 'UNKNOWN')}; "
-                "observations fresh unless marked. Quota buckets are separate."])
+    lines.extend(["", *(paint(note, ("yellow",), color) for note in notes)])
+  lines.extend(["", paint(
+    f"Checked {document.get('generated_at', 'UNKNOWN')}; observations fresh "
+    "unless marked. Quota buckets are separate.", ("dim",), color)])
   return "\n".join(lines)
 
 
@@ -2326,6 +2386,15 @@ def use_color(stream: Any) -> bool:
     return bool(stream.isatty())
   except (AttributeError, ValueError):
     return False
+
+
+def resolve_color(choice: str, stream: Any) -> bool:
+  """--color: always and never override the environment; auto detects."""
+  if choice == "always":
+    return True
+  if choice == "never":
+    return False
+  return use_color(stream)
 
 
 def paint(text: str, styles: tuple[str, ...], on: bool) -> str:
@@ -2674,7 +2743,11 @@ def render_timeline(document: dict[str, Any], tz: Any = None,
   return "\n".join(lines)
 
 
-def render_verbose(document: dict[str, Any]) -> str:
+def render_verbose(document: dict[str, Any], color: bool = False) -> str:
+  return highlight(render_verbose_text(document), color)
+
+
+def render_verbose_text(document: dict[str, Any]) -> str:
   generated = document.get("generated_at", "UNKNOWN")
   lines = [
     f"Quota report generated {generated}.",
@@ -2893,7 +2966,17 @@ def build_models_document(
   }
 
 
-def render_models_brief(document: dict[str, Any]) -> str:
+def render_models_brief(document: dict[str, Any], color: bool = False) -> str:
+  text = render_models_text(document)
+  if not color:
+    return text
+  return re.sub(r"^(  )([^:\n]+)(?=:)",
+                lambda match: match.group(1) + paint(match.group(2),
+                                                     ("bold",), True),
+                text, flags=re.MULTILINE)
+
+
+def render_models_text(document: dict[str, Any]) -> str:
   tools = document.get("tools", {})
   claude = tools.get("claude_code", {}) if isinstance(tools, dict) else {}
   codex = tools.get("codex", {}) if isinstance(tools, dict) else {}
@@ -3191,6 +3274,12 @@ def main(argv: list[str] | None = None) -> int:
   )
 
   parser.add_argument(
+    "--color",
+    choices=("auto", "always", "never"),
+    help="colour text views: auto (a terminal without NO_COLOR; default), "
+    "always or never",
+  )
+  parser.add_argument(
     "--timeline",
     action="store_true",
     help="upcoming resets and projected run-outs by day; with --compact, "
@@ -3310,6 +3399,13 @@ def main(argv: list[str] | None = None) -> int:
   if not 0 < args.agent_days <= 30 or not 1 <= args.agent_limit <= 100:
     parser.error("--agent-days must be >0 and <=30; --agent-limit must be 1–100")
   validate_flags(parser, args, sys.argv[1:] if argv is None else argv)
+  text_view = (args.brief or args.verbose or args.agents and not args.compact
+               or args.timeline and not args.compact
+               or args.models and args.brief)
+  if args.color is not None and not text_view:
+    parser.error("--color needs a text view (--brief, --verbose, --timeline, "
+                 "--agents or --models --brief)")
+  args.color_on = resolve_color(args.color or "auto", sys.stdout)
   if args.agents:
     if args.models:
       parser.error("--agents cannot be combined with --models")
@@ -3324,7 +3420,7 @@ def main(argv: list[str] | None = None) -> int:
       Path(args.codex_models_file).expanduser(),
     )
     if args.brief:
-      print(render_models_brief(lineup))
+      print(render_models_brief(lineup, args.color_on))
     elif args.compact:
       print(json.dumps(lineup, separators=(",", ":"), ensure_ascii=False))
     else:
@@ -3386,14 +3482,14 @@ def main(argv: list[str] | None = None) -> int:
       }
   status = exit_status(document, args.provider, args.strict)
   if args.verbose:
-    print(render_verbose(document))
+    print(render_verbose(document, args.color_on))
   elif args.timeline and args.compact:
     print(json.dumps(timeline_document(document), separators=(",", ":"),
                      ensure_ascii=False))
   elif args.timeline:
-    print(render_timeline(document, color=use_color(sys.stdout)))
+    print(render_timeline(document, color=args.color_on))
   elif args.brief:
-    print(render_brief(document))
+    print(render_brief(document, args.color_on))
   elif args.compact:
     print(json.dumps(document, separators=(",", ":"), ensure_ascii=False))
   else:

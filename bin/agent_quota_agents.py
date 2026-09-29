@@ -880,7 +880,7 @@ def display_width(default=120):
   return None
 
 
-def render(agents, cache, quota, now, verbose=False):
+def render(agents, cache, quota, now, verbose=False, color=False):
   def short(value):
     if value is None:
       return "—"
@@ -919,7 +919,7 @@ def render(agents, cache, quota, now, verbose=False):
       return brief
     return clean(work, limit)
 
-  rows, works = [], []
+  rows, works, styles = [], [], []
   width = display_width()
   show_cache = width is None or width >= 110
   for agent, depth in ordered:
@@ -954,6 +954,14 @@ def render(agents, cache, quota, now, verbose=False):
     if show_cache:
       row.append(percent)
     rows.append([*row, age])
+    idle = now - agent["last_seen"]
+    styles.append([
+      ("cyan",) if agent["provider"] == "claude" else ("magenta",),
+      ("dim", "italic") if agent["work_source"] == "excerpt" else (),
+      (), (), (),
+      *((("dim",),) if show_cache else ()),
+      ("bold", "green") if idle < 300 else ("dim",) if idle > 3600 else (),
+    ])
     works.append(
       (
         ("~ " if agent["work_source"] == "excerpt" else "") + agent["work"],
@@ -978,13 +986,11 @@ def render(agents, cache, quota, now, verbose=False):
   for row, (work, brief) in zip(rows, works):
     row[1] = fit(work, brief, work_width)
   lines = (
-    quota.text_table(
-      headers,
-      rows,
-    )
+    quota.text_table(headers, rows, styles, color)
     if rows
     else ["No recent local agent sessions found."]
   )
+  table_end = len(lines)
   lines.extend(
     [
       "",
@@ -1043,6 +1049,8 @@ def render(agents, cache, quota, now, verbose=False):
           *agent["warnings"],
         ]
       )
+  lines[table_end:] = [quota.paint(line, ("dim", "italic"), color)
+                       for line in lines[table_end:]]
   return "\n".join(lines)
 
 
@@ -1188,7 +1196,8 @@ def main(args, quota, script):
       json.dumps(public_document(agents, cache, now), separators=(",", ":"))
     )
   else:
-    print(render(agents, cache, quota, now, args.verbose))
+    print(render(agents, cache, quota, now, args.verbose,
+                 getattr(args, "color_on", False)))
   sys.stdout.flush()
   if (
     not args.cached

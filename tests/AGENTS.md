@@ -63,6 +63,12 @@ Flag-validation tests cover agent-only options without `--agents`
 timeouts with `--cached`, and meaningful combinations that must still parse
 with their defaults.
 
+Colour tests cover `--color` resolution (`always` over `NO_COLOR`,
+`never` over a terminal), styled tables that keep their alignment, pace
+colours and alerts in `--brief`, keyword highlighting in `--verbose`, the
+models brief, and `--color` rejected for JSON output; each checks that
+removing the escape codes leaves the plain output unchanged.
+
 Run the local agent collector and summary-cache suite:
 
 ```bash

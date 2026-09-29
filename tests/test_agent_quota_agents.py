@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import os
 import subprocess
 import tempfile
@@ -724,6 +725,18 @@ class AgentViewTest(unittest.TestCase):
     return next(
       line for line in output.splitlines() if "claude:" + ident in line
     )
+
+  def test_colour_adds_only_escape_codes(self):
+    agents = [self.work_row("a", "Fix display", "Fix"),
+              dict(self.work_row("b", "raw excerpt", ""),
+                   work_source="excerpt")]
+    with patch.object(AGENTS, "display_width", return_value=160):
+      plain = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 1000)
+      styled = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 1000,
+                             color=True)
+    self.assertEqual(re.sub(r"\x1b\[[0-9;]*m", "", styled), plain)
+    self.assertIn("\x1b[1mAgent\x1b[0m", styled)
+    self.assertIn("\x1b[2;3m~ raw excerpt", styled)
 
   def test_work_column_spans_available_width_and_repairs_overruns(self):
     fits = "Reconcile unmerged branches for roadmap and delivery docs"

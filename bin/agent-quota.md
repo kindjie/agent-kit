@@ -60,6 +60,16 @@ without passing a flag. Ordinary quota queries never start summarization.
   `active`, `quota`, `limit_id`, `short_window`, `remaining_percent` (or
   `remaining_credits` with `unit` `credits`), `unit`, `restores`,
   `blocked`, `stale` and `rate_per_hour`. Events are in time order.
+- `--color {auto,always,never}` colours the text views (`--brief`,
+  `--verbose`, `--timeline`, `--agents`, `--models --brief`). `auto`, the
+  default, colours an interactive terminal unless `NO_COLOR` is set or
+  `TERM=dumb`; `always` and `never` override that, so
+  `watch -c -n 60 agent-quota --cached --timeline --color always` works.
+  One palette throughout: exhausted bold red reverse, recent burn too high
+  bold red, behind red, blocked and stale yellow, surplus blue, likely
+  available and recent activity green, on-pace and ended dim, headers bold.
+  Styling never changes the visible text or alignment. `--color` with a
+  JSON output is an error.
 - Both text modes list archived accounts when any exist; see
   [Accounts not checked now](#accounts-not-checked-now).
 - `--cached` reads and reevaluates the derived cache without querying a
