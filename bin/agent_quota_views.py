@@ -1028,6 +1028,50 @@ LIVE_INTERVAL = 30
 LIVE_MIN_INTERVAL = 5
 LIVE_QUOTA_REFRESH = 300
 ENTER_SCREEN, LEAVE_SCREEN = "\033[?1049h\033[?25l", "\033[?25h\033[?1049l"
+# Between frames a dim dot circles once every eight seconds at the start of
+# the status line, so a quiet screen visibly still has a live loop behind it.
+# Braille cells are single-width everywhere and have no emoji forms.
+SPINNER = "⠁⠈⠐⠠⢀⡀⠄⠂"
+SPINNER_STEP = 1.0
+# A lone Escape quits; one followed by `[` or `O` starts an arrow or other
+# key sequence and does not.
+QUIT_RE = re.compile(r"[qQ]|\x1b(?![\[O])")
+
+
+def key_wait(seconds: float) -> str:
+  """Sleep up to seconds, returning any keys typed on a terminal stdin."""
+  import select
+  try:
+    fd = sys.stdin.fileno()
+    terminal = os.isatty(fd)
+  except (AttributeError, OSError, ValueError):
+    terminal = False
+  if not terminal:
+    time.sleep(seconds)
+    return ""
+  ready, _, _ = select.select([fd], [], [], seconds)
+  return os.read(fd, 64).decode(errors="replace") if ready else ""
+
+
+@contextmanager
+def keys_unbuffered():
+  """cbreak mode on a terminal stdin: keys arrive unechoed and unbuffered
+  while Ctrl-C still interrupts. Restores the previous mode on exit."""
+  try:
+    import termios
+    import tty
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd) if os.isatty(fd) else None
+  except (ImportError, AttributeError, OSError, ValueError):
+    saved = None
+  if saved is None:
+    yield
+    return
+  tty.setcbreak(fd)
+  try:
+    yield
+  finally:
+    termios.tcsetattr(fd, termios.TCSADRAIN, saved)
 
 
 def live_document(args: argparse.Namespace, cache_path: Path,
@@ -1105,15 +1149,20 @@ def fit_screen(lines: list[str], height: int) -> list[str]:
 
 def run_live(args: argparse.Namespace, cache_path: Path,
              out: Any = None, clock: Any = time.time,
-             sleep: Any = time.sleep) -> int:
-  """Redraw --timeline or --agents until interrupted."""
+             wait: Any = None) -> int:
+  """Redraw --timeline or --agents until q, Escape or Ctrl-C.
+
+  wait(seconds) sleeps and returns the keys typed meanwhile."""
+  if wait is None:
+    with keys_unbuffered():
+      return run_live(args, cache_path, out, clock, key_wait)
   out = out or sys.stdout
   interval = args.interval or LIVE_INTERVAL
   view = "timeline" if args.timeline else "agents"
   previous_rows: dict[tuple, Any] = {}
   previous_states: dict[str, Any] = {}
   sent: set[tuple] = set()
-  first, last_summaries = True, 0.0
+  first, last_summaries, tick = True, 0.0, 0
   out.write(ENTER_SCREEN)
   try:
     while True:
@@ -1157,9 +1206,9 @@ def run_live(args: argparse.Namespace, cache_path: Path,
       except OSError:
         age = "UNKNOWN"
       status = paint(
-        f"agent-quota --{view} --live · every "
+        f"{SPINNER[tick % len(SPINNER)]} agent-quota --{view} --live · every "
         f"{f'{interval:g}s' if interval < 60 else format_duration(interval)} "
-        f"· quota data {age} old · Ctrl-C to quit", ("dim",), args.color_on)
+        f"· quota data {age} old · q to quit", ("dim",), args.color_on)
       size = shutil.get_terminal_size((100, 40))
       lines = fit_screen([status, "", *body.splitlines()], size.lines - 1)
       out.write("\033[H\033[2J" + "\n".join(lines) + "\n")
@@ -1168,7 +1217,17 @@ def run_live(args: argparse.Namespace, cache_path: Path,
         for alert in alerts:
           notify(alert)
       first = False
-      sleep(interval)
+      waited = 0.0
+      while waited < interval:
+        step = min(SPINNER_STEP, interval - waited)
+        if QUIT_RE.search(wait(step)):
+          return 0
+        waited += step
+        tick += 1
+        # Repaint only the spinner cell; the frame stays as drawn.
+        out.write("\033[1;1H" + paint(SPINNER[tick % len(SPINNER)],
+                                       ("dim",), args.color_on))
+        out.flush()
   except KeyboardInterrupt:
     pass
   finally:

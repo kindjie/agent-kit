@@ -76,11 +76,13 @@ imports fixtures from `test_agent_quota.py`:
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_quota_timeline
 ```
 
-Live tests drive `run_live` with a fake clock and sleep: the alternate
-screen entered and restored, later frames marking new rows, alerts only
-with `--notify`, quota queried only when stale and not `--cached`, alert
-rules, screen fitting, notification commands per platform, the `--live`
-flag rules, and one plain frame when output is not a terminal.
+Live tests drive `run_live` with a fake clock and key-returning wait: the
+alternate screen entered and restored, the spinner stepping once a second
+between frames, `q` and a lone Escape quitting while key sequences do not,
+later frames marking new rows, alerts only with `--notify`, quota queried
+only when stale and not `--cached`, alert rules, screen fitting,
+notification commands per platform, the `--live` flag rules, and one plain
+frame when output is not a terminal.
 
 Run the local agent collector and summary-cache suite:
 
@@ -124,7 +126,8 @@ states, models and efforts in full, and the legend only with glyphs. A cache
 test keeps summaries across a version change. Action tests keep the end of
 commands and paths, and the start of other details; parser tests show the
 latest model and effort and the starting directory; Dir labels grow a parent
-segment only on collision. Gate tests defer summaries only under 3% left.
+segment only on collision. A terminal reporting zero columns falls back to
+120. Gate tests defer summaries only under 3% left.
 
 Run the status-renderer suite from the repository root:
 

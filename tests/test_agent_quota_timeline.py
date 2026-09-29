@@ -375,21 +375,26 @@ class LiveTest(unittest.TestCase):
     return {"services": {"claude_code": timeline_service(
       "Claude Code", "me@example.test", "max", limits)}}
 
-  def run_frames(self, documents, **overrides) -> tuple[str, list[str]]:
+  def run_frames(self, documents, keys=None,
+                 **overrides) -> tuple[str, list[str]]:
     out, sent = io.StringIO(), []
     frames = iter(documents)
-    sleeps = iter([None] * (len(documents) - 1) + [KeyboardInterrupt()])
+    # Waits are split into spinner steps; stop once every frame has drawn.
+    budget = [(len(documents) - 1) * (overrides.get("interval") or 30)]
+    typed = iter(keys or [])
 
-    def sleep(_):
-      step = next(sleeps)
-      if step:
-        raise step
+    def wait(seconds):
+      pressed = next(typed, "")
+      if budget[0] <= 0:
+        raise KeyboardInterrupt
+      budget[0] -= seconds
+      return pressed
     with patch.object(AGENT_QUOTA, "live_document",
                       side_effect=lambda *_: next(frames)), \
          patch.object(AGENT_QUOTA, "notify", side_effect=sent.append):
       code = AGENT_QUOTA.run_live(self.args(**overrides), Path("/none"),
                                   out=out, clock=lambda: NOW.timestamp(),
-                                  sleep=sleep)
+                                  wait=wait)
     self.assertEqual(code, 0)
     return out.getvalue(), sent
 
@@ -399,6 +404,32 @@ class LiveTest(unittest.TestCase):
     self.assertTrue(output.endswith(AGENT_QUOTA.LEAVE_SCREEN))
     self.assertIn("agent-quota --timeline --live · every 30s", output)
     self.assertIn("Timeline", output)
+
+  def test_spinner_ticks_slowly_between_frames(self):
+    output, _ = self.run_frames([self.document(False)] * 2, interval=5)
+    first, second = output.split("\033[H\033[2J")[1:]
+    spinner = AGENT_QUOTA.SPINNER
+    self.assertIn(spinner[0] + " agent-quota --timeline --live", first)
+    # One repaint of the spinner cell per second, and nothing else.
+    ticks = first.split("\033[1;1H")[1:]
+    self.assertEqual(ticks, list(spinner[1:6]))
+    self.assertIn(spinner[5] + " agent-quota --timeline --live", second)
+    self.assertEqual(AGENT_QUOTA.SPINNER_STEP, 1.0)
+
+  def test_q_and_escape_quit_but_arrow_keys_do_not(self):
+    for keys, ticks in ((["", "q"], 1), (["Q"], 0), (["", "", "\x1b"], 2),
+                        (["\x1b[A", "\x1bOB", "q"], 2)):
+      output, _ = self.run_frames([self.document(False)] * 3, keys=keys)
+      self.assertEqual(output.count("\033[H\033[2J"), 1, keys)
+      self.assertEqual(output.count("\033[1;1H"), ticks, keys)
+      self.assertTrue(output.endswith(AGENT_QUOTA.LEAVE_SCREEN), keys)
+    self.assertIn("· q to quit", output)
+
+  def test_key_wait_sleeps_without_a_terminal(self):
+    with patch.object(AGENT_QUOTA.sys, "stdin", io.StringIO()), \
+         patch.object(AGENT_QUOTA.time, "sleep") as sleep:
+      self.assertEqual(AGENT_QUOTA.key_wait(0.5), "")
+    sleep.assert_called_once_with(0.5)
 
   def test_later_frames_mark_new_rows_and_alert(self):
     output, sent = self.run_frames(
