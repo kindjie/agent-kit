@@ -243,6 +243,117 @@ class AgentViewTest(unittest.TestCase):
     self.assertIn("weekly 30% left", AGENTS.live_header(
       document, agents, AGENT_QUOTA, 1000)[0])
 
+  def ladder_agents(self):
+    def row(ident, work, brief, **fields):
+      agent = self.work_row(ident, work, brief)
+      agent.update(recent_tokens=0, turn_age=None, long_turn=False, now="—")
+      agent.update(fields)
+      return agent
+    working = row("0a1b2c3d9cf6", "Fix the build pipeline", "Fix build",
+                  state="working", turn_age=720, now="Bash: make test",
+                  recent_tokens=1_200_000, effort="medium")
+    waiting = row("01a0aaaa4b37", "Review PR", "Review", state="waiting",
+                  turn_age=60, provider="codex", key="codex:01a0aaaa4b37",
+                  models=["codex-auto-review"])
+    child = row("01a0bbbb61d4", "Subagent pass", "Pass", state="done",
+                provider="codex", key="codex:01a0bbbb61d4",
+                parent_id="01a0aaaa4b37")
+    return [working, waiting, child]
+
+  def applied(self, output):
+    lines = output.splitlines()
+    header, table = lines[0], "\n".join(lines[2:5])
+    return [step for step, present in (
+      ("drop_cache", "Cache" not in header),
+      ("drop_seen", "Seen" not in header),
+      ("state_glyphs", "▸" in table),
+      ("short_ids", "claude:" not in table),
+      ("drop_tokens", "Tokens" not in header),
+      ("effort_prefix", " medium " not in table),
+      ("fold_now", "Now" not in header),
+      ("short_model", "codex-a…" in table)) if present]
+
+  def test_compaction_follows_the_ladder_only_as_needed(self):
+    agents = self.ladder_agents()
+    previous = []
+    for columns in range(200, 49, -1):
+      with patch.object(AGENTS, "display_width", return_value=columns):
+        output = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 1000)
+      steps = self.applied(output)
+      self.assertEqual(steps, list(AGENTS.COMPACTION[:len(steps)]), columns)
+      self.assertGreaterEqual(len(steps), len(previous), columns)
+      previous = steps
+    self.assertEqual(previous, list(AGENTS.COMPACTION))
+    with patch.object(AGENTS, "display_width", return_value=None):
+      piped = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 1000)
+    self.assertEqual(self.applied(piped), [])
+
+  def test_no_line_exceeds_the_width_down_to_the_minimum(self):
+    agents = self.ladder_agents()
+    for columns in range(60, 201):
+      with patch.object(AGENTS, "display_width", return_value=columns):
+        output = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 1000)
+      for line in output.splitlines():
+        self.assertLessEqual(len(line), columns, (columns, line))
+
+  def test_compact_forms_and_legend(self):
+    agents = self.ladder_agents()
+    with patch.object(AGENTS, "display_width", return_value=60):
+      output = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 1000)
+    self.assertIn("cl:9cf6", output)
+    self.assertIn("└co:61d4", output)
+    self.assertIn("▸ 12m", output)
+    self.assertIn("Bash: make test", output)    # Now folded into Work
+    self.assertNotIn(" Now ", output.splitlines()[0] + " ")
+    self.assertIn(" Eff ", output.splitlines()[0] + " ")
+    self.assertIn("▸ working", output)          # legend when glyphs show
+    with patch.object(AGENTS, "display_width", return_value=200):
+      wide = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 1000)
+    self.assertNotIn("▸ working", wide)
+    self.assertIn("working 12m", wide)
+
+  def test_glyphs_are_single_width(self):
+    import unicodedata
+    for glyph, _ in AGENTS.STATE_LEGEND.values():
+      self.assertEqual(len(glyph), 1)
+      self.assertIn(unicodedata.east_asian_width(glyph), ("N", "Na", "H"),
+                    glyph)
+
+  def test_derived_short_forms_grow_on_collision(self):
+    self.assertEqual(AGENTS.unique_prefixes(["claude", "codex"]),
+                     {"claude": "cl", "codex": "co"})
+    self.assertEqual(AGENTS.unique_prefixes(["claude", "codex", "cursor"]),
+                     {"claude": "cl", "codex": "co", "cursor": "cu"})
+    self.assertEqual(AGENTS.unique_prefixes(["high", "medium", "mixed",
+                                             "max"])["medium"], "me")
+    self.assertEqual(AGENTS.unique_suffix_length(
+      ["aaaa1234", "bbbb1234", "cccc5678"]), 5)
+
+  def test_unknown_state_model_and_effort_render_in_full(self):
+    agent = dict(self.work_row("x1", "Work", "Work"), state="paused",
+                 turn_age=None, long_turn=False, now="—", recent_tokens=0,
+                 models=["brand-new-model-9"], effort="hyper")
+    self.assertEqual(AGENTS.state_text(agent, "paused", True, AGENT_QUOTA),
+                     "paused")
+    with patch.object(AGENTS, "display_width", return_value=200):
+      output = AGENTS.render([agent], {"sessions": {}}, AGENT_QUOTA, 1000)
+    self.assertIn("paused", output)
+    self.assertIn("hyper", output)
+    self.assertIn("brand-new-mod…", output)
+
+  def test_cache_version_change_keeps_summaries(self):
+    path = self.root / "agents.json"
+    summaries = {"claude:a": {"summary": "Fix build", "input_hash": "h"}}
+    path.write_text(json.dumps({"version": AGENTS.CACHE_VERSION - 1,
+                                "sessions": {"x": {}},
+                                "summaries": summaries}))
+    cache = AGENTS.load_cache(path)
+    self.assertEqual(cache["version"], AGENTS.CACHE_VERSION)
+    self.assertEqual(cache["sessions"], {})       # re-parsed under the new
+    self.assertEqual(cache["summaries"], summaries)  # model calls kept
+    path.write_text("not json")
+    self.assertEqual(AGENTS.load_cache(path)["summaries"], {})
+
   def test_display_status_derives_stalled_idle_and_long(self):
     base = {"state": "working", "turn_started": 0, "last_event": 0,
             "action": "Bash: make", "progress": None,

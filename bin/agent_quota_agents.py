@@ -21,6 +21,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -871,13 +872,18 @@ def load_cache(path):
     data = json.loads(path.read_text())
   except (OSError, ValueError):
     return empty_cache()
+  if not isinstance(data, dict):
+    return empty_cache()
+  summaries = data.get("summaries")
+  summaries = summaries if isinstance(summaries, dict) else {}
   if (
-    not isinstance(data, dict)
-    or data.get("version") != CACHE_VERSION
+    data.get("version") != CACHE_VERSION
     or not isinstance(data.get("sessions"), dict)
-    or not isinstance(data.get("summaries"), dict)
   ):
-    return {"version": CACHE_VERSION, "sessions": {}, "summaries": {}}
+    # Parsed sessions follow the parser and are cheap to rebuild; summaries
+    # cost model calls and are keyed by agent and input hash, so keep them.
+    return {"version": CACHE_VERSION, "sessions": {}, "summaries": summaries}
+  data["summaries"] = summaries
   return data
 
 
@@ -1064,6 +1070,67 @@ STATE_STYLES = {"working": ("green",), "stalled": ("bold", "red"),
                 "aborted": ("red",)}
 
 
+# Table compaction, applied in this order and only while the table is too
+# wide for the terminal: cheapest information loss first.
+COMPACTION = ("drop_cache", "drop_seen", "state_glyphs", "short_ids",
+              "drop_tokens", "effort_prefix", "fold_now", "short_model")
+WORK_MIN = 16
+# Compaction continues until Work has this much room: the work label is the
+# most informative column, so a barely-visible one counts as needing space.
+WORK_TARGET = 30
+# Glyph, meaning. Only characters of Unicode East Asian width N or Na
+# (never "ambiguous", which some terminals draw double-width) and without
+# emoji forms, so columns stay aligned everywhere; a test checks the width.
+STATE_LEGEND = {
+  "working": ("▸", "working"),
+  "waiting": ("⬥", "waiting (turn ended)"),
+  "idle": ("∙", "idle"),
+  "stalled": ("!", "stalled (quiet 20m mid-turn)"),
+  "done": ("✓", "done"),
+  "aborted": ("✗", "aborted"),
+}
+
+
+def unique_prefixes(values, minimum=1):
+  """Shortest prefix of each distinct value that no other value shares."""
+  distinct = sorted(set(values))
+  result = {}
+  for value in distinct:
+    length = minimum
+    while length < len(value) and any(
+        other != value and other.startswith(value[:length])
+        for other in distinct):
+      length += 1
+    result[value] = value[:length]
+  return result
+
+
+def unique_suffix_length(ids, minimum=4):
+  """Shortest suffix length at which the IDs stay distinct."""
+  distinct = set(ids)
+  longest = max((len(value) for value in distinct), default=minimum)
+  length = minimum
+  while length < longest and len({value[-length:] for value in distinct}) < \
+      len(distinct):
+    length += 1
+  return length
+
+
+def state_text(agent, state, glyphs, quota):
+  """`working 12m (long)`, or `● 12m+` when glyphs are needed."""
+  age = agent.get("turn_age")
+  timed = age is not None and state not in ("done", "aborted")
+  if glyphs and state in STATE_LEGEND:
+    text = STATE_LEGEND[state][0]
+    if timed:
+      text += " " + quota.format_duration(age).replace(" ", "")
+    return text + ("+" if agent.get("long_turn") else "")
+  text = state
+  if timed:
+    text += " " + quota.format_duration(age)
+  return text + (" (long)" if agent.get("long_turn") else "")
+
+
 def render(agents, cache, quota, now, verbose=False, color=False,
            marked=frozenset()):
   def short(value):
@@ -1104,99 +1171,144 @@ def render(agents, cache, quota, now, verbose=False, color=False,
       return brief
     return clean(work, limit)
 
-  rows, works, styles = [], [], []
   width = display_width()
-  show_cache = width is None or width >= 110
+  entries = []
   for agent, depth in ordered:
     model = (
       agent["models"][0]
       if len(agent["models"]) == 1
       else ("mixed" if agent["models"] else "unknown")
     )
-    model = model.removeprefix("claude-").removeprefix("gpt-")
     usage = agent["tokens"] or {}
-    percent = (
-      f"{100 * usage.get('cached', 0) / usage['input']:.0f}%"
-      if usage.get("input")
-      else "—"
-    )
-    prefix = ("  " * min(depth, 3) + "└─") if depth else ""
-    label = prefix + short_label(agent)
-    age = quota.format_duration(max(0, now - agent["last_seen"]))
-    state = agent.get("state") or "—"
-    state_text = state
-    if agent.get("turn_age") is not None and state not in ("done",
-                                                             "aborted"):
-      state_text += " " + quota.format_duration(agent["turn_age"])
-    if agent.get("long_turn"):
-      state_text += " (long)"
-    recent = agent.get("recent_tokens") or 0
-    row = [
-      label,
-      state_text,
-      clean(agent.get("now") or "—", 28),
-      "",
-      clean(model, 14),
-      agent["effort"],
-      short(usage.get("total")),
-      short(recent) if recent else "—",
-    ]
-    if show_cache:
-      row.append(percent)
-    rows.append([*row, age])
-    idle = now - agent["last_seen"]
-    styles.append([
-      ("cyan",) if agent["provider"] == "claude" else ("magenta",),
-      ("reverse", *STATE_STYLES.get(state, ())) if agent["key"] in marked
-      else STATE_STYLES.get(state, ()),
-      (),
-      ("dim", "italic") if agent["work_source"] == "excerpt" else (),
-      (), (), (),
-      ("bold",) if recent else ("dim",),
-      *((("dim",),) if show_cache else ()),
-      ("bold", "green") if idle < 300 else ("dim",) if idle > 3600 else (),
-    ])
-    works.append(
-      (
-        ("~ " if agent["work_source"] == "excerpt" else "") + agent["work"],
-        agent["work_brief"],
-      )
-    )
-  headers = ["Agent", "State", "Now", "Work", "Model", "Effort", "Tokens",
-             "15m"]
-  if show_cache:
-    headers.append("Cache")
-  headers.append("Seen")
+    excerpt = agent["work_source"] == "excerpt"
+    entries.append({
+      "agent": agent, "depth": depth,
+      "model": model.removeprefix("claude-").removeprefix("gpt-"),
+      "total": usage.get("total"),
+      "cache": (f"{100 * usage.get('cached', 0) / usage['input']:.0f}%"
+                if usage.get("input") else "—"),
+      "work": ("~ " if excerpt else "") + agent["work"],
+      "brief": agent["work_brief"], "excerpt": excerpt,
+      "idle": now - agent["last_seen"],
+    })
+  providers = unique_prefixes([e["agent"]["provider"] for e in entries])
+  efforts = unique_prefixes([e["agent"]["effort"] for e in entries])
+  suffix = unique_suffix_length([e["agent"]["id"] for e in entries])
+
+  def build(steps):
+    """Headers, rows, styles and work texts for a set of compactions."""
+    columns = [("Agent", "agent"), ("State", "state")]
+    if "fold_now" not in steps:
+      columns.append(("Now", "now"))
+    columns += [("Work", "work"), ("Model", "model"),
+                ("Eff" if "effort_prefix" in steps else "Effort", "effort")]
+    if "drop_tokens" not in steps:
+      columns.append(("Tokens", "tokens"))
+    columns.append(("15m", "recent"))
+    if "drop_cache" not in steps:
+      columns.append(("Cache", "cache"))
+    if "drop_seen" not in steps:
+      columns.append(("Seen", "seen"))
+    rows, styles, works = [], [], []
+    for entry in entries:
+      agent, depth = entry["agent"], entry["depth"]
+      state = agent.get("state") or "—"
+      recent = agent.get("recent_tokens") or 0
+      current = agent.get("now") or "—"
+      if "short_ids" in steps:
+        indent = (" " * (min(depth, 3) - 1) + "└") if depth else ""
+        label = (indent + providers[agent["provider"]] + ":"
+                 + agent["id"][-suffix:])
+      else:
+        label = (("  " * min(depth, 3) + "└─") if depth else "") + \
+          short_label(agent)
+      cells = {
+        "agent": label,
+        "state": state_text(agent, state, "state_glyphs" in steps, quota),
+        "now": clean(current, 28),
+        "model": clean(entry["model"], 8 if "short_model" in steps else 14),
+        "effort": (efforts[agent["effort"]] if "effort_prefix" in steps
+                   else agent["effort"]),
+        "tokens": short(entry["total"]),
+        "recent": short(recent) if recent else "—",
+        "cache": entry["cache"],
+        "seen": quota.format_duration(max(0, entry["idle"])),
+        "work": "",
+      }
+      cell_styles = {
+        "agent": ("cyan",) if agent["provider"] == "claude"
+        else ("magenta",),
+        "state": ("reverse", *STATE_STYLES.get(state, ()))
+        if agent["key"] in marked else STATE_STYLES.get(state, ()),
+        "work": ("dim", "italic") if entry["excerpt"] else (),
+        "recent": ("bold",) if recent else ("dim",),
+        "cache": ("dim",),
+        "seen": ("bold", "green") if entry["idle"] < 300
+        else ("dim",) if entry["idle"] > 3600 else (),
+      }
+      work, brief = entry["work"], entry["brief"]
+      if ("fold_now" in steps and state in ("working", "stalled")
+          and current not in ("—", "thinking")):
+        work = f"{current} · {work}"
+        brief = f"{current} · {brief}" if brief else brief
+      rows.append([cells[key] for _, key in columns])
+      styles.append([cell_styles.get(key, ()) for _, key in columns])
+      works.append((work, brief))
+    headers = [header for header, _ in columns]
+    return headers, rows, styles, works, [key for _, key in columns]
+
+  def fixed_width(headers, rows, keys):
+    index = keys.index("work")
+    return sum(max(len(row[column]) for row in [headers, *rows])
+               for column in range(len(headers)) if column != index) + \
+      2 * (len(headers) - 1)
+
+  # Compact only while the table does not fit: cheapest information loss
+  # first, abbreviations interleaved with dropped columns.
+  steps = set()
+  headers, rows, styles, works, keys = build(steps)
+  if width is not None:
+    for step in COMPACTION:
+      if fixed_width(headers, rows, keys) + WORK_TARGET <= width:
+        break
+      steps.add(step)
+      headers, rows, styles, works, keys = build(steps)
   # Work takes whatever the measured columns leave. Labels are budgeted at
   # WORK_LIMIT but models overrun it, so spare width shows what was returned
   # rather than falling back to the brief while columns sit unused.
-  fixed = [
-    0 if index == 3 else max(len(row[index]) for row in [headers, *rows])
-    for index in range(len(headers))
-  ]
-  reserve = sum(fixed) + 2 * (len(headers) - 1)
+  reserve = fixed_width(headers, rows, keys)
   work_width = (
-    LABEL_BOUND if width is None else max(16, min(LABEL_BOUND, width - reserve))
+    LABEL_BOUND if width is None
+    else max(WORK_MIN, min(LABEL_BOUND, width - reserve))
   )
+  work_index = keys.index("work")
   for row, (work, brief) in zip(rows, works):
-    row[3] = fit(work, brief, work_width)
+    row[work_index] = fit(work, brief, work_width)
   lines = (
     quota.text_table(headers, rows, styles, color)
     if rows
     else ["No recent local agent sessions found."]
   )
   table_end = len(lines)
-  lines.extend(
-    [
-      "",
-      "Tokens are per-agent observed totals, not family totals. "
-      "Cache = cached input / all input.",
-      "Work: ~ marks a fallback excerpt. "
-      "15m: uncached tokens, last 15 minutes.",
-      "State: waiting = turn ended; stalled = mid-turn, quiet for 20m;",
-      "(long) = over 3x the agent's usual turn; Now = current action or plan.",
-    ]
-  )
+  notes = []
+  if "drop_tokens" not in steps:
+    notes.append("Tokens are per-agent observed totals, not family totals.")
+  if "drop_cache" not in steps:
+    notes.append("Cache = cached input / all input.")
+  notes.append("Work: ~ marks a fallback excerpt"
+               + ("; it leads with the current action or plan."
+                  if "fold_now" in steps else "."))
+  notes.append("15m: uncached tokens, last 15 minutes.")
+  if "state_glyphs" in steps:
+    notes.append("State: " + "  ".join(
+      f"{glyph} {meaning}" for glyph, meaning in STATE_LEGEND.values())
+      + "; + = over 3x the usual turn.")
+  else:
+    notes.append("State: waiting = turn ended; stalled = mid-turn, quiet "
+                 "for 20m; (long) = over 3x the agent's usual turn.")
+  if "fold_now" not in steps:
+    notes.append("Now = current action or plan.")
+  lines.extend(["", *notes])
   if cache.get("scan_truncated"):
     lines.append(
       "Inventory limited to the 100 most recently modified sessions."
@@ -1246,8 +1358,12 @@ def render(agents, cache, quota, now, verbose=False, color=False,
           *agent["warnings"],
         ]
       )
+  tail = lines[table_end:]
+  if width is not None:
+    tail = [part for line in tail
+            for part in (textwrap.wrap(line, width) or [""])]
   lines[table_end:] = [quota.paint(line, ("dim", "italic"), color)
-                       for line in lines[table_end:]]
+                       for line in tail]
   return "\n".join(lines)
 
 

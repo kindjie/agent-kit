@@ -471,6 +471,23 @@ model calls:
 The transcript cannot show a process that died mid-turn: it reads as
 `working` until it becomes `stalled`.
 
+When a terminal width applies and the table would leave Work under 30
+columns, it compacts one step at a time, in this order, stopping as soon as
+it fits: drop Cache; drop Seen (State's age covers it); show State as a
+glyph and compact age (`▸` working, `⬥` waiting, `∙` idle, `!` stalled,
+`✓` done, `✗` aborted, `+` for a long turn) with a generated legend; shorten
+agent IDs to the shortest unique provider prefix and ID suffix (`cl:9cf6`,
+growing on collision); drop lifetime Tokens; shorten efforts to their
+shortest unique prefix among the rows shown (`Eff`); fold Now into Work;
+shorten model names with an ellipsis. Short forms are derived from the
+values shown, never from a fixed table, so new models, efforts, states or
+providers appear in full rather than mis-abbreviated. Glyphs are Unicode
+width N or Na without emoji forms. Piped output is unconstrained and never
+compacted. The footer wraps to the width.
+
+The agent cache keeps work summaries across cache-version changes; only the
+parsed sessions are rebuilt.
+
 `--agents --verbose` adds full IDs, parent IDs, labels, model/effort/speed
 sets, token breakdowns, parser warnings, and summary state. `--agents
 --compact` emits the separate `document: agents`, schema-version-1 JSON
