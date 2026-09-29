@@ -162,6 +162,43 @@ class WatchGitTest(RecordsFixture):
       ["git", "--git-dir", str(remote), "rev-parse", "HEAD"],
       env=self.env).strip(), old_remote)
 
+  def test_push_policy_is_per_directory(self):
+    self.init()
+    remotes = {}
+    for name, root in (("tasks", self.tasks), ("changes", self.changes)):
+      remote = self.base / (name + ".git")
+      subprocess.check_call(["git", "init", "--bare", "-q", str(remote)],
+                            env=self.env)
+      subprocess.check_call(["git", "-C", str(root), "remote", "add",
+                             "origin", str(remote)], env=self.env)
+      subprocess.check_call(["git", "-C", str(root), "push", "-qu",
+                             "origin", "HEAD"], env=self.env)
+      remotes[name] = remote
+    subprocess.check_call(["git", "-C", str(self.tasks), "remote", "remove",
+                           "origin"], env=self.env)
+    cfg = self.base / "agent-kit" / "records.json"
+    cfg.parent.mkdir()
+    cfg.write_text(json.dumps({"push": {"changelog": True}}))
+
+    def remote_head(name):
+      return subprocess.check_output(
+        ["git", "--git-dir", str(remotes[name]), "rev-parse", "HEAD"],
+        env=self.env).strip()
+
+    self.run_cmd("agent-task", "--agent", "agent-a", "new",
+                 "--title", "No remote needed")
+    old = remote_head("changes")
+    self.run_cmd("agent-changelog", "--agent", "agent-a", "new",
+                 "--scope", "example-repo", "--slug", "pushed",
+                 "--kind", "scratch", "--location", "/path/to/scratch",
+                 "--why", "test", "--cleanup-when", "never",
+                 "--cleanup-how", "nothing")
+    self.assertNotEqual(remote_head("changes"), old)
+    for bad in ({"push": {"tasks": "yes"}}, {"push": {"other": True}},
+                {"push": "true"}):
+      cfg.write_text(json.dumps(bad))
+      self.run_cmd("agent-task", "--agent", "agent-a", "list", code=2)
+
   def test_sync_rebase_conflict_aborts_cleanly(self):
     self.init()
     remote = self.base / "remote.git"

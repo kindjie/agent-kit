@@ -222,7 +222,9 @@ Exit codes are 0 success, 1 refusal with records verified unchanged,
 2 usage or configuration error, 3 committed locally but push failed,
 4 watch timeout, and 5 recovery needed or git operation in progress. A
 mutation commits with explicit paths. `push` defaults to false, including
-for `sync`. With `push: true`, pushes hold the records lock, so readers and
+for `sync`. It may be set per directory, for example
+`"push": {"changelog": true}` to push changelog records while tasks stay
+local. When pushing, pushes hold the records lock, so readers and
 watch polls can wait behind them. A failed rebase is aborted and reported;
 resolve conflicts manually. If two machines allocate the same task ID and
 `.next-id` conflicts, renumber the local task file and its `id:`, `related:`

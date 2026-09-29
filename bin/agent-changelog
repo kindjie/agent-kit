@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(os.path.realpath(__file__)).parent))
 from agent_records_core import (
+  push_policy,
   EXIT_TEXT, FORCE_TEXT, RecordsError, config, directory, doctor, init_repo,
   duration, one_line, record_locks, require_agent, sync, unexpected_error,
 )
@@ -240,7 +241,7 @@ def main():
   if naming_task and tasks is None:
     raise RecordsError("tasks directory is not configured", 2)
   if args.command == "doctor":
-    doctor(root, "changelog", cfg.get("push", False), args.wait, tasks)
+    doctor(root, "changelog", push_policy(cfg, tasks, root), args.wait, tasks)
     print("ok")
     return 0
   if args.command == "watch":
@@ -257,16 +258,18 @@ def main():
                     args.command, args.unlocked,
                     auto_recover=args.command != "recover") as authoritative:
     if args.command == "new":
-      new_entry(root, tasks, args, agent, cfg.get("push", False))
+      new_entry(root, tasks, args, agent, push_policy(cfg, tasks, root))
     elif args.command == "update":
-      update_record(root, tasks, args, agent, cfg.get("push", False))
+      update_record(root, tasks, args, agent, push_policy(cfg, tasks, root))
     elif args.command == "close":
-      update_record(root, tasks, args, agent, cfg.get("push", False))
+      update_record(root, tasks, args, agent, push_policy(cfg, tasks, root))
     elif args.command == "mistake":
       if args.mistake_command == "new":
-        new_entry(root, tasks, args, agent, cfg.get("push", False), True)
+        new_entry(root, tasks, args, agent,
+                  push_policy(cfg, tasks, root), True)
       else:
-        update_record(root, tasks, args, agent, cfg.get("push", False), True)
+        update_record(root, tasks, args, agent,
+                      push_policy(cfg, tasks, root), True)
     elif args.command == "list":
       list_records(root, args, authoritative)
     elif args.command == "show":
@@ -277,9 +280,9 @@ def main():
         print(error)
       return 1 if errors else 0
     elif args.command == "migrate":
-      migrate(root, args, agent, cfg.get("push", False))
+      migrate(root, args, agent, push_policy(cfg, tasks, root))
     elif args.command == "sync":
-      sync(root, cfg.get("push", False))
+      sync(root, push_policy(cfg, tasks, root))
     elif args.command == "recover":
       from agent_records_core import (read_journal, resolve_cross,
                                       recover_single)

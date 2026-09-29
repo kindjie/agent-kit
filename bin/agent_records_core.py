@@ -98,8 +98,18 @@ def config():
   for key in ("tasks_dir", "changelog_dir", "machine"):
     if key in data and not isinstance(data[key], str):
       raise RecordsError(key + " must be text", 2)
-  if "push" in data and not isinstance(data["push"], bool):
-    raise RecordsError("push must be true or false", 2)
+  if "push" in data:
+    value = data["push"]
+    if isinstance(value, dict):
+      if any(key not in ("tasks", "changelog") or
+             not isinstance(flag, bool) for key, flag in value.items()):
+        raise RecordsError(
+          "push must be true, false, or an object mapping tasks and "
+          "changelog to true or false", 2)
+    elif not isinstance(value, bool):
+      raise RecordsError(
+        "push must be true, false, or an object mapping tasks and "
+        "changelog to true or false", 2)
   if "repos" in data:
     repos = data["repos"]
     if not isinstance(repos, dict) or any(
@@ -677,6 +687,25 @@ def single_commit_exists(root, journal):
   return True
 
 
+def push_policy(cfg, tasks=None, changes=None):
+  """Resolve the config's push setting to a value push_enabled accepts."""
+  value = cfg.get("push", False)
+  if isinstance(value, bool):
+    return value
+  policy = {}
+  for kind, root in (("tasks", tasks), ("changelog", changes)):
+    if root is not None:
+      policy[str(Path(root).resolve())] = value.get(kind, False)
+  return policy
+
+
+def push_enabled(push, root):
+  """Whether to push root: push is a bool or a map of resolved roots."""
+  if isinstance(push, dict):
+    return bool(push.get(str(Path(root).resolve()), False))
+  return bool(push)
+
+
 def mutate(root, changes, operation, agent, push=False, git_timeout=GIT_TIMEOUT,
            push_timeout=PUSH_TIMEOUT):
   """Commit a mapping of repository-relative paths to bytes or None."""
@@ -725,7 +754,7 @@ def mutate(root, changes, operation, agent, push=False, git_timeout=GIT_TIMEOUT,
       raise RecordsError("unjournaled changes appeared after commit", 5)
   else:
     journal_path(root).unlink()
-  if push:
+  if push_enabled(push, root):
     try:
       git(root, "push", timeout=push_timeout)
     except RecordsError as exc:
@@ -765,7 +794,7 @@ def sync(root, push=False, git_timeout=GIT_TIMEOUT, push_timeout=PUSH_TIMEOUT):
     if not started:
       raise RecordsError(str(exc), 1)
     raise RecordsError("rebase failed and was aborted: " + str(exc), 5)
-  if push:
+  if push_enabled(push, root):
     try:
       git(root, "push", timeout=push_timeout)
     except RecordsError as exc:
@@ -1271,12 +1300,13 @@ def mutate_cross(tasks, changes, task_changes, change_changes, operation,
   else:
     journal_path(changes).unlink()
     journal_path(tasks).unlink()
-  if push:
-    for root in (changes, tasks):
-      try:
-        git(root, "push", timeout=PUSH_TIMEOUT)
-      except RecordsError as exc:
-        raise RecordsError(str(exc), 3)
+  for root in (changes, tasks):
+    if not push_enabled(push, root):
+      continue
+    try:
+      git(root, "push", timeout=PUSH_TIMEOUT)
+    except RecordsError as exc:
+      raise RecordsError(str(exc), 3)
 
 
 @contextmanager
@@ -1342,5 +1372,5 @@ def doctor(root, kind, push=False, wait=LOCK_WAIT, other=None):
     atomic(Path(temp) / "probe", b"probe\n")
     git(temp, "add", "--", "probe")
     git(temp, "commit", "-m", "Signing probe", "--", "probe")
-  if push:
+  if push_enabled(push, root):
     git(root, "ls-remote", timeout=PUSH_TIMEOUT)

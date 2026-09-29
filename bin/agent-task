@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(os.path.realpath(__file__)).parent))
 from agent_records_core import (
+  push_policy,
   EXIT_TEXT, FORCE_TEXT, RecordsError, config, directory, doctor, init_repo,
   duration, one_line, record_locks, require_agent, sync, unexpected_error,
   validate_root,
@@ -303,7 +304,7 @@ def main():
     except RecordsError as exc:
       raise RecordsError("changelog is unreadable: " + str(exc), 5)
   if args.command == "doctor":
-    doctor(root, "tasks", cfg.get("push", False), args.wait, changes)
+    doctor(root, "tasks", push_policy(cfg, root, changes), args.wait, changes)
     print("ok")
     return 0
   if args.command == "watch":
@@ -319,7 +320,7 @@ def main():
                     args.command, args.unlocked,
                     auto_recover=args.command != "recover") as authoritative:
     if args.command == "new":
-      new_task(root, args, agent, cfg.get("push", False))
+      new_task(root, args, agent, push_policy(cfg, root, changes))
     elif args.command in ("show", "list", "next"):
       task_read(root, changes, args, authoritative)
     elif args.command == "lint":
@@ -328,7 +329,7 @@ def main():
         print(error)
       return 1 if errors else 0
     elif args.command == "sync":
-      sync(root, cfg.get("push", False))
+      sync(root, push_policy(cfg, root, changes))
     elif args.command == "recover":
       from agent_records_core import (read_journal, resolve_cross,
                                       recover_single)
@@ -346,9 +347,9 @@ def main():
           recover_single(root, keep=args.keep, discard=args.discard,
                          validator=lambda: lint_tasks(root, changes))
     elif args.command == "close":
-      close_task(root, changes, args, agent, cfg.get("push", False))
+      close_task(root, changes, args, agent, push_policy(cfg, root, changes))
     else:
-      alter_task(root, args, agent, cfg.get("push", False), changes)
+      alter_task(root, args, agent, push_policy(cfg, root, changes), changes)
   return 0
 
 
