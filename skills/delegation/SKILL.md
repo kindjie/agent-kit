@@ -22,6 +22,12 @@ each one. Skip it when briefing costs as much as doing. A fork inherits
 context. A fresh agent needs the question, constraints, files, and expected
 deliverable, and should return findings or a patch, not narration.
 
+Where `agent-task` and `agent-changelog` are in use, give each delegate,
+fork or fresh, its own ID from `agent-id new <label>` and the task it works
+on; a fork shares your session and would otherwise write as you. Tell it to
+pass `--agent <id>` on every records write; the agent-kit README has a
+ready brief.
+
 ## Routing between Codex and Claude Code
 
 Before declaring a task unsupported, check the current session's tools and

@@ -25,6 +25,10 @@ Do not make one document serve incompatible purposes. Distinguish:
 - temporary coordination: plans and task lists;
 - adopter communication: release notes and migration guides.
 
+Agent coordination and machine state (a shared task queue, worktrees and
+kept branches, agents' mistakes) belong in `agent-task` and
+`agent-changelog` where those are configured, not in a project's records.
+
 Give each area a named authority and lifecycle. Do not keep completed plans or
 historical proposals synchronized as if they were current reference material.
 
