@@ -470,6 +470,15 @@ model calls:
   agent's median turn, and at least ten minutes. A turn starts at a user
   prompt (Claude Code) or `task_started` (Codex) and ends at an end-turn
   stop or `task_complete`.
+- **Claimed tasks**: when agent-kit's `agent-task` is configured, Work leads
+  with the tasks an agent holds (`T-0007 · …`, or `T-0007+2` for three) and
+  `--compact` lists them as `tasks`. An agent is matched by the records ID
+  `agent-id` derives from its session variable: the provider and the first
+  16 hex digits of the SHA-256 of its session or thread ID. A Claude
+  subagent shares its parent's session, so its tasks appear on the parent.
+  The list is read once per view with `agent-task list --json`; nothing is
+  shown when agent-task is absent, unconfigured or slow, and `--cached`
+  skips it, since it starts no processes.
 - **Dir**: the directory the session started in (`cwd` in `--compact`),
   shown by its last segment, `~` for home, with parent segments added only
   where two directories would otherwise look alike (`git/app`, `work/app`).
@@ -568,7 +577,7 @@ summaries survive failures and quota deferrals; verbose output marks a
 summary outdated when its input hash differs. Attempts are saved before
 calling a model, so a worker crash does not cause an immediate retry storm.
 
-Summary input combines three signals, because the owner's latest message
+Summary input combines four signals, because the owner's latest message
 may be a question or aside rather than the work in progress:
 
 - **Owner messages:** at most the latest six real user messages, each
@@ -581,6 +590,9 @@ may be a question or aside rather than the work in progress:
   Codex reasoning headings. Each is capped at 300 characters, which covers
   99.5% of observed replies; task-list writes are left to the next signal.
 - **Task list:** the current `TodoWrite` or `update_plan` step and count.
+- **Claimed tasks:** up to five `agent-task` tasks the agent owns or helps
+  with (in progress, in review or blocked), the strongest sign of its
+  assignment.
 
 The prompt asks for the work in progress rather than a side question or a
 finished step. In all three, images become `[image attached]`, runs of 120

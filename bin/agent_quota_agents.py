@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -29,7 +30,7 @@ from pathlib import Path
 
 CACHE_VERSION = 5
 # Bumped when the label schema changes so cached entries refresh once.
-PROMPT_VERSION = 4
+PROMPT_VERSION = 5
 WORK_LIMIT = 60
 BRIEF_LIMIT = 28
 LABEL_BOUND = 120
@@ -592,8 +593,10 @@ def input_hash(agent):
 
 def activity_hash(agent):
   progress = (agent.get("status") or {}).get("progress") or {}
-  data = json.dumps([agent.get("activity", []), progress.get("current")],
-                    ensure_ascii=False)
+  tasks = [(task.get("id"), task.get("title"))
+           for task in agent.get("tasks") or []]
+  data = json.dumps([agent.get("activity", []), progress.get("current"),
+                     tasks], ensure_ascii=False)
   return hashlib.sha256(data.encode()).hexdigest()
 
 
@@ -685,6 +688,46 @@ def summary_providers(agent, document, cross_provider=True):
   return [item[2] for item in eligible], "; ".join(reasons) or None
 
 
+# Task statuses that mean an agent is working on a task it holds.
+CLAIMED = ("in-progress", "in-review", "blocked")
+
+
+def records_id(agent):
+  """The agent-id a session writes records as: the provider and a hash of
+  its session variable, as agent-kit's agent-id derives it. A Claude
+  subagent shares its parent's session, so it has none of its own."""
+  if agent["provider"] == "claude" and agent.get("parent_id"):
+    return None
+  return (agent["provider"] + "-"
+          + hashlib.sha256(str(agent["id"]).encode()).hexdigest()[:16])
+
+
+def claimed_tasks(binary="agent-task"):
+  """{records ID: [{id, title, status}]} for live tasks each ID owns or
+  helps with; empty when agent-task is absent, unconfigured or slow."""
+  command = shutil.which(binary)
+  if not command:
+    return {}
+  try:
+    result = subprocess.run([command, "--wait", "5", "list", "--json"],
+                            capture_output=True, text=True, timeout=15)
+    tasks = json.loads(result.stdout)["tasks"] if result.returncode == 0 \
+      else []
+  except (OSError, subprocess.TimeoutExpired, ValueError, KeyError,
+          TypeError):
+    return {}
+  claims = {}
+  for task in tasks if isinstance(tasks, list) else []:
+    if not isinstance(task, dict) or task.get("status") not in CLAIMED:
+      continue
+    holders = [task.get("owner")] + [
+      name.strip() for name in str(task.get("helpers") or "").split(",")]
+    entry = {key: task.get(key) for key in ("id", "title", "status")}
+    for holder in dict.fromkeys(filter(None, holders)):
+      claims.setdefault(holder, []).append(entry)
+  return claims
+
+
 def summary_prompt(agent, previous):
   progress = (agent.get("status") or {}).get("progress")
   data = {
@@ -692,6 +735,10 @@ def summary_prompt(agent, previous):
     "owner_messages": bound_messages(agent["messages"]),
     "agent_activity": [clean(scrub(step), ACTIVITY_CHARS)
                        for step in agent.get("activity", [])[-ACTIVITY_KEEP:]],
+    "claimed_tasks": [
+      {"id": task.get("id"), "status": task.get("status"),
+       "title": clean(scrub(str(task.get("title") or "")), ACTIVITY_CHARS)}
+      for task in agent.get("tasks") or []][:5],
     "task_list": ({"done": progress.get("done"),
                    "total": progress.get("total"),
                    "current": clean(scrub(progress.get("current") or ""),
@@ -705,7 +752,9 @@ def summary_prompt(agent, previous):
     "first) carry the goal and steering, but may include questions or asides "
     "that are not the work. agent_activity (oldest first) is what the agent "
     "itself did lately: tool steps, the first sentences of its replies, and "
-    "reasoning headings. task_list, when present, is its current step. Name "
+    "reasoning headings. claimed_tasks are shared-queue tasks it holds, the "
+    "strongest sign of its assignment. task_list, when present, is its "
+    "current step. Name "
     "the work in progress, not a side question or a finished step. "
     "previous_summary is only the last label: replace it whenever the latest "
     "activity or messages show different work. Do not claim completion. "
@@ -1122,6 +1171,8 @@ def collect(cache, codex_root, claude_root, now, days):
 
 
 def view_agents(cache, args, now):
+  # --cached promises no process starts; claims need agent-task.
+  claims = {} if getattr(args, "cached", False) else claimed_tasks()
   agents = []
   for record in cache["sessions"].values():
     agent = copy.deepcopy(record["agent"])
@@ -1167,6 +1218,7 @@ def view_agents(cache, args, now):
     else:
       agent["now"] = "—"
     agent["recent_tokens"] = recent_tokens(agent.get("token_events"), now)
+    agent["tasks"] = claims.get(records_id(agent), [])
     agents.append(agent)
   agents.sort(key=lambda item: item["last_seen"], reverse=True)
   # An agent can occasionally be copied to another transcript location.
@@ -1421,14 +1473,18 @@ def render(agents, cache, quota, now, verbose=False, color=False,
     model = agent.get("model") or "unknown"
     usage = agent["tokens"] or {}
     excerpt = agent["work_source"] == "excerpt"
+    held = agent.get("tasks") or []
+    claim = (held[0]["id"] + (f"+{len(held) - 1}" if len(held) > 1 else "")
+             + " · ") if held else ""
     entries.append({
       "agent": agent, "depth": depth,
       "model": model_label(model),
       "total": usage.get("total"),
       "cache": (f"{100 * usage.get('cached', 0) / usage['input']:.0f}%"
                 if usage.get("input") else "—"),
-      "work": ("~ " if excerpt else "") + agent["work"],
-      "brief": agent["work_brief"], "excerpt": excerpt,
+      "work": claim + ("~ " if excerpt else "") + agent["work"],
+      "brief": (claim + agent["work_brief"]) if agent["work_brief"]
+      else None, "excerpt": excerpt,
       "idle": now - agent["last_seen"],
     })
   providers = unique_prefixes([e["agent"]["provider"] for e in entries], 2)

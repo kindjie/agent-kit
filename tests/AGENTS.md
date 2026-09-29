@@ -135,7 +135,9 @@ showing the step just finished. Display tests cover rule-based model names
 and middle-clipped Dir, internal sessions sharing one row unless verbose,
 folded Now skipping quiet steps, and a live header that keeps the account
 headline, names blocked models, lists each provider's own agents, and fits
-the width with one ID style.
+the width with one ID style. Claimed-task tests check records IDs against
+agent-id's own derivation, owner and helper matching, the Work prefix, and
+the claimed_tasks summary input.
 
 Run the status-renderer suite from the repository root:
 

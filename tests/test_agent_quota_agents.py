@@ -7,6 +7,7 @@ import json
 import re
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -1216,6 +1217,53 @@ class AgentViewTest(unittest.TestCase):
     self.assertLess(len(body["agent_activity"]), 12)
     self.assertEqual(body["owner_messages"], ["Fix display"])
     self.assertEqual(body["task_list"]["current"], "Run tests")
+
+  def test_records_ids_match_agent_id(self):
+    sys.path.insert(0, str(Path(AGENTS.__file__).parent))
+    import agent_records_core as core
+    for provider, variable in (("claude", "CLAUDE_CODE_SESSION_ID"),
+                               ("codex", "CODEX_THREAD_ID")):
+      session = "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000"
+      with patch.dict(os.environ, {variable: session}, clear=False):
+        for other in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID",
+                      "CODEX_SESSION_ID"):
+          if other != variable:
+            os.environ.pop(other, None)
+        expected = core.session_id()[0]
+      self.assertEqual(AGENTS.records_id(
+        {"provider": provider, "id": session, "parent_id": None}), expected)
+    # A Claude subagent shares its parent's session; it has no ID of its own.
+    self.assertIsNone(AGENTS.records_id(
+      {"provider": "claude", "id": "a1", "parent_id": "p"}))
+
+  def test_claimed_tasks_reach_work_json_and_summaries(self):
+    owner = AGENTS.records_id({"provider": "claude", "id": "s1",
+                               "parent_id": None})
+    listing = {"tasks": [
+      {"id": "T-0007", "title": "Fix the HUD", "status": "in-progress",
+       "owner": owner, "helpers": ""},
+      {"id": "T-0008", "title": "Help out", "status": "in-review",
+       "owner": "someone", "helpers": f"x, {owner}"},
+      {"id": "T-0009", "title": "Unowned", "status": "open",
+       "owner": "none", "helpers": ""}]}
+    result = subprocess.CompletedProcess([], 0, json.dumps(listing), "")
+    with patch.object(AGENTS.shutil, "which", return_value="/x"), \
+         patch.object(AGENTS.subprocess, "run", return_value=result):
+      claims = AGENTS.claimed_tasks()
+    self.assertEqual([t["id"] for t in claims[owner]], ["T-0007", "T-0008"])
+    with patch.object(AGENTS.shutil, "which", return_value=None):
+      self.assertEqual(AGENTS.claimed_tasks(), {})
+    agent = dict(self.work_row("s1", "Fix HUD layout", "Fix HUD"),
+                 state="working", turn_age=60, long_turn=False, now="—",
+                 recent_tokens=10, tasks=claims[owner])
+    with patch.object(AGENTS, "display_width", return_value=200):
+      output = AGENTS.render([agent], {"sessions": {}}, AGENT_QUOTA, 1000)
+    self.assertIn("T-0007+1 · Fix HUD layout", output)
+    prompt = AGENTS.summary_prompt({**agent, "messages": ["x"]}, {})
+    body = json.loads(prompt[prompt.index("\n") + 1:])
+    self.assertEqual(body["claimed_tasks"][0],
+                     {"id": "T-0007", "title": "Fix the HUD",
+                      "status": "in-progress"})
 
   def test_activity_refreshes_labels_at_most_every_fifteen_minutes(self):
     agent = {"messages": ["Fix parser"], "activity": ["Bash: Build"],
