@@ -127,7 +127,11 @@ test keeps summaries across a version change. Action tests keep the end of
 commands and paths, and the start of other details; parser tests show the
 latest model and effort and the starting directory; Dir labels grow a parent
 segment only on collision. A terminal reporting zero columns falls back to
-120. Gate tests defer summaries only under 3% left.
+120. Gate tests defer summaries only under 3% left. Summary-input tests
+cover activity from Claude and Codex (descriptions, reply first sentences,
+reasoning headings), dropped noise messages, scrubbed and bounded activity
+with the oldest dropped first, the 15-minute activity refresh, and Now
+showing the step just finished.
 
 Run the status-renderer suite from the repository root:
 

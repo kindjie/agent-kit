@@ -473,9 +473,10 @@ model calls:
 - **Now**: for a working agent, plan progress such as `2/5 Run tests` when
   the agent keeps a Claude Code `TodoWrite` list or a Codex `update_plan`
   plan, otherwise its pending tool call (`Bash: make test`, or the tools a
-  Codex script calls), or `thinking`. Commands, paths and URLs are
-  clipped from the left of the detail (`Bash: …&& git push`), since their
-  end says most; multi-line commands show their first line.
+  Codex script calls). Between tool calls it is the step just finished
+  (`after Bash: …`), or `thinking` at the start of a turn. Commands, paths
+  and URLs are clipped from the left of the detail (`Bash: …&& git push`),
+  since their end says most; multi-line commands show their first line.
 - **15m**: uncached tokens in the last 15 minutes. Rows are ordered busiest
   first, then by state and recency; children stay beneath their parents.
 
@@ -541,29 +542,46 @@ are validated before any result is cached; missing, duplicate, or unknown
 IDs fail the batch and preserve old labels until the normal retry.
 At most two CLI calls run concurrently across workers (one cache lock),
 and each pass covers all displayed sessions due for a summary. Each agent
-has a five-minute
-attempt cooldown, including failures. Unchanged inputs reuse summaries
-indefinitely. Every displayed session with user messages is eligible for
-generation or refresh when its input changes, regardless of inactivity. Old
+has a five-minute attempt cooldown, including failures. A new owner message
+refreshes a label at once. Changed agent activity or task-list step
+refreshes it only when the label is at least 15 minutes old, so a busy
+agent is relabelled at most about four times an hour. Unchanged inputs reuse
+summaries indefinitely. Every displayed session with owner messages or
+activity is eligible, regardless of inactivity. Old
 summaries survive failures and quota deferrals; verbose output marks a
 summary outdated when its input hash differs. Attempts are saved before
 calling a model, so a worker crash does not cause an immediate retry storm.
 
-Summary input contains at most the latest six real user messages, each
-limited to 1,000 characters, with a 4,000-character total budget allocated
-newest-first. An older message is shortened or dropped before a newer one.
-Images become `[image attached]`; image bytes, attachment URLs, and paths
-are omitted. Recognized skill injections, environment/instruction blocks,
-tool results, and subagent reports are excluded. The previous summary is
-included for continuity. The serialized UTF-8 prompt is capped at 12,000
-bytes. One call returns two labels: a summary budgeted at 60 characters and
-a brief at 28. Models overrun character budgets, so the summary is retained
-whole up to 120 characters and the brief doubles as the repair when the
-summary will not fit the table. A missing, invalid, or overrun brief is
-dropped rather than shown truncated; the row degrades without failing, and
-the fuller summary is truncated instead. The prompt schema is part of the
-cached input hash, so a schema change refreshes stored labels once. This is
-bounded text extraction, not a general secret detector.
+Summary input combines three signals, because the owner's latest message
+may be a question or aside rather than the work in progress:
+
+- **Owner messages:** at most the latest six real user messages, each
+  limited to 1,000 characters, with a 4,000-character total budget
+  allocated newest-first. Interruption markers and bare acknowledgements
+  (`yes`, `ok`, `Restarted`) are dropped.
+- **Agent activity:** the agent's last 12 steps, oldest first: each tool
+  call as the agent described it (a Bash `description`, a message
+  `summary`) or else its action, the first sentence of each reply, and
+  Codex reasoning headings. Each is capped at 300 characters, which covers
+  99.5% of observed replies; task-list writes are left to the next signal.
+- **Task list:** the current `TodoWrite` or `update_plan` step and count.
+
+The prompt asks for the work in progress rather than a side question or a
+finished step. In all three, images become `[image attached]`, runs of 120
+or more base64-like characters become `[data]`, and image bytes and
+attachment paths or URLs are omitted. Tool steps can name ordinary files and
+commands. Over the byte cap, the oldest activity is dropped first, then the
+oldest messages. Recognized skill injections, environment/instruction
+blocks, tool results, and subagent reports are excluded. The previous
+summary is included for continuity. The serialized UTF-8 prompt is capped at
+12,000 bytes. One call returns two labels: a summary budgeted at 60
+characters and a brief at 28. Models overrun character budgets, so the
+summary is retained whole up to 120 characters and the brief doubles as the
+repair when the summary will not fit the table. A missing, invalid, or
+overrun brief is dropped rather than shown truncated; the row degrades
+without failing, and the fuller summary is truncated instead. The prompt
+schema is part of the cached input hash, so a schema change refreshes stored
+labels once. This is bounded text extraction, not a general secret detector.
 
 By default, either provider may summarize either tool's transcript. Among
 providers passing all quota gates, choose the one with the most remaining

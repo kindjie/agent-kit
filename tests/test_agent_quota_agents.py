@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from types import SimpleNamespace
 import importlib.util
 import json
 import re
@@ -209,6 +210,9 @@ class AgentViewTest(unittest.TestCase):
       "Agent", {"description": "Review the plan"}),
       ("Agent: Review the plan", False))
     self.assertEqual(AGENTS.action_summary("Agent", {}), ("Agent", False))
+    self.assertEqual(AGENTS.action_summary(
+      "SendMessage", {"to": "a5cf", "summary": "Hold PR 42"}),
+      ("SendMessage: Hold PR 42", False))
 
   def test_commands_and_paths_keep_their_end(self):
     command = "cd ~/git/agent-changelog && " + "x" * 200 + " && git push"
@@ -1063,6 +1067,86 @@ class AgentViewTest(unittest.TestCase):
       with self.assertRaisesRegex(RuntimeError, "timed out"):
         AGENTS.summarize({"provider": "claude", "messages": ["Task"]}, {}, {})
       kill.assert_called_once_with(123, AGENTS.signal.SIGKILL)
+
+  def test_claude_activity_noise_and_the_step_just_finished(self):
+    rows = self.claude_rows(finished=True)
+    rows[4]["message"]["content"] = [{"type": "tool_result",
+                                      "tool_use_id": "t2", "content": "ok"}]
+    # A new reply opens with a sentence, then works on without a tool.
+    rows[5]["message"].update(stop_reason="tool_use", content=[
+      {"type": "text", "text": "**Tests pass.** Next I open the PR."}])
+    agent = AGENTS.parse_session(self.transcript(rows), "claude")
+    # TodoWrite is progress, not activity; Bash uses its description.
+    self.assertEqual(agent["activity"],
+                     ["Bash: Run tests", "said: Tests pass."])
+    noise = rows + [{"type": "user", "timestamp": "2026-08-19T21:07:00Z",
+                     "message": {"content": text}}
+                    for text in ("[Request interrupted by user for tool use]",
+                                 "Restarted", "ok!", "Then deploy")]
+    noisy = AGENTS.parse_session(self.transcript(noise, "n.jsonl"), "claude")
+    self.assertEqual(noisy["messages"], ["Run the tests", "Then deploy"])
+    # A new turn starts clean.
+    self.assertIsNone(noisy["status"]["last_done"])
+    status = agent["status"]
+    self.assertIsNone(status["action"])
+    self.assertEqual(status["last_done"], "Bash: pytest -q")
+    status["progress"] = None  # a task list would take precedence
+    view = AGENTS.view_agents(
+      {"sessions": {"s": {"agent": agent}}, "summaries": {}},
+      SimpleNamespace(agent_days=10 ** 6, agent_limit=10, provider="all"),
+      1_790_000_000)
+    self.assertEqual(view[0]["now"], "after Bash: pytest -q")
+
+  def test_codex_activity_from_steps_replies_and_reasoning(self):
+    rows = self.codex_rows(None)
+    rows[1:1] = [
+      {"type": "response_item", "timestamp": "2026-08-19T21:00:10Z",
+       "payload": {"type": "reasoning", "summary": [
+         {"type": "summary_text", "text": "**Checking the build**\n\nMore"}]}},
+      {"type": "response_item", "timestamp": "2026-08-19T21:00:20Z",
+       "payload": {"type": "message", "role": "assistant", "content": [
+         {"type": "output_text", "text": "I'll build first. Then test."}]}},
+    ]
+    agent = AGENTS.parse_session(self.transcript(rows), "codex")
+    self.assertEqual(agent["activity"], [
+      "thinking: Checking the build", "said: I'll build first.",
+      "exec: cargo test"])
+
+  def test_activity_is_scrubbed_and_bounded(self):
+    blob = "A" * 5000
+    step = AGENTS.activity_step("Bash", {"description": "Send " + blob})
+    self.assertEqual(step, "Bash: Send [data]")
+    said = AGENTS.first_sentence(
+      "See <image src='x.png'>ok</image> and data:image/png;base64,xyz here."
+      " More")
+    self.assertEqual(said, "See [image attached] and [image attached] here.")
+    long = AGENTS.first_sentence("word " * 10_000)
+    self.assertLessEqual(len(long), AGENTS.ACTIVITY_CHARS)
+    agent = {"messages": ["Fix display"],
+             "activity": ["said: " + "🙂" * 290] * 12 + ["said: newest"],
+             "status": {"progress": {"done": 1, "total": 3,
+                                     "current": "Run tests"}}}
+    prompt = AGENTS.summary_prompt(agent, {})
+    self.assertLessEqual(len(prompt.encode()), 12000)
+    body = json.loads(prompt[prompt.index("\n") + 1:])
+    self.assertEqual(body["agent_activity"][-1], "said: newest")
+    self.assertLess(len(body["agent_activity"]), 12)
+    self.assertEqual(body["owner_messages"], ["Fix display"])
+    self.assertEqual(body["task_list"]["current"], "Run tests")
+
+  def test_activity_refreshes_labels_at_most_every_fifteen_minutes(self):
+    agent = {"messages": ["Fix parser"], "activity": ["Bash: Build"],
+             "last_seen": 0}
+    fresh = {"input_hash": AGENTS.input_hash(agent),
+             "activity_hash": AGENTS.activity_hash(agent), "updated_at": 0}
+    self.assertFalse(AGENTS.summary_due(agent, fresh, 5000))
+    agent["activity"] = ["Bash: Build", "Bash: Test"]
+    refresh = AGENTS.ACTIVITY_REFRESH
+    self.assertFalse(AGENTS.summary_due(agent, fresh, refresh - 1))
+    self.assertTrue(AGENTS.summary_due(agent, fresh, refresh))
+    # A new owner message refreshes at once, activity or not.
+    agent["messages"].append("Also fix the lexer")
+    self.assertTrue(AGENTS.summary_due(agent, fresh, AGENTS.COOLDOWN))
 
   def test_budget_prompt_preserves_newest_when_utf8_expands(self):
     newest = "Fix display"
