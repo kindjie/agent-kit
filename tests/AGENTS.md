@@ -69,6 +69,13 @@ colours and alerts in `--brief`, keyword highlighting in `--verbose`, the
 models brief, and `--color` rejected for JSON output; each checks that
 removing the escape codes leaves the plain output unchanged.
 
+The timeline, live and `ready_at` tests live in their own file, which
+imports fixtures from `test_agent_quota.py`:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_quota_timeline
+```
+
 Live tests drive `run_live` with a fake clock and sleep: the alternate
 screen entered and restored, later frames marking new rows, alerts only
 with `--notify`, quota queried only when stale and not `--cached`, alert

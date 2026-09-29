@@ -43,7 +43,7 @@ Nothing here assumes that repository.
 - A POSIX shell. Developed on macOS; the shell scripts and Python target
   Linux equally, and platform-specific behaviour is gated rather than
   assumed.
-- **Python 3.9+** for `agent-quota`, `agent-status` and their module. No
+- **Python 3.9+** for `agent-quota`, `agent-status` and their modules. No
   third-party packages.
 - **[uv](https://docs.astral.sh/uv)** for `md-preview`, which is a PEP 723
   script: uv resolves its pinned dependencies per invocation. Without it the
