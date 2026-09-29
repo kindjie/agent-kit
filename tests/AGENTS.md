@@ -131,7 +131,11 @@ segment only on collision. A terminal reporting zero columns falls back to
 cover activity from Claude and Codex (descriptions, reply first sentences,
 reasoning headings), dropped noise messages, scrubbed and bounded activity
 with the oldest dropped first, the 15-minute activity refresh, and Now
-showing the step just finished.
+showing the step just finished. Display tests cover rule-based model names
+and middle-clipped Dir, internal sessions sharing one row unless verbose,
+folded Now skipping quiet steps, and a live header that keeps the account
+headline, names blocked models, lists each provider's own agents, and fits
+the width with one ID style.
 
 Run the status-renderer suite from the repository root:
 

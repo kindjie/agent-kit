@@ -1183,8 +1183,9 @@ def run_live(args: argparse.Namespace, cache_path: Path,
         frame = module.agent_frame(args, SimpleNamespace(**globals()),
                                    Path(__file__).resolve(), now)
         agents = frame["agents"]
-        states = {agent["key"]: (agent.get("state"), agent.get("now"))
-                  for agent in agents}
+        # Mark state changes only: the current step changes nearly every
+        # redraw, so marking it would mark almost every busy row.
+        states = {agent["key"]: agent.get("state") for agent in agents}
         marked = frozenset() if first else frozenset(
           key for key, value in states.items()
           if previous_states.get(key) != value)
@@ -1195,7 +1196,7 @@ def run_live(args: argparse.Namespace, cache_path: Path,
           agents, frame["cache"], SimpleNamespace(**globals()), now,
           args.verbose, args.color_on, marked)])
         alerts = module.agent_alerts(
-          {key: value[0] for key, value in previous_states.items()},
+          previous_states,
           agents, now, sent)
         previous_states = states
         if frame["command"] and now - last_summaries >= 300:

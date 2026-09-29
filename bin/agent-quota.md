@@ -71,13 +71,15 @@ without passing a flag. Ordinary quota queries never start summarization.
   minutes. A status line shows the interval and the quota data's age. Rows
   that are new or changed since the previous redraw are shown reversed: a
   timeline row by its moment, type, account and quota (relative times
-  ticking do not count), an agent row by its state and current action.
-  Agents mode adds a header per provider: the binding bucket (or the one
-  with least left), its run-out or reset, and the share of the last 15
-  minutes' tokens by the busiest agents. When output is not a terminal,
-  `--live` prints one frame and exits. It requires `--timeline` or
-  `--agents` and cannot be combined with `--compact`, `--brief` or
-  `--models`.
+  ticking do not count), an agent row by its state (its current step changes
+  too often to mark). Agents mode adds a header per provider: the account
+  bucket every model draws on (the binding one, or the one with least left),
+  its run-out or reset, `<model> blocked` for each spent model bucket, and
+  the share of the last 15 minutes' tokens by the busiest agents. Each line
+  fits the width: the whole header switches to the table's compact IDs, then
+  lists fewer agents. When output is not a terminal, `--live` prints one
+  frame and exits. It requires `--timeline` or `--agents` and cannot be
+  combined with `--compact`, `--brief` or `--models`.
 - `--notify` (with `--live`) rings the terminal bell and posts a desktop
   notification (`osascript` on macOS, `notify-send` on Linux) once per
   event: a quota reset passing, an inactive account likely available, a
@@ -451,9 +453,12 @@ that is not there; this is the usual case for another program reading the
 table. Otherwise Work takes whatever width the other columns leave, up to
 120 characters, shows the brief label when that is too narrow, and
 truncates only when neither fits. Activity is not proof that a process is
-running. Model and effort are the latest the transcript records; `--compact`
-and `--verbose` list every one seen. Missing metadata is unknown, never
-inferred from current configuration.
+running. Model and effort are the latest the transcript records. Model names
+are shortened by rule, never by table, so a new model still reads correctly:
+`claude-`, `gpt-` and `codex-` prefixes and date suffixes go, and a trailing
+version joins its name (`opus5.5`, `6-sol`, `auto-review`); `--compact` and
+`--verbose` list every one seen. Missing metadata is unknown, never inferred
+from current configuration.
 
 Each row also shows where the agent is, derived from its transcript without
 model calls:
@@ -467,9 +472,10 @@ model calls:
   stop or `task_complete`.
 - **Dir**: the directory the session started in (`cwd` in `--compact`),
   shown by its last segment, `~` for home, with parent segments added only
-  where two directories would otherwise look alike (`git/app`,
-  `work/app`). Later `cd`s are ignored: they wander into scratch and
-  subdirectories, while the start names the project or worktree.
+  where two directories would otherwise look alike (`git/app`, `work/app`).
+  Long names are clipped in the middle, never at the end, since sibling
+  worktrees share a start. Later `cd`s are ignored: they wander into scratch
+  and subdirectories, while the start names the project or worktree.
 - **Now**: for a working agent, plan progress such as `2/5 Run tests` when
   the agent keeps a Claude Code `TodoWrite` list or a Codex `update_plan`
   plan, otherwise its pending tool call (`Bash: make test`, or the tools a
@@ -483,19 +489,29 @@ model calls:
 The transcript cannot show a process that died mid-turn: it reads as
 `working` until it becomes `stalled`.
 
+Internal sessions, such as Codex's automatic reviewers (`guardian`), are
+many, short-lived and never summarized, so the table shows one row per
+provider and label: its busiest member's state, the group's total tokens,
+and a count in Work (`5 guardian sessions`). `--verbose` and `--compact`
+list each session. When Now is folded into Work, it keeps only a step in
+progress with a real detail; `after …` steps and bare tool names such as
+`exec: write_stdin` leave the room to the label. The State legend keeps each
+glyph with its meaning when wrapped.
+
 When a terminal width applies and the table would leave Work under 30
 columns, it compacts one step at a time, in this order, stopping as soon as
 it fits: drop Cache; drop Seen (State's age covers it); show State as a
 glyph and compact age (`▸` working, `⬥` waiting, `∙` idle, `!` stalled, `✓`
 done, `✗` aborted, `+` for a long turn) with a generated legend; shorten
 agent IDs to the shortest unique provider prefix and ID suffix (`cl:9cf6`,
-growing on collision); clip Dir to 10 columns; drop lifetime Tokens; shorten
-efforts to their shortest unique prefix among the rows shown (`Eff`); fold
-Now into Work; shorten model names with an ellipsis; drop Dir. Short forms
-are derived from the values shown, never from a fixed table, so new models,
-efforts, states or providers appear in full rather than mis-abbreviated.
-Glyphs are Unicode width N or Na without emoji forms. Piped output is
-unconstrained and never compacted. The footer wraps to the width.
+growing on collision); clip the middle of Dir to 16 columns, keeping its
+first segment and its end (`gameproj…defects`); drop lifetime Tokens;
+shorten efforts to their shortest unique prefix among the rows shown
+(`Eff`); fold Now into Work; shorten model names with an ellipsis; drop Dir.
+Short forms are derived from the values shown, never from a fixed table, so
+new models, efforts, states or providers appear in full rather than mis-
+abbreviated. Glyphs are Unicode width N or Na without emoji forms. Piped
+output is unconstrained and never compacted. The footer wraps to the width.
 
 The agent cache keeps work summaries across cache-version changes; only the
 parsed sessions are rebuilt.

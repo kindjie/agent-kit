@@ -215,7 +215,9 @@ def claude_tokens(raw):
 def action_summary(name, value):
   """(`Tool: detail`, tail) for a tool call, from its input or arguments.
 
-  tail is true when the detail's end matters most (see fit_action)."""
+  tail is true when the detail's end matters most (see fit_action), and
+  None when the detail only names the tools a script called: that says
+  little, so a folded Now leaves it out."""
   if isinstance(value, str):
     match = CMD_RE.search(value)
     if match:
@@ -223,7 +225,7 @@ def action_summary(name, value):
     # Codex exec runs a script; without a shell command, name its tools.
     called = list(dict.fromkeys(TOOL_CALL_RE.findall(value)))
     if called:
-      return clean(f"{name}: {', '.join(called)}", 60), False
+      return clean(f"{name}: {', '.join(called)}", 60), None
     try:
       value = json.loads(value)
     except ValueError:
@@ -1154,10 +1156,12 @@ def view_agents(cache, args, now):
       if status.get("action"):
         agent["now"] = status["action"]
         agent["now_tail"] = bool(status.get("action_tail"))
+        agent["now_quiet"] = status.get("action_tail", False) is None
       elif status.get("last_done"):
         # Between tool calls: the step it just finished.
         agent["now"] = "after " + status["last_done"]
         agent["now_tail"] = bool(status.get("last_done_tail"))
+        agent["now_quiet"] = True
       else:
         agent["now"] = "thinking"
     else:
@@ -1237,6 +1241,31 @@ STATE_LEGEND = {
 }
 
 
+def model_label(model):
+  """A shorter model name by rule, never by table, so a new model still
+  reads correctly: tool and vendor prefixes and date suffixes go, and a
+  trailing version joins its name (claude-opus-5-5 is opus5.5, gpt-6-sol
+  is 6-sol, codex-auto-review is auto-review)."""
+  text = re.sub(r"^(claude|gpt|codex)-", "", model)
+  text = re.sub(r"-\d{8}$", "", text)
+  text = re.sub(r"(?<=[a-z])-(\d+)-(\d+)$", r"\1.\2", text)
+  text = re.sub(r"(?<=[a-z])-(\d+)$", r"\1", text)
+  return text or model
+
+
+def middle_clip(text, limit):
+  """Clip the middle, keeping the first name segment and as much of the end
+  as fits: sibling worktrees share a start and differ at the end."""
+  if len(text) <= limit:
+    return text
+  if limit < 8:
+    return clean(text, limit)
+  first = re.match(r"[^-_. /]+", text)
+  head = min(len(first.group(0)) if first else 0, limit - 6)
+  head = head or (limit - 1) // 2
+  return text[:head] + "…" + text[-(limit - 1 - head):]
+
+
 def dir_labels(paths, home=None):
   """Last path segment per distinct directory, `~` for home, with parent
   segments added only where two directories would otherwise look alike."""
@@ -1306,6 +1335,44 @@ def state_text(agent, state, glyphs, quota):
   return text + (" (long)" if agent.get("long_turn") else "")
 
 
+def group_internal(agents):
+  """One row per provider and label for internal sessions, such as Codex's
+  automatic reviewers: they are many, short-lived and never summarized. The
+  row sits where its busiest member would and totals the group."""
+  groups = {}
+  for agent in agents:
+    if agent.get("internal"):
+      key = (agent["provider"], agent.get("label") or "internal")
+      groups.setdefault(key, []).append(agent)
+  rows, placed = [], set()
+  for agent in agents:
+    key = (agent["provider"], agent.get("label") or "internal")
+    members = groups.get(key) if agent.get("internal") else None
+    if not members or len(members) == 1:
+      rows.append(agent)
+      continue
+    if key in placed:
+      continue
+    placed.add(key)
+    lead = min(members, key=lambda a: (STATE_RANK.get(a.get("state"), 9),
+                                       a.get("turn_age") or 0))
+    dirs = {member.get("cwd") for member in members}
+    count = f"{len(members)} {key[1]}"
+    rows.append({
+      **lead,
+      "key": f"{key[0]}:group:{key[1]}", "id": key[1], "group": len(members),
+      "parent_id": None, "cwd": dirs.pop() if len(dirs) == 1 else None,
+      "last_seen": max(member["last_seen"] for member in members),
+      "recent_tokens": sum(member.get("recent_tokens") or 0
+                           for member in members),
+      "tokens": {name: sum((member.get("tokens") or {}).get(name) or 0
+                           for member in members) for name in TOKEN_KEYS},
+      "work": f"{count} sessions", "work_brief": count,
+      "work_source": "group", "now": "—", "now_quiet": True,
+    })
+  return rows
+
+
 def render(agents, cache, quota, now, verbose=False, color=False,
            marked=frozenset()):
   def short(value):
@@ -1316,6 +1383,8 @@ def render(agents, cache, quota, now, verbose=False, color=False,
         return f"{value / factor:.1f}{suffix}"
     return str(value)
 
+  if not verbose:
+    agents = order_by_activity(group_internal(agents))
   by_key = {agent["key"]: agent for agent in agents}
   ordered, seen = [], set()
 
@@ -1354,7 +1423,7 @@ def render(agents, cache, quota, now, verbose=False, color=False,
     excerpt = agent["work_source"] == "excerpt"
     entries.append({
       "agent": agent, "depth": depth,
-      "model": model.removeprefix("claude-").removeprefix("gpt-"),
+      "model": model_label(model),
       "total": usage.get("total"),
       "cache": (f"{100 * usage.get('cached', 0) / usage['input']:.0f}%"
                 if usage.get("input") else "—"),
@@ -1362,10 +1431,11 @@ def render(agents, cache, quota, now, verbose=False, color=False,
       "brief": agent["work_brief"], "excerpt": excerpt,
       "idle": now - agent["last_seen"],
     })
-  providers = unique_prefixes([e["agent"]["provider"] for e in entries])
+  providers = unique_prefixes([e["agent"]["provider"] for e in entries], 2)
   efforts = unique_prefixes([e["agent"]["effort"] for e in entries])
   dirs = dir_labels(e["agent"].get("cwd") for e in entries)
-  suffix = unique_suffix_length([e["agent"]["id"] for e in entries])
+  suffix = unique_suffix_length([e["agent"]["id"] for e in entries
+                                 if not e["agent"].get("group")])
 
   def build(steps):
     """Headers, rows, styles and work texts for a set of compactions."""
@@ -1390,7 +1460,10 @@ def render(agents, cache, quota, now, verbose=False, color=False,
       state = agent.get("state") or "—"
       recent = agent.get("recent_tokens") or 0
       current = agent.get("now") or "—"
-      if "short_ids" in steps:
+      if agent.get("group"):
+        label = (providers[agent["provider"]] if "short_ids" in steps
+                 else agent["provider"]) + ":" + agent["id"]
+      elif "short_ids" in steps:
         indent = (" " * (min(depth, 3) - 1) + "└") if depth else ""
         label = (indent + providers[agent["provider"]] + ":"
                  + agent["id"][-suffix:])
@@ -1399,11 +1472,11 @@ def render(agents, cache, quota, now, verbose=False, color=False,
           short_label(agent)
       cells = {
         "agent": label,
-        "dir": clean(dirs.get(agent.get("cwd")) or "—",
-                     10 if "short_dir" in steps else 20),
+        "dir": middle_clip(dirs.get(agent.get("cwd")) or "—",
+                           16 if "short_dir" in steps else 22),
         "state": state_text(agent, state, "state_glyphs" in steps, quota),
         "now": fit_action(current, 28, agent.get("now_tail")),
-        "model": clean(entry["model"], 8 if "short_model" in steps else 14),
+        "model": clean(entry["model"], 8 if "short_model" in steps else 12),
         "effort": (efforts[agent["effort"]] if "effort_prefix" in steps
                    else agent["effort"]),
         "tokens": short(entry["total"]),
@@ -1424,8 +1497,11 @@ def render(agents, cache, quota, now, verbose=False, color=False,
         else ("dim",) if entry["idle"] > 3600 else (),
       }
       folded = None
+      # Folded, Now shares Work with the label: only a step in progress
+      # with a real detail earns the room.
       if ("fold_now" in steps and state in ("working", "stalled")
-          and current not in ("—", "thinking")):
+          and current not in ("—", "thinking")
+          and not agent.get("now_quiet")):
         folded = (current, agent.get("now_tail"))
       rows.append([cells[key] for _, key in columns])
       styles.append([cell_styles.get(key, ()) for _, key in columns])
@@ -1486,7 +1562,8 @@ def render(agents, cache, quota, now, verbose=False, color=False,
   notes.append("15m: uncached tokens, last 15 minutes.")
   if "state_glyphs" in steps:
     notes.append("State: " + "  ".join(
-      f"{glyph} {meaning}" for glyph, meaning in STATE_LEGEND.values())
+      # A no-break space keeps each glyph with its meaning when wrapped.
+      f"{glyph}\u00a0{meaning}" for glyph, meaning in STATE_LEGEND.values())
       + "; + = over 3x the usual turn.")
   else:
     notes.append("State: waiting = turn ended; stalled = mid-turn, quiet "
@@ -1793,32 +1870,66 @@ def agent_frame(args, quota, script, now, cache=None, path=None,
 def short_label(agent):
   """provider:id as the table shows it: long IDs keep both ends."""
   identifier = agent["id"]
+  if agent.get("group"):
+    return agent["provider"] + ":" + identifier
   short = (identifier if len(identifier) <= 9
            else identifier[:4] + "…" + identifier[-4:])
   return agent["provider"] + ":" + short
 
 
+def current_limits(service):
+  return [item for item in service.get("limits", [])
+          if isinstance(item, dict)
+          and (item.get("last_observation") or {}).get("period_relation")
+          == "current"
+          and (item.get("last_observation") or {}).get("remaining_percent")
+          is not None]
+
+
 def outlook_limit(service):
-  """The binding bucket, or the current bucket with the least left."""
+  """The bucket every model draws on: the binding one when it is
+  account-wide, else the account bucket with the least left. A spent model
+  bucket blocks only that model; blocked_models names it separately."""
   limits = [item for item in service.get("limits", [])
             if isinstance(item, dict)]
+  account = [item for item in limits
+             if (item.get("bucket") or {}).get("scope_kind", "account")
+             == "account"]
   binding = next((item for item in limits
                   if item.get("limit_id") == service.get("binding_limit_id")),
                  None)
-  if binding:
+  if binding is not None and binding in account:
     return binding
-  current = [item for item in limits
-             if (item.get("last_observation") or {}).get("period_relation")
-             == "current"
-             and (item.get("last_observation") or {}).get("remaining_percent")
-             is not None]
-  return min(current, key=lambda item: item["last_observation"][
-    "remaining_percent"], default=None)
+  current = current_limits(service)
+  pool = [item for item in current if item in account] or current
+  return min(pool, key=lambda item: item["last_observation"][
+    "remaining_percent"], default=binding)
+
+
+def blocked_models(service):
+  return sorted({str((item.get("bucket") or {}).get("name") or "model")
+                 for item in current_limits(service)
+                 if (item.get("bucket") or {}).get("scope_kind") == "model"
+                 and item["last_observation"]["remaining_percent"] <= 0})
 
 
 def live_header(document, agents, quota, now, color=False):
-  """Per provider: the binding bucket's outlook and the busiest agents."""
-  lines = []
+  """Per provider: the account bucket's outlook, blocked models and the
+  busiest agents, fitted to one line each."""
+  width = display_width()
+  agents = group_internal(agents)
+  providers = unique_prefixes([agent["provider"] for agent in agents], 2)
+  suffix = unique_suffix_length([agent["id"] for agent in agents
+                                 if not agent.get("group")])
+
+  def compact(agent):
+    return providers[agent["provider"]] + ":" + (
+      agent["id"] if agent.get("group") else agent["id"][-suffix:])
+
+  def visible(text):
+    return len(re.sub(r"\x1b\[[0-9;]*m", "", text))
+
+  lines, rows = [], []
   for service_id, provider in (("claude_code", "claude"), ("codex", "codex")):
     service = (document.get("services") or {}).get(service_id)
     if not isinstance(service, dict):
@@ -1840,16 +1951,37 @@ def live_header(document, agents, quota, now, color=False):
       else:
         parts.append("resets in " + quota.format_duration(
           (limit.get("pace") or {}).get("reset_in_seconds")))
+    for model in blocked_models(service):
+      parts.append(quota.paint(f"{model} blocked", ("red",), color))
     busy = sorted((a for a in agents if a["provider"] == provider
                    and a.get("recent_tokens")),
                   key=lambda a: -a["recent_tokens"])
     total = sum(a["recent_tokens"] for a in busy)
-    if total:
-      top = ", ".join(
-        f"{short_label(a)} {100 * a['recent_tokens'] / total:.0f}%"
-        for a in busy[:3])
-      parts.append(f"15m: {top}")
-    lines.append(" · ".join(parts))
+
+    def top(label, count, busy=busy, total=total):
+      return "15m: " + ", ".join(
+        f"{label(a)} {100 * a['recent_tokens'] / total:.0f}%"
+        for a in busy[:count])
+    rows.append((parts, top if total else None))
+
+  def fits(line):
+    return width is None or visible(line) <= width
+
+  # One ID style for the whole header: full IDs when every line fits with
+  # three agents, else the table's compact IDs with fewer agents as needed.
+  full = all(tops is None or fits(" · ".join([*parts, tops(short_label, 3)]))
+             for parts, tops in rows)
+  choices = [(short_label, 3)] if full else [(compact, n) for n in (3, 2, 1)]
+  for parts, tops in rows:
+    line = " · ".join(parts)
+    for label, count in choices if tops else []:
+      candidate = " · ".join([*parts, tops(label, count)])
+      if fits(candidate):
+        line = candidate
+        break
+    if not fits(line):
+      line = clean(re.sub(r"\x1b\[[0-9;]*m", "", line), width)
+    lines.append(line)
   return lines
 
 

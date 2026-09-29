@@ -203,7 +203,7 @@ class AgentViewTest(unittest.TestCase):
       ("exec: make test", True))
     self.assertEqual(AGENTS.action_summary(
       "exec", "const r = await tools.wait({id: 1}); tools.read_file(x)"),
-      ("exec: wait, read_file", False))
+      ("exec: wait, read_file", None))
     self.assertEqual(AGENTS.action_summary(
       "Read", {"file_path": "/a/b.py"}), ("Read: /a/b.py", True))
     self.assertEqual(AGENTS.action_summary(
@@ -273,6 +273,74 @@ class AgentViewTest(unittest.TestCase):
     self.assertIn("weekly 30% left", AGENTS.live_header(
       document, agents, AGENT_QUOTA, 1000)[0])
 
+  def test_live_header_keeps_the_account_headline_and_fits(self):
+    account = {"limit_id": "c:week", "window": {"label": "weekly"},
+               "bucket": {"scope_kind": "account"},
+               "last_observation": {"remaining_percent": 30,
+                                    "period_relation": "current"},
+               "burn": {}, "pace": {"reset_in_seconds": 3600}}
+    fable = {"limit_id": "c:fable", "window": {"label": "weekly"},
+             "bucket": {"scope_kind": "model", "name": "Fable"},
+             "last_observation": {"remaining_percent": 0,
+                                  "period_relation": "current"},
+             "burn": {}, "pace": {}}
+    document = {"services": {"claude_code": {
+      "display_name": "Claude Code", "binding_limit_id": "c:fable",
+      "limits": [account, fable]}}}
+    agents = [dict(self.work_row(ident, "x", "x"), recent_tokens=tokens)
+              for ident, tokens in (("0a1b2c3d9cf6", 500),
+                                    ("0a1b2c3d015c", 300),
+                                    ("0a1b2c3d39d4", 200))]
+    document["services"]["codex"] = {
+      "display_name": "Codex", "limits": [dict(account, limit_id="x:week")]}
+    agents.append(dict(self.work_row("01a0aaaa4b37", "y", "y"),
+                       provider="codex", key="codex:01a0aaaa4b37",
+                       recent_tokens=100))
+    wide, codex = AGENTS.live_header(document, agents, AGENT_QUOTA, 1000)
+    # Each line names its own provider's agents.
+    self.assertIn("15m: codex:01a0…4b37 100%", codex)
+    self.assertNotIn("codex:", wide)
+    self.assertIn("weekly 30% left · resets in 1h 0m · Fable blocked", wide)
+    self.assertIn("claude:0a1b…9cf6 50%", wide)
+    for width, expected in ((100, "cl:9cf6 50%, cl:015c 30%"), (60, None)):
+      with patch.object(AGENTS, "display_width", return_value=width):
+        line = AGENTS.live_header(document, agents, AGENT_QUOTA, 1000)[0]
+      self.assertLessEqual(len(line), width)
+      if expected:
+        self.assertIn(expected, line)
+
+  def test_folded_now_skips_quiet_steps(self):
+    agents = self.ladder_agents()
+    agents[0].update(now="after Bash: make test", now_quiet=True)
+    with patch.object(AGENTS, "display_width", return_value=60):
+      output = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 1000)
+    self.assertNotIn("after", output.split("\n\n")[0])
+    self.assertIn("Fix the build pipeline", output)
+
+  def test_internal_sessions_share_one_row_unless_verbose(self):
+    def guardian(ident, tokens):
+      return dict(self.work_row(ident, "g", "g"), provider="codex",
+                  key="codex:" + ident, label="guardian", internal=True,
+                  state="waiting", turn_age=60, long_turn=False, now="—",
+                  recent_tokens=tokens, cwd="/src/app",
+                  summary_outdated=False, models=["m"], efforts=["low"],
+                  speeds=[], warnings=[])
+    agents = [guardian("g1", 100), dict(self.work_row("w", "Work", "Work"),
+              state="working", turn_age=60, long_turn=False, now="—",
+              recent_tokens=50, summary_outdated=False, models=["m"], label="w",
+              efforts=["high"], speeds=[], warnings=[]), guardian("g2", 300)]
+    with patch.object(AGENTS, "display_width", return_value=200):
+      output = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 1000)
+      verbose = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 1000,
+                              verbose=True)
+    row = next(line for line in output.splitlines() if "guardian" in line)
+    self.assertTrue(row.startswith("codex:guardian"))
+    self.assertIn("2 guardian sessions", row)
+    self.assertIn("400", row)
+    self.assertEqual(sum("guardian" in line
+                         for line in output.splitlines()), 1)
+    self.assertNotIn("guardian sessions", verbose)
+
   def ladder_agents(self):
     def row(ident, work, brief, **fields):
       agent = self.work_row(ident, work, brief)
@@ -300,11 +368,11 @@ class AgentViewTest(unittest.TestCase):
       ("drop_seen", "Seen" not in header),
       ("state_glyphs", "▸" in table),
       ("short_ids", "claude:" not in table),
-      ("short_dir", "dotfiles-…" in table or "Dir" not in header),
+      ("short_dir", "dotfiles…" in table or "Dir" not in header),
       ("drop_tokens", "Tokens" not in header),
       ("effort_prefix", " medium " not in table),
       ("fold_now", "Now" not in header),
-      ("short_model", "codex-a…" in table),
+      ("short_model", "auto-re…" in table),
       ("drop_dir", "Dir" not in header)) if present]
 
   def test_compaction_follows_the_ladder_only_as_needed(self):
@@ -340,10 +408,10 @@ class AgentViewTest(unittest.TestCase):
     self.assertIn("Bash: …test · ", output)    # Now folded, keeps its end
     self.assertNotIn(" Now ", output.splitlines()[0] + " ")
     self.assertIn(" Eff ", output.splitlines()[0] + " ")
-    self.assertIn("▸ working", output)          # legend when glyphs show
+    self.assertIn("▸\u00a0working", output)          # legend when glyphs show
     with patch.object(AGENTS, "display_width", return_value=200):
       wide = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 1000)
-    self.assertNotIn("▸ working", wide)
+    self.assertNotIn("▸\u00a0working", wide)
     self.assertIn("working 12m", wide)
 
   def test_glyphs_are_single_width(self):
@@ -373,6 +441,21 @@ class AgentViewTest(unittest.TestCase):
          patch.object(AGENTS.os, "get_terminal_size", return_value=size):
       self.assertEqual(AGENTS.display_width(), 120)
 
+  def test_model_and_dir_short_forms_follow_rules(self):
+    for model, label in (("claude-opus-5-5", "opus5.5"), ("gpt-6-sol", "6-sol"),
+                         ("claude-haiku-4-5-20251001", "haiku4.5"),
+                         ("claude-sonnet-5", "sonnet5"),
+                         ("codex-auto-review", "auto-review"),
+                         ("brand-new", "brand-new"), ("claude-", "claude-")):
+      self.assertEqual(AGENTS.model_label(model), label)
+    clip = AGENTS.middle_clip
+    # Siblings keep their shared start and their differing end.
+    self.assertEqual(clip("gameproj-toast-options", 16), "gameproj…options")
+    self.assertEqual(clip("gameproj-hud-defects", 16), "gameproj…defects")
+    self.assertEqual(clip("dotfiles", 16), "dotfiles")
+    self.assertEqual(clip("averyveryverylongname", 12), "averyv…gname")
+    self.assertEqual(len(clip("x" * 40, 5)), 5)
+
   def test_dir_labels_use_the_last_segment_unless_ambiguous(self):
     labels = AGENTS.dir_labels(
       ["/h/git/app", "/h/work/app", "/h/git/dotfiles", "/h", None],
@@ -393,7 +476,7 @@ class AgentViewTest(unittest.TestCase):
       output = AGENTS.render([agent], {"sessions": {}}, AGENT_QUOTA, 1000)
     self.assertIn("paused", output)
     self.assertIn("hyper", output)
-    self.assertIn("brand-new-mod…", output)
+    self.assertIn("brand-new-m…", output)
 
   def test_cache_version_change_keeps_summaries(self):
     path = self.root / "agents.json"
