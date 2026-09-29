@@ -442,6 +442,38 @@ class AgentStatusTest(unittest.TestCase):
 
     self.assertNotIn("alt", rendered)
 
+  def test_tmux_shows_alt_ready_when_an_inactive_account_refilled(
+    self,
+  ) -> None:
+    doc = with_archived_accounts(report())
+    ready = archived_account(
+      "claude_code", "ready-cl", 0, "2026-08-19T20:00:00Z")
+    ready["account"]["observed_at"] = "2026-08-19T10:00:00Z"
+    ready["ready_at"] = "2026-08-19T20:00:00Z"
+    doc["claude_accounts"]["ready-cl"] = ready
+
+    wide = AGENT_STATUS.render_tmux(doc, 160, now=NOW)
+    narrow = strip_tmux_styles(AGENT_STATUS.render_tmux(doc, 80, now=NOW))
+
+    self.assertIn("#[fg=green,nodim] alt ready", wide)
+    self.assertNotIn("alt reset", wide)  # ready outranks an upcoming reset
+    self.assertIn("alt✓", narrow)
+    self.assertNotIn("ready-cl", wide)
+
+  def test_tmux_alt_ready_needs_a_refill_since_the_check(self) -> None:
+    for observed, ready_at in (("2026-08-19T20:30:00Z",
+                                "2026-08-19T20:00:00Z"),
+                               ("2026-08-19T10:00:00Z",
+                                "2026-08-20T01:00:00Z")):
+      doc = with_archived_accounts(report())
+      snap = archived_account("claude_code", "x-cl", 0, ready_at)
+      snap["account"]["observed_at"] = observed
+      snap["ready_at"] = ready_at
+      doc["claude_accounts"]["x-cl"] = snap
+      rendered = strip_tmux_styles(AGENT_STATUS.render_tmux(doc, 160,
+                                                            now=NOW))
+      self.assertNotIn("alt ready", rendered, (observed, ready_at))
+
   def test_tmux_inactive_reset_is_dim_and_never_names_the_account(
     self,
   ) -> None:

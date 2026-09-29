@@ -2406,5 +2406,60 @@ class LiveTest(unittest.TestCase):
     live.assert_not_called()
     self.assertTrue(printed.call_args.args[0].startswith("Timeline"))
 
+
+class ReadyAtTest(unittest.TestCase):
+  def snapshot(self, *limits) -> dict[str, Any]:
+    return timeline_service("Claude Code", "old@example.test", "max",
+                            list(limits), key="a" * 64)
+
+  def test_ready_at_agrees_with_likely_available(self):
+    fable = {"id": "fable", "name": "Fable", "scope_kind": "model"}
+    cases = {
+      "blocked": self.snapshot(
+        timeline_limit("c:5h", "5h", 81, timedelta(hours=3)),
+        timeline_limit("c:week", "weekly", 0, timedelta(days=2)),
+        timeline_limit("c:fable", "weekly", 56, timedelta(days=2),
+                       bucket=fable)),
+        "two blockers": self.snapshot(
+        timeline_limit("c:5h", "5h", 0, timedelta(hours=3)),
+        timeline_limit("c:week", "weekly", 0, timedelta(days=2))),
+      "open": self.snapshot(
+        timeline_limit("c:5h", "5h", 40, timedelta(hours=3)),
+        timeline_limit("c:week", "weekly", 30, timedelta(days=2))),
+      "spent model only": self.snapshot(
+        timeline_limit("c:week", "weekly", 30, timedelta(days=2)),
+        timeline_limit("c:fable", "weekly", 0, timedelta(days=1),
+                       bucket=fable)),
+    }
+    for name, snapshot in cases.items():
+      ready = AGENT_QUOTA.parse_timestamp(
+        AGENT_QUOTA.archived_ready_at(snapshot))
+      self.assertIsNotNone(ready, name)
+      for offset in (timedelta(hours=1), timedelta(hours=4),
+                     timedelta(days=1, hours=1), timedelta(days=3)):
+        moment = NOW + offset
+        later = AGENT_QUOTA.reevaluate_service(snapshot, moment)
+        expected = AGENT_QUOTA.archived_availability(later, moment)[
+          "likely_available"]
+        self.assertEqual(ready <= moment, expected, (name, offset))
+
+  def test_unknown_blocker_reset_means_no_ready_time(self):
+    snapshot = self.snapshot(
+      timeline_limit("c:5h", "5h", 40, timedelta(hours=3)),
+      timeline_limit("c:week", "weekly", 0, None))
+    self.assertIsNone(AGENT_QUOTA.archived_ready_at(snapshot))
+    full = self.snapshot(timeline_limit("c:week", "weekly", 100,
+                                        timedelta(days=2)))
+    self.assertIsNone(AGENT_QUOTA.archived_ready_at(full))
+
+  def test_account_cache_records_ready_at(self):
+    active = self.snapshot(
+      timeline_limit("c:week", "weekly", 0, timedelta(days=2)))
+    cache = AGENT_QUOTA.account_cache(
+      {"services": {"claude_code": active}}, "claude_code",
+      "claude_accounts")
+    self.assertEqual(cache["a" * 64]["ready_at"],
+                     AGENT_QUOTA.iso_utc(NOW + timedelta(days=2)))
+
 if __name__ == "__main__":
   unittest.main()

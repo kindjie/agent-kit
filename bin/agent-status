@@ -437,6 +437,37 @@ def inactive_reset(
   return soonest
 
 
+def inactive_ready(
+  report: dict[str, Any] | None,
+  service_id: str,
+  *,
+  now: datetime,
+) -> bool:
+  """Whether an archived account other than the active one is likely
+  available again: agent-quota records `ready_at`, the moment it refills
+  (or its last spent account-wide bucket resets), and that moment passed
+  after the account was last checked. Never names the account."""
+  if not valid_report(report):
+    return False
+  archive = report.get(ACCOUNT_ARCHIVES[service_id])
+  if not isinstance(archive, dict):
+    return False
+  active = report["services"].get(service_id)
+  account = active.get("account") if isinstance(active, dict) else None
+  active_key = account.get("key") if isinstance(account, dict) else None
+  for key, service in archive.items():
+    if not isinstance(service, dict) or key == active_key:
+      continue
+    ready = parse_timestamp(service.get("ready_at"))
+    account = service.get("account")
+    observed = parse_timestamp(
+      account.get("observed_at") if isinstance(account, dict) else None)
+    if ready is not None and ready <= now and (
+        observed is None or observed < ready):
+      return True
+  return False
+
+
 def tmux_service_group(
   report: dict[str, Any] | None,
   service_id: str,
@@ -494,7 +525,12 @@ def tmux_service_group(
   for item in specials:
     rendered += f" ({item_text(item)})"
   reset = inactive_reset(report, service_id, now=now)
-  if reset is not None:
+  if inactive_ready(report, service_id, now=now):
+    rendered += tmux_style(
+      f" alt{' ready' if wide else '✓'}",
+      "fg=green,nodim",
+    )
+  elif reset is not None:
     when = reset_text(reset, now, None)
     rendered += tmux_style(
       f" alt{' reset ' if wide else '↻'}{when}",

@@ -105,6 +105,11 @@ pipe), the measured Work width, the brief substituted for a label that will
 not fit, ellipsis only when neither fits, and trailing-hour totals in the
 footer.
 
+`ReadyAtTest` checks that the recorded `ready_at` agrees with the likely
+available rule at several moments (blocked, two blockers, open, a spent
+model bucket), stays null for unknown blockers and full snapshots, and is
+written by the account cache.
+
 Run the status-renderer suite from the repository root:
 
 ```bash
@@ -118,7 +123,9 @@ periods), stale and historical markers, reset formatting, a 5h window
 replacing its bucket's weekly one when about to run out (below 10%, not at 10%
 or on burn alone, weekly lower, ended period), the soonest inactive-account
 weekly reset within 36 hours (excluding the active, full, mismatched, passed,
-and session entries), skipping limits with malformed buckets, `?` for a
+and session entries), `alt ready` once an inactive account's `ready_at` has
+passed since its check (outranking an upcoming reset, never naming the
+account), skipping limits with malformed buckets, `?` for a
 present service with no limits (and omission of an absent one), no background
 refresh while one holds the cache lock, and schema rejection.
 

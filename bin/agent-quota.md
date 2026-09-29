@@ -264,10 +264,20 @@ highlights them. For an account still blocked by spent account-wide
 buckets it instead highlights the reset of the last of them, when the
 account becomes usable, and marks earlier resets `blocked`.
 
-The tmux component appends, per service, the soonest weekly reset among
-those archived accounts when it falls within 36 hours, as `alt reset <time>`
-(`alt↻<time>` when narrow). It names no account, and it skips snapshots
-already at 100% remaining, since that reset restores nothing.
+Each archived snapshot carries `ready_at`, the moment its account becomes
+likely available under the same rule: the reset of the last spent
+account-wide bucket when one is at 0%, otherwise the first reset of a
+bucket below 100%; `null` when a blocker's reset is unknown or nothing is
+below 100%. It depends only on the snapshot, so it is fixed when the cache
+is written.
+
+The tmux component appends, per service, `alt ready` (`alt✓` when narrow,
+green) when an archived account's `ready_at` has passed since it was last
+checked, which usually means full quota on that account. Otherwise it
+shows the soonest weekly reset among those archived accounts when it falls
+within 36 hours, as `alt reset <time>` (`alt↻<time>` when narrow). It names
+no account, and it skips snapshots already at 100% remaining, since that
+reset restores nothing.
 
 An account only appears here if it was checked at least once while signed in.
 Legacy unlabelled history is never attributed to an account, so quota

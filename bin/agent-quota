@@ -1664,12 +1664,43 @@ def account_cache(
   account = active.get("account") or {}
   if account.get("key") and active.get("limits"):
     accounts[account["key"]] = copy.deepcopy(active)
-  return {
+  kept = {
     key: service for key, service in accounts.items()
     if isinstance(service, dict)
     and (service.get("account") or {}).get("key") == key
     and service.get("limits")
   }
+  for service in kept.values():
+    service["ready_at"] = archived_ready_at(service)
+  return kept
+
+
+def archived_ready_at(service: dict[str, Any]) -> str | None:
+  """When a snapshot's account is likely available again, if knowable.
+
+  The same rule as archived_availability, fixed at snapshot time so a
+  renderer need only compare it with the clock: a spent account-wide
+  bucket blocks the account until the last such bucket resets; otherwise
+  the first reset of a bucket below 100% refills it. None when a blocker's
+  reset is unknown or nothing is below 100%.
+  """
+  blockers, refills = [], []
+  for limit in service.get("limits", []):
+    if not isinstance(limit, dict):
+      continue
+    observation = limit.get("last_observation") or {}
+    remaining = observation.get("remaining_percent")
+    reset = parse_timestamp(observation.get("reset_at"))
+    scope = (limit.get("bucket") or {}).get("scope_kind")
+    if scope in (None, "account") and remaining == 0:
+      if reset is None:
+        return None
+      blockers.append(reset)
+    elif remaining is not None and remaining < 100 and reset is not None:
+      refills.append(reset)
+  if blockers:
+    return iso_utc(max(blockers))
+  return iso_utc(min(refills)) if refills else None
 
 
 def archived_accounts(
