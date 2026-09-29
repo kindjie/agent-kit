@@ -421,11 +421,34 @@ truncates only when neither fits. Activity is not proof that a process is
 running. Mixed models or effort levels are shown as mixed; missing metadata
 is unknown, never inferred from current configuration.
 
+Each row also shows where the agent is, derived from its transcript without
+model calls:
+
+- **State**: `working` (mid-turn; with the turn's age), `stalled` (mid-turn
+  but no transcript activity for 20 minutes), `waiting` (its turn ended;
+  with time since), `idle` (waiting over an hour), `done` (a finished
+  subagent) or `aborted`. `(long)` marks a turn running over three times the
+  agent's median turn, and at least ten minutes. A turn starts at a user
+  prompt (Claude Code) or `task_started` (Codex) and ends at an end-turn
+  stop or `task_complete`.
+- **Now**: for a working agent, plan progress such as `2/5 Run tests` when
+  the agent keeps a Claude Code `TodoWrite` list or a Codex `update_plan`
+  plan, otherwise its pending tool call (`Bash: make test`, or the tools a
+  Codex script calls), or `thinking`.
+- **15m**: uncached tokens in the last 15 minutes. Rows are ordered busiest
+  first, then by state and recency; children stay beneath their parents.
+
+The transcript cannot show a process that died mid-turn: it reads as
+`working` until it becomes `stalled`.
+
 `--agents --verbose` adds full IDs, parent IDs, labels, model/effort/speed
 sets, token breakdowns, parser warnings, and summary state. `--agents
 --compact` emits the separate `document: agents`, schema-version-1 JSON
-document carrying both labels; it omits source paths and message excerpts
-used as summary input.
+document carrying both labels, plus `status` (the parsed state, turn start,
+last event, pending action, plan progress and recent turn durations) and
+the derived `state`, `turn_age`, `long_turn`, `now` and `recent_tokens`; it
+omits source paths, token events and message excerpts used as summary
+input.
 `--cached` neither scans
 transcripts nor starts model calls. `--no-cache` scans without reading or
 writing caches and does not generate summaries. `--no-summaries` updates

@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 # Bumped when the label schema changes so cached entries refresh once.
 PROMPT_VERSION = 2
 WORK_LIMIT = 60
@@ -50,6 +50,20 @@ INJECTED = (
   "This session is being continued",
 )
 TOKEN_KEYS = ("input", "cached", "cache_write", "output", "reasoning", "total")
+# Agent state: a working turn with no transcript activity for this long is
+# stalled; a finished turn this old is idle. A turn is long when it runs
+# LONG_FACTOR times the agent's median turn and at least LONG_MIN.
+STALL_AFTER = 20 * 60
+IDLE_AFTER = 60 * 60
+LONG_FACTOR = 3
+LONG_MIN = 10 * 60
+RATE_WINDOW = 15 * 60
+STATE_RANK = {"working": 0, "stalled": 1, "waiting": 2, "idle": 3,
+              "done": 4, "aborted": 4}
+ACTION_KEYS = ("command", "cmd", "description", "file_path", "path",
+               "pattern", "url", "query", "prompt", "skill", "subagent_type")
+TOOL_CALL_RE = re.compile(r"\btools\.(\w+)\(")
+CMD_RE = re.compile(r"""\bcmd\s*:\s*(["'`])(.+?)\1""", re.S)
 
 
 def stamp(value):
@@ -170,6 +184,76 @@ def claude_tokens(raw):
   }
 
 
+def action_summary(name, value):
+  """`Tool: detail` for a tool call, from its input or arguments."""
+  if isinstance(value, str):
+    match = CMD_RE.search(value)
+    if match:
+      return clean(f"{name}: {match.group(2).splitlines()[0]}", 60)
+    # Codex exec runs a script; without a shell command, name its tools.
+    called = list(dict.fromkeys(TOOL_CALL_RE.findall(value)))
+    if called:
+      return clean(f"{name}: {', '.join(called)}", 60)
+    try:
+      value = json.loads(value)
+    except ValueError:
+      return clean(f"{name}: {value.splitlines()[0] if value else ''}", 60)
+  if isinstance(value, dict):
+    for key in ACTION_KEYS:
+      detail = value.get(key)
+      if isinstance(detail, str) and detail.strip():
+        return clean(f"{name}: {detail.strip().splitlines()[0]}", 60)
+  return clean(str(name), 60)
+
+
+def plan_progress(items, text_key):
+  """{done, total, current} from a todo list or plan, if it has steps."""
+  if not isinstance(items, list) or not items:
+    return None
+  steps = [item for item in items if isinstance(item, dict)]
+  current = next((str(item.get(text_key, "")) for item in steps
+                  if item.get("status") == "in_progress"), None)
+  return {"done": sum(item.get("status") == "completed" for item in steps),
+          "total": len(steps), "current": current}
+
+
+def display_status(status, now):
+  """(state, age seconds, long) for display, from a parsed status."""
+  if not isinstance(status, dict) or not status.get("state"):
+    return None, None, False
+  state = status["state"]
+  last = status.get("last_event") or 0
+  if state == "working":
+    started = status.get("turn_started")
+    started = last if started is None else started
+    age = max(0, now - started)
+    if now - last > STALL_AFTER:
+      state = "stalled"
+    durations = sorted(status.get("durations") or [])
+    usual = durations[len(durations) // 2] if len(durations) >= 3 else None
+    long = usual is not None and age > max(LONG_FACTOR * usual, LONG_MIN)
+    return state, age, long
+  if state == "waiting":
+    age = max(0, now - last)
+    return ("idle" if age > IDLE_AFTER else "waiting"), age, False
+  return state, None, False
+
+
+def recent_tokens(events, now, window=RATE_WINDOW):
+  """Uncached tokens spent in the trailing window."""
+  return sum(max(0, event.get("tokens", 0) - event.get("cached", 0))
+             for event in events or []
+             if event.get("observed_at", 0) >= now - window)
+
+
+def order_by_activity(agents):
+  """Busiest first, then by state, then most recently seen."""
+  return sorted(agents, key=lambda agent: (
+    -(agent.get("recent_tokens") or 0),
+    STATE_RANK.get(agent.get("state"), 5),
+    -agent.get("last_seen", 0)))
+
+
 def parse_session(path, provider):
   warnings, models, efforts, speeds = set(), set(), set(), set()
   agent = {
@@ -188,6 +272,18 @@ def parse_session(path, provider):
     agent["parent_id"] = path.parent.parent.name
   start, previous, totals = None, None, dict.fromkeys(TOKEN_KEYS, 0)
   messages, seen_messages, requests, request_times = [], set(), {}, {}
+  status = {"state": None, "turn_started": None, "last_event": 0,
+            "action": None, "progress": None, "durations": []}
+  pending, codex_events = {}, []
+
+  def end_turn(when, seconds=None):
+    started = status["turn_started"]
+    if seconds is None and started and when:
+      seconds = when - started
+    if seconds is not None and seconds >= 0:
+      status["durations"] = (status["durations"] + [round(seconds)])[-20:]
+    status["turn_started"] = None
+    pending.clear()
   for row in records(path, warnings):
     kind = row.get("type")
     payload = row.get("payload") or {}
@@ -218,14 +314,51 @@ def parse_session(path, provider):
             # Counters may restart after a fork or compaction.
             baseline = previous or dict.fromkeys(TOKEN_KEYS, 0)
             reset = usage["total"] < baseline["total"]
+            delta = {key: usage[key] if reset else max(0, usage[key]
+                                                        - baseline[key])
+                     for key in totals}
             for key in totals:
-              totals[key] += (
-                usage[key] if reset else max(0, usage[key] - baseline[key])
-              )
+              totals[key] += delta[key]
             agent["tokens"] = totals.copy()
+            if delta["total"] and when:
+              codex_events.append({"observed_at": when,
+                                   "tokens": delta["total"],
+                                   "cached": delta["cached"]})
           previous = usage
       if inherited:
         continue
+      if when and kind in ("event_msg", "response_item"):
+        status["last_event"] = max(status["last_event"], when)
+      event = payload.get("type")
+      if kind == "event_msg" and event == "task_started":
+        status.update(state="working", turn_started=when, action=None)
+        pending.clear()
+      elif kind == "event_msg" and event == "task_complete":
+        try:
+          seconds = float(payload.get("duration_ms")) / 1000
+        except (TypeError, ValueError):
+          seconds = None
+        status["state"] = "waiting"
+        end_turn(when, seconds)
+      elif kind == "event_msg" and event == "turn_aborted":
+        status["state"] = "aborted"
+        end_turn(None)
+      elif kind == "response_item" and event in ("function_call",
+                                                  "custom_tool_call"):
+        name = payload.get("name") or "tool"
+        value = payload.get("arguments", payload.get("input"))
+        if name == "update_plan":
+          try:
+            plan = json.loads(value).get("plan")
+          except (TypeError, ValueError, AttributeError):
+            plan = None
+          status["progress"] = plan_progress(plan, "step") or \
+            status["progress"]
+        pending[payload.get("call_id")] = (when or 0,
+                                           action_summary(name, value))
+      elif kind == "response_item" and event in ("function_call_output",
+                                                  "custom_tool_call_output"):
+        pending.pop(payload.get("call_id"), None)
       if kind == "turn_context":
         if isinstance(payload.get("model"), str):
           models.add(payload["model"])
@@ -248,6 +381,34 @@ def parse_session(path, provider):
         if row.get("sessionId") not in (None, agent["id"]):
           continue  # Copied history belongs to the original session.
       message = row.get("message") or {}
+      content = message.get("content")
+      items = content if isinstance(content, list) else []
+      if kind in ("user", "assistant") and when:
+        status["last_event"] = max(status["last_event"], when)
+      if kind == "user":
+        results = [item for item in items if isinstance(item, dict)
+                   and item.get("type") == "tool_result"]
+        for item in results:
+          pending.pop(item.get("tool_use_id"), None)
+        if results:
+          status["state"] = "working"
+        elif not row.get("isMeta") and user_text(content):
+          status.update(state="working", turn_started=when)
+          pending.clear()
+      if kind == "assistant":
+        for item in items:
+          if isinstance(item, dict) and item.get("type") == "tool_use":
+            name = item.get("name") or "tool"
+            if name == "TodoWrite":
+              todos = (item.get("input") or {}).get("todos")
+              status["progress"] = plan_progress(todos, "content") or \
+                status["progress"]
+            pending[item.get("id")] = (when or 0,
+                                       action_summary(name, item.get("input")))
+            status["state"] = "working"
+        if message.get("stop_reason") in ("end_turn", "stop_sequence"):
+          status["state"] = "waiting"
+          end_turn(when)
       if kind == "user" and not row.get("isMeta"):
         text = user_text(message.get("content"))
         uid = row.get("uuid")
@@ -282,9 +443,15 @@ def parse_session(path, provider):
   if agent.get("internal"):
     agent["messages"] = []
   agent["token_events"] = [
-    {"id": mid, "observed_at": request_times[mid], "tokens": usage["total"]}
+    {"id": mid, "observed_at": request_times[mid], "tokens": usage["total"],
+     "cached": usage["cached"]}
     for mid, usage in requests.items()
-  ]
+  ] if provider == "claude" else codex_events[-500:]
+  if status["state"] == "working" and pending:
+    status["action"] = max(pending.values())[1]
+  if child and status["state"] == "waiting":
+    status["state"] = "done"
+  agent["status"] = status
   agent["models"] = sorted(models)
   agent["efforts"] = sorted(efforts)
   agent["effort"] = (
@@ -834,13 +1001,25 @@ def view_agents(cache, args, now):
     agent["summary_status"] = old.get("error") or old.get("skip_reason")
     agent["summary_updated_at"] = old.get("updated_at")
     agent["summary_provider"] = old.get("provider")
+    status = agent.get("status") or {}
+    agent["state"], agent["turn_age"], agent["long_turn"] = display_status(
+      status, now)
+    progress = status.get("progress")
+    if progress and agent["state"] in ("working", "stalled"):
+      agent["now"] = clean(f"{progress['done']}/{progress['total']} "
+                           + (progress.get("current") or ""), 40).strip()
+    elif agent["state"] in ("working", "stalled"):
+      agent["now"] = status.get("action") or "thinking"
+    else:
+      agent["now"] = "—"
+    agent["recent_tokens"] = recent_tokens(agent.get("token_events"), now)
     agents.append(agent)
   agents.sort(key=lambda item: item["last_seen"], reverse=True)
   # An agent can occasionally be copied to another transcript location.
   unique = {agent["key"]: agent for agent in reversed(agents)}
-  return sorted(unique.values(), key=lambda a: a["last_seen"], reverse=True)[
-    : args.agent_limit
-  ]
+  shown = sorted(unique.values(), key=lambda a: a["last_seen"],
+                 reverse=True)[: args.agent_limit]
+  return order_by_activity(shown)
 
 
 def public_document(agents, cache, now):
@@ -878,6 +1057,11 @@ def display_width(default=120):
   except (AttributeError, OSError, ValueError):
     return default
   return None
+
+
+STATE_STYLES = {"working": ("green",), "stalled": ("bold", "red"),
+                "waiting": ("yellow",), "idle": ("dim",), "done": ("dim",),
+                "aborted": ("red",)}
 
 
 def render(agents, cache, quota, now, verbose=False, color=False):
@@ -944,12 +1128,23 @@ def render(agents, cache, quota, now, verbose=False, color=False):
     )
     label = prefix + agent["provider"] + ":" + short_id
     age = quota.format_duration(max(0, now - agent["last_seen"]))
+    state = agent.get("state") or "—"
+    state_text = state
+    if agent.get("turn_age") is not None and state not in ("done",
+                                                             "aborted"):
+      state_text += " " + quota.format_duration(agent["turn_age"])
+    if agent.get("long_turn"):
+      state_text += " (long)"
+    recent = agent.get("recent_tokens") or 0
     row = [
       label,
+      state_text,
+      clean(agent.get("now") or "—", 28),
       "",
       clean(model, 14),
       agent["effort"],
       short(usage.get("total")),
+      short(recent) if recent else "—",
     ]
     if show_cache:
       row.append(percent)
@@ -957,8 +1152,11 @@ def render(agents, cache, quota, now, verbose=False, color=False):
     idle = now - agent["last_seen"]
     styles.append([
       ("cyan",) if agent["provider"] == "claude" else ("magenta",),
+      STATE_STYLES.get(state, ()),
+      (),
       ("dim", "italic") if agent["work_source"] == "excerpt" else (),
       (), (), (),
+      ("bold",) if recent else ("dim",),
       *((("dim",),) if show_cache else ()),
       ("bold", "green") if idle < 300 else ("dim",) if idle > 3600 else (),
     ])
@@ -968,7 +1166,8 @@ def render(agents, cache, quota, now, verbose=False, color=False):
         agent["work_brief"],
       )
     )
-  headers = ["Agent", "Work", "Model", "Effort", "Tokens"]
+  headers = ["Agent", "State", "Now", "Work", "Model", "Effort", "Tokens",
+             "15m"]
   if show_cache:
     headers.append("Cache")
   headers.append("Seen")
@@ -976,7 +1175,7 @@ def render(agents, cache, quota, now, verbose=False, color=False):
   # WORK_LIMIT but models overrun it, so spare width shows what was returned
   # rather than falling back to the brief while columns sit unused.
   fixed = [
-    0 if index == 1 else max(len(row[index]) for row in [headers, *rows])
+    0 if index == 3 else max(len(row[index]) for row in [headers, *rows])
     for index in range(len(headers))
   ]
   reserve = sum(fixed) + 2 * (len(headers) - 1)
@@ -984,7 +1183,7 @@ def render(agents, cache, quota, now, verbose=False, color=False):
     LABEL_BOUND if width is None else max(16, min(LABEL_BOUND, width - reserve))
   )
   for row, (work, brief) in zip(rows, works):
-    row[1] = fit(work, brief, work_width)
+    row[3] = fit(work, brief, work_width)
   lines = (
     quota.text_table(headers, rows, styles, color)
     if rows
@@ -996,8 +1195,10 @@ def render(agents, cache, quota, now, verbose=False, color=False):
       "",
       "Tokens are per-agent observed totals, not family totals. "
       "Cache = cached input / all input.",
-      "Work: ~ marks a fallback excerpt; "
-      "Seen means last transcript activity, not running status.",
+      "Work: ~ marks a fallback excerpt. "
+      "15m: uncached tokens, last 15 minutes.",
+      "State: waiting = turn ended; stalled = mid-turn, quiet for 20m;",
+      "(long) = over 3x the agent's usual turn; Now = current action or plan.",
     ]
   )
   if cache.get("scan_truncated"):

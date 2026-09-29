@@ -86,6 +86,167 @@ class AgentViewTest(unittest.TestCase):
     path.write_text("".join(json.dumps(r) + "\n" for r in rows))
     return path
 
+  def claude_rows(self, finished=False):
+    usage = {"input_tokens": 10, "output_tokens": 5,
+             "cache_read_input_tokens": 100,
+             "cache_creation_input_tokens": 0}
+    todos = [{"content": "Write code", "status": "completed"},
+             {"content": "Run tests", "status": "in_progress"},
+             {"content": "Open PR", "status": "pending"}]
+    rows = [
+      {"type": "user", "timestamp": "2026-08-19T21:00:00Z",
+       "message": {"content": "Run the tests"}},
+      {"type": "assistant", "timestamp": "2026-08-19T21:01:00Z",
+       "message": {"id": "m1", "stop_reason": "tool_use", "usage": usage,
+                   "content": [{"type": "tool_use", "id": "t1",
+                                "name": "TodoWrite",
+                                "input": {"todos": todos}}]}},
+      {"type": "user", "timestamp": "2026-08-19T21:01:05Z",
+       "message": {"content": [{"type": "tool_result",
+                                "tool_use_id": "t1", "content": "ok"}]}},
+      {"type": "assistant", "timestamp": "2026-08-19T21:02:00Z",
+       "message": {"id": "m2", "stop_reason": "tool_use", "usage": usage,
+                   "content": [{"type": "tool_use", "id": "t2",
+                                "name": "Bash",
+                                "input": {"command": "pytest -q",
+                                          "description": "Run tests"}}]}},
+    ]
+    if finished:
+      rows += [
+        {"type": "user", "timestamp": "2026-08-19T21:05:00Z",
+         "message": {"content": [{"type": "tool_result",
+                                  "tool_use_id": "t2", "content": "ok"}]}},
+        {"type": "assistant", "timestamp": "2026-08-19T21:06:00Z",
+         "message": {"id": "m3", "stop_reason": "end_turn", "usage": usage,
+                     "content": [{"type": "text", "text": "Done."}]}},
+      ]
+    return rows
+
+  def test_claude_status_follows_turns_tools_and_todos(self):
+    agent = AGENTS.parse_session(self.transcript(self.claude_rows()),
+                                 "claude")
+    status = agent["status"]
+    self.assertEqual(status["state"], "working")
+    self.assertEqual(status["action"], "Bash: pytest -q")
+    self.assertEqual(status["progress"],
+                     {"done": 1, "total": 3, "current": "Run tests"})
+    self.assertEqual(status["turn_started"],
+                     AGENTS.stamp("2026-08-19T21:00:00Z"))
+    self.assertEqual(agent["token_events"][0]["cached"], 100)
+
+    done = AGENTS.parse_session(
+      self.transcript(self.claude_rows(finished=True), "done.jsonl"),
+      "claude")["status"]
+    self.assertEqual(done["state"], "waiting")
+    self.assertIsNone(done["action"])
+    self.assertEqual(done["durations"], [360])
+
+  def codex_rows(self, ending):
+    rows = [
+      {"type": "session_meta", "timestamp": "2026-08-19T20:59:00Z",
+       "payload": {"id": "x", "timestamp": "2026-08-19T20:59:00Z"}},
+      {"type": "event_msg", "timestamp": "2026-08-19T21:00:00Z",
+       "payload": {"type": "task_started", "turn_id": "t"}},
+      {"type": "response_item", "timestamp": "2026-08-19T21:01:00Z",
+       "payload": {"type": "function_call", "name": "update_plan",
+                   "call_id": "p1", "arguments": json.dumps({"plan": [
+                     {"step": "Build", "status": "completed"},
+                     {"step": "Test", "status": "in_progress"}]})}},
+      {"type": "response_item", "timestamp": "2026-08-19T21:01:01Z",
+       "payload": {"type": "function_call_output", "call_id": "p1",
+                   "output": "ok"}},
+      {"type": "response_item", "timestamp": "2026-08-19T21:02:00Z",
+       "payload": {"type": "custom_tool_call", "name": "exec",
+                   "call_id": "c1",
+                   "input": 'await tools.exec_command({cmd:"cargo test"})'}},
+    ]
+    for total, when in ((1000, "21:02:30"), (1600, "21:03:00")):
+      rows.append({"type": "event_msg", "timestamp": f"2026-08-19T{when}Z",
+                   "payload": {"type": "token_count", "info": {
+                     "total_token_usage": {
+                       "input_tokens": total, "cached_input_tokens":
+                       total // 2, "output_tokens": 0,
+                       "total_tokens": total}}}})
+    if ending:
+      rows.append({"type": "event_msg", "timestamp": "2026-08-19T21:05:00Z",
+                   "payload": {"type": ending, "turn_id": "t",
+                               "duration_ms": "300000"}})
+    return rows
+
+  def test_codex_status_turns_actions_plans_and_aborts(self):
+    working = AGENTS.parse_session(
+      self.transcript(self.codex_rows(None), "w.jsonl"), "codex")
+    self.assertEqual(working["status"]["state"], "working")
+    self.assertEqual(working["status"]["action"], "exec: cargo test")
+    self.assertEqual(working["status"]["progress"],
+                     {"done": 1, "total": 2, "current": "Test"})
+    self.assertEqual([(e["tokens"], e["cached"])
+                      for e in working["token_events"]],
+                     [(1000, 500), (600, 300)])
+    done = AGENTS.parse_session(
+      self.transcript(self.codex_rows("task_complete"), "d.jsonl"),
+      "codex")["status"]
+    self.assertEqual((done["state"], done["durations"], done["action"]),
+                     ("waiting", [300], None))
+    aborted = AGENTS.parse_session(
+      self.transcript(self.codex_rows("turn_aborted"), "a.jsonl"),
+      "codex")["status"]
+    self.assertEqual(aborted["state"], "aborted")
+
+  def test_action_summaries_prefer_commands_then_tool_names(self):
+    self.assertEqual(AGENTS.action_summary(
+      "exec", 'await tools.exec_command({cmd:"make test"})'),
+      "exec: make test")
+    self.assertEqual(AGENTS.action_summary(
+      "exec", "const r = await tools.wait({id: 1}); tools.read_file(x)"),
+      "exec: wait, read_file")
+    self.assertEqual(AGENTS.action_summary(
+      "Read", {"file_path": "/a/b.py"}), "Read: /a/b.py")
+    self.assertEqual(AGENTS.action_summary("Agent", {}), "Agent")
+
+  def test_display_status_derives_stalled_idle_and_long(self):
+    base = {"state": "working", "turn_started": 0, "last_event": 0,
+            "action": "Bash: make", "progress": None,
+            "durations": [300, 360, 420]}
+    self.assertEqual(AGENTS.display_status(base, 600)[:2], ("working", 600))
+    self.assertEqual(AGENTS.display_status(base, 1500)[0], "stalled")
+    self.assertTrue(AGENTS.display_status(dict(base, last_event=1990),
+                                          2000)[2])  # 33m vs ~6m usual
+    waiting = dict(base, state="waiting", last_event=0)
+    self.assertEqual(AGENTS.display_status(waiting, 600)[0], "waiting")
+    self.assertEqual(AGENTS.display_status(waiting, 4000)[0], "idle")
+
+  def test_recent_tokens_count_uncached_use_in_the_window(self):
+    events = [{"observed_at": 100, "tokens": 900, "cached": 800},
+              {"observed_at": 1000, "tokens": 500, "cached": 100},
+              {"observed_at": 1100, "tokens": 300}]
+    self.assertEqual(AGENTS.recent_tokens(events, 1200), 700)
+
+  def test_table_shows_state_now_and_rate_busiest_first(self):
+    quiet = dict(self.work_row("a", "Quiet", "Quiet"), recent_tokens=0,
+                 state="idle", turn_age=None, long_turn=False, now="—")
+    busy = dict(self.work_row("b", "Busy", "Busy"), recent_tokens=5_000_000,
+                state="working", turn_age=720, long_turn=False,
+                now="2/5 Run tests")
+    stalled = dict(self.work_row("c", "Stuck", "Stuck"), recent_tokens=0,
+                   state="stalled", turn_age=1800, long_turn=True,
+                   now="Bash: make")
+    agents = AGENTS.order_by_activity([quiet, stalled, busy])
+    self.assertEqual([a["id"] for a in agents], ["b", "c", "a"])
+    with patch.object(AGENTS, "display_width", return_value=200):
+      plain = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 2000)
+      styled = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 2000,
+                             color=True)
+    for header in ("State", "Now", "15m"):
+      self.assertIn(header, plain)
+    self.assertIn("working 12m", plain)
+    self.assertIn("stalled 30m (long)", plain)
+    self.assertIn("2/5 Run tests", plain)
+    self.assertIn("5.0M", plain)
+    self.assertIn("\x1b[1;31mstalled 30m (long)", styled)
+    self.assertIn("\x1b[32mworking 12m", styled)
+    self.assertEqual(re.sub(r"\x1b\[[0-9;]*m", "", styled), plain)
+
   def test_bounded_text_omits_images_and_injected_content(self):
     text = AGENTS.user_text(
       [
@@ -753,7 +914,8 @@ class AgentViewTest(unittest.TestCase):
     self.assertIn(over, wide)
     # Once width runs out, an overlong label degrades to its complete brief
     # rather than to an ellipsis.
-    mid = self.render_at(agents, 120)
+    # State, Now and 15m take their share first.
+    mid = self.render_at(agents, 135)
     self.assertIn(fits, mid)
     self.assertIn("Fix HUD layout", self.work_line(mid, "b"))
     self.assertNotIn("R", self.work_line(mid, "b"))

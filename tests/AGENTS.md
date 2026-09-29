@@ -88,7 +88,12 @@ tests cover tightest-bucket ranking, cross-provider
 provenance, the same-provider opt-out, and initial summaries for idle agents.
 Label tests cover the summary/brief pair from one call, briefs that are
 missing, overlong, or the wrong type, and the prompt-schema hash that
-refreshes stored labels once. Renderer tests cover width resolution
+refreshes stored labels once. Status tests cover Claude Code turns, pending
+tool calls and `TodoWrite` progress, Codex turns, script actions,
+`update_plan` progress, aborts and per-event token deltas, derived
+stalled/idle/long states, the uncached 15-minute rate, busiest-first
+ordering, and the State/Now/15m columns with colour.
+Renderer tests cover width resolution
 (`COLUMNS`, terminal, unconstrained pipe), the measured Work width, the
 brief substituted for a label that will not fit, ellipsis only when neither
 fits, and trailing-hour totals in the footer.
