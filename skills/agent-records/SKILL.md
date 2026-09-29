@@ -57,15 +57,23 @@ exchange stays with the work:
 This is for collaboration on an ongoing task. A quick question or heads-up
 to another session can still go as a direct cross-session message.
 
-When delegating, create or pick the task, give the delegate its ID and the
-task ID, and tell it to pass `--agent <its id>` on every records write, for
-example:
+When delegating, create or pick the task, add the delegate as a helper,
+give it its ID and the task ID, and tell it to pass `--agent <its id>` on
+every records write. A delegate in the other tool, or in a background
+process, cannot receive cross-session messages, so the task is its only
+channel back and forth. For example:
 
 ```text
 Your agent ID is helper-0123456789abcdef. Work on T-0001.
 Pass --agent helper-0123456789abcdef to every records write.
-Report progress with agent-task log T-0001 --to <my id> '...'.
+At each milestone, read new messages with
+  agent-task show T-0001 --after <cursor>
+and report progress or blockers with
+  agent-task log T-0001 --to <my id> '...'.
 ```
+
+The delegating agent waits with `agent-task watch T-0001 --for <its id>
+--until message` (or `--until closed`) rather than polling.
 
 ## Lasting state
 

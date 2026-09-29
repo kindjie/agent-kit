@@ -28,6 +28,16 @@ on; a fork shares your session and would otherwise write as you. Tell it to
 pass `--agent <id>` on every records write; the agent-kit README has a
 ready brief.
 
+A delegate in the other tool (`codex exec` from Claude Code, `claude -p`
+from Codex) or in a background process cannot receive cross-session
+messages, so for anything beyond a single exchange the task is the channel.
+Add the delegate as a helper (`agent-task helper add T-NNNN <id>`), brief
+it to read `agent-task show T-NNNN --after <cursor>` at milestones and to
+report progress and blockers with `agent-task log T-NNNN --to <your id>`,
+and wait with `agent-task watch T-NNNN --for <its id> --until message` (or
+`--until closed`) instead of polling. Its final result still comes back as
+its output.
+
 ## Routing between Codex and Claude Code
 
 Before declaring a task unsupported, check the current session's tools and
@@ -59,7 +69,8 @@ sound effects, or video, look for an actual generator integration rather than
 inferring support from the provider's other products.
 
 If the needed tool is available only in the other app, provide a concise
-handoff with the task, inputs, output paths, and acceptance criteria. Routing
+handoff with the task, inputs, output paths, and acceptance criteria, and
+coordinate through the task as described under whether to delegate. Routing
 does not expand task authorization, data-sharing permissions, or spending
 limits; the quota guidance below still applies.
 
