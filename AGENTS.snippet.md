@@ -41,15 +41,22 @@ completed as you go; `agent-quota --agents` shows it as progress.
 
 ## Task and state records
 
-`agent-task list` is the shared work queue; claim a task before working on
-it. Record state that outlives your session (worktrees, kept branches,
-large scratch output, tool installs) with `agent-changelog new` as you
-make it, saying why and when and how to clean it up, and close it when
-done. Record serious mistakes (lost work, bad deletions, unintended
-publication) with `agent-changelog mistake new` at once. Read
-`agent-changelog list --open --machine` before cleaning up; entries never
-authorize deletion. Pass `--agent $(agent-id show)` on every call that
-writes a record, and give each delegated agent its own ID from
-`agent-id new <label>`.
+Use `agent-task` and `agent-changelog`; the `agent-records` skill has the
+commands. Pass `--agent $(agent-id show)` on every call that writes.
+
+- Before starting work, check `agent-task list --here` for a task that
+  covers it; claim it, or create one and claim it.
+- When you delegate, give the delegate the task ID and its own ID from
+  `agent-id new <label>`; a subagent otherwise writes as you.
+- When agents collaborate on an ongoing task, add them as helpers and
+  exchange messages on it (`log --to`, `show --after`). Quick one-off
+  messages between sessions are fine.
+- When you create state that outlives your session (worktrees, stashes,
+  kept branches, large scratch output, tool installs, services), record it
+  with `agent-changelog new` at once, and close it once cleaned up.
+- Record serious mistakes (lost work, bad deletions, unintended
+  publication) with `agent-changelog mistake new` at once.
+- Before cleaning anything up, read `agent-changelog list --open
+  --machine`; entries never authorize deletion.
 <!-- /agent-kit:records -->
 <!-- END agent-kit -->

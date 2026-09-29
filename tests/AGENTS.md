@@ -210,6 +210,19 @@ symlink loops, dangling links, non-UTF-8 files and a file changed mid-
 update, and ignore marker examples in fenced or inline code. Doctors are
 stubbed scripts; nothing touches real instruction files.
 
+## Records Hook
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_records_hook
+```
+
+`test_agent_records_hook.py` covers which shell commands count as lasting
+state (worktree, stash, new branch, tool install, service) and which do
+not (listing, cleanup, quoted or echoed text), finding the command in
+Claude Code and Codex tool inputs, the PostToolUse context JSON, silence
+without records configuration or on bad input, and the session-start
+summary through a stubbed `agent-task` and `agent-changelog`.
+
 ## Agent Records
 
 Run the records suites from the repository root:

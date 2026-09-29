@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""Claude Code and Codex hook for agent-kit's records tools.
+
+post-tool: after a shell command that creates state outliving the session
+(a worktree, stash, new branch, tool install or service), remind the agent
+to record it with agent-changelog. It only reminds; it never blocks.
+
+session-start: tell the agent its records ID, the tasks it holds, open
+tasks and open changelog entries for the current repository, and where the
+rules live.
+
+Both stay silent when the records tools are not configured, and on any
+error: a hook must never get in the way of the work. Wire it up as shown in
+the agent-kit README.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+# (kind, pattern): commands that leave state behind. Reading, listing and
+# cleaning up (list, pop, drop, -d, remove) do not match.
+STATE = (
+  ("worktree", r"\bgit\b[^;&|\n]*\bworktree\s+add\b"),
+  ("stash", r"\bgit\b[^;&|\n]*\bstash(?:\s+(?:push|save)\b|\s*(?:$|[;&|\n]))"),
+  ("branch", r"\bgit\b[^;&|\n]*\b(?:checkout\s+-[bB]|switch\s+-[cC]"
+             r"|branch\s+(?!-)[\w./-]+)"),
+  ("tool", r"\b(?:brew\s+(?:install|tap)|pipx\s+install|uv\s+tool\s+install"
+           r"|cargo\s+install|go\s+install|gem\s+install"
+           r"|npm\s+(?:install|i)\s+(?:-g|--global)\b)"),
+  ("service", r"\b(?:launchctl\s+(?:load|bootstrap)"
+              r"|systemctl\s+(?:--user\s+)?enable"
+              r"|docker\s+run\b[^;&|\n]*\s-d\b)"),
+)
+QUOTED = re.compile(r"""(["'])(?:\\.|(?!\1).)*\1""")
+# A command starts a line or follows ; & | or (, optionally after sudo and
+# VAR=value assignments; `echo git stash` is not a git command.
+START = r"(?:^|[;&|(\n])\s*(?:sudo\s+)?(?:\w+=\S*\s+)*"
+CMD_RE = re.compile(r"""\bcmd\s*:\s*(["'`])(.+?)\1""", re.S)
+WHY = {
+  "worktree": "a worktree",
+  "stash": "a stash",
+  "branch": "a branch",
+  "tool": "a tool install",
+  "service": "a service or background container",
+}
+CLAIMED = ("in-progress", "in-review", "blocked")
+
+
+def configured() -> bool:
+  if os.environ.get("AGENT_TASKS_DIR") or os.environ.get(
+      "AGENT_CHANGELOG_DIR"):
+    return True
+  root = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+  return (Path(root) / "agent-kit" / "records.json").is_file()
+
+
+def command_of(tool_input) -> str:
+  """The shell command in a Claude Code or Codex tool input."""
+  if not isinstance(tool_input, dict):
+    return ""
+  for key in ("command", "cmd"):
+    value = tool_input.get(key)
+    if isinstance(value, list):
+      return " ".join(str(part) for part in value)
+    if isinstance(value, str):
+      return value
+  text = json.dumps(tool_input)
+  found = CMD_RE.findall(tool_input.get("input", "")
+                         if isinstance(tool_input.get("input"), str)
+                         else text)
+  return "\n".join(command for _, command in found)
+
+
+def reminders(command: str) -> list[tuple[str, str]]:
+  """(kind, message) for each kind of lasting state the command creates.
+  Quoted text is ignored, so `echo "git stash"` does not count."""
+  plain = QUOTED.sub('""', command)
+  found = []
+  for kind, pattern in STATE:
+    if re.search(START + pattern.removeprefix(r"\b"), plain):
+      found.append((kind, f"This command created {WHY[kind]}. Unless you "
+                          f"remove it this session, record it now with "
+                          f"`agent-changelog new --kind {kind}` (why, and "
+                          f"when and how to clean it up)."))
+  return found
+
+
+def records_id(provider: str, session: str) -> str:
+  """The ID agent-id derives from this session's variable."""
+  return provider + "-" + hashlib.sha256(session.encode()).hexdigest()[:16]
+
+
+def listing(tool: str, args: list[str], cwd: str | None, key: str) -> list:
+  if not shutil.which(tool):
+    return []
+  try:
+    result = subprocess.run([tool, "--wait", "2", *args, "--json"],
+                            capture_output=True, text=True, timeout=8,
+                            cwd=cwd if cwd and os.path.isdir(cwd) else None)
+    return json.loads(result.stdout)[key] if result.returncode == 0 else []
+  except (OSError, subprocess.TimeoutExpired, ValueError, KeyError,
+          TypeError):
+    return []
+
+
+def session_context(payload: dict, provider: str) -> str:
+  session = str(payload.get("session_id") or "")
+  cwd = payload.get("cwd")
+  me = records_id(provider, session) if session else None
+  lines = []
+  if me:
+    lines.append(f"Your agent ID is {me}; pass `--agent {me}` to every "
+                 "agent-task and agent-changelog call that writes.")
+  held = [task for task in listing("agent-task", ["list"], None, "tasks")
+          if me and task.get("status") in CLAIMED
+          and (task.get("owner") == me or me in str(task.get("helpers")))]
+  if held:
+    lines.append("Tasks you hold: " + "; ".join(
+      f"{t['id']} {t.get('title')} ({t.get('status')})" for t in held[:5]))
+  here = [task for task in listing("agent-task", ["list", "--here"], cwd,
+                                   "tasks")
+          if task.get("status") == "open"]
+  if here:
+    lines.append("Open tasks for this repository (check before starting "
+                 "overlapping work): " + "; ".join(
+                   f"{t['id']} {t.get('title')}" for t in here[:5])
+                 + (f"; and {len(here) - 5} more" if len(here) > 5 else ""))
+  entries = listing("agent-changelog",
+                    ["list", "--open", "--machine", "--here"], cwd,
+                    "records")
+  if entries:
+    lines.append("Open changelog entries here (read before cleaning up): "
+                 + "; ".join(
+                   f"{e.get('path')}: "
+                   + str((e.get("fields") or {}).get("why", ""))[:80]
+                   for e in entries[:3])
+                 + (f"; and {len(entries) - 3} more"
+                    if len(entries) > 3 else ""))
+  lines.append("Records rules and commands: the agent-records skill.")
+  return "\n".join(lines)
+
+
+def emit(event: str, context: str) -> None:
+  if context:
+    json.dump({"hookSpecificOutput": {"hookEventName": event,
+                                      "additionalContext": context}},
+              sys.stdout)
+
+
+def main(argv: list[str] | None = None) -> int:
+  parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+  parser.add_argument("mode", choices=("post-tool", "session-start"))
+  parser.add_argument("--provider", choices=("claude", "codex"),
+                      default="claude",
+                      help="which tool runs the hook, for the agent ID")
+  args = parser.parse_args(argv)
+  try:
+    payload = json.load(sys.stdin)
+    if not isinstance(payload, dict) or not configured():
+      return 0
+    if args.mode == "post-tool":
+      found = reminders(command_of(payload.get("tool_input")))
+      emit("PostToolUse", "\n".join(message for _, message in found))
+    else:
+      emit("SessionStart", session_context(payload, args.provider))
+  except Exception:  # never let a reminder break the session
+    return 0
+  return 0
+
+
+if __name__ == "__main__":
+  sys.exit(main())

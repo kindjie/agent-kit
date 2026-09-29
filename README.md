@@ -25,6 +25,7 @@ Nothing here assumes that repository.
 | `agent-task` | Creates, claims, hands off and closes task records |
 | `agent-changelog` | Tracks persistent machine and repository state |
 | `agent-kit-rules` | Installs or updates the always-loaded rules in agent instructions |
+| `agent-records-hook` | Claude Code and Codex hook: records reminders and a session-start summary |
 
 **Skills** (`skills/`)
 
@@ -38,6 +39,7 @@ Nothing here assumes that repository.
 | `preview-markdown` | Previewing and visually validating Markdown |
 | `profiling` | Collecting or reading a performance profile, CPU, GPU or Wasm |
 | `pull-requests` | Taking a change through a pull-request workflow |
+| `agent-records` | Tracking work and lasting machine state with `agent-task` and `agent-changelog` |
 | `repository-records` | Creating changelogs, decisions, ADRs or incident records |
 | `testing-requirements` | Designing or changing a test strategy |
 | `verification-systems` | Judging whether a green check means the work happened |
@@ -143,6 +145,30 @@ left alone. Duplicate, missing or out-of-order markers are refused; fix them
 by hand. So are files that are not UTF-8, symlink loops and dangling links,
 and a file that changes while it is being updated. Line endings are kept,
 CRLF included. The exit status is 1 when any file was refused.
+
+## Records hooks
+
+Always-loaded rules say when to record work and state; a hook makes the
+moment hard to miss. `agent-records-hook` adds a one-line reminder after a
+shell command that creates lasting state (a worktree, stash, new branch,
+tool install or service), and at session start tells the agent its records
+ID, the tasks it holds, open tasks and open changelog entries for the
+repository. It only adds context, never blocks, and stays silent when the
+records tools are not configured. Claude Code, in `~/.claude/settings.json`:
+
+```json
+"hooks": {
+  "PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command",
+    "command": "$HOME/bin/agent-kit/agent-records-hook post-tool"}]}],
+  "SessionStart": [{"hooks": [{"type": "command",
+    "command": "$HOME/bin/agent-kit/agent-records-hook session-start",
+    "timeout": 20}]}]
+}
+```
+
+Codex uses the same schema in `~/.codex/hooks.json`, with
+`--provider codex` added to both commands so the agent ID matches
+`agent-id show`.
 
 ## Status lines
 
