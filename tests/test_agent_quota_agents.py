@@ -359,6 +359,16 @@ class AgentViewTest(unittest.TestCase):
     self.assertEqual(AGENTS.unique_suffix_length(
       ["aaaa1234", "bbbb1234", "cccc5678"]), 5)
 
+  def test_unsized_terminal_uses_the_default_width(self):
+    size = os.terminal_size((0, 0))
+    with patch.dict(os.environ, {"COLUMNS": ""}), \
+         patch.object(AGENTS.sys.stdout, "isatty", return_value=True,
+                      create=True), \
+         patch.object(AGENTS.sys.stdout, "fileno", return_value=1,
+                      create=True), \
+         patch.object(AGENTS.os, "get_terminal_size", return_value=size):
+      self.assertEqual(AGENTS.display_width(), 120)
+
   def test_dir_labels_use_the_last_segment_unless_ambiguous(self):
     labels = AGENTS.dir_labels(
       ["/h/git/app", "/h/work/app", "/h/git/dotfiles", "/h", None],

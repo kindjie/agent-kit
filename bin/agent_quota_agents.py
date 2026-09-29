@@ -1096,7 +1096,8 @@ def display_width(default=120):
     return columns
   try:
     if sys.stdout.isatty():
-      return os.get_terminal_size(sys.stdout.fileno()).columns
+      # A new pty can report zero columns until something sizes it.
+      return os.get_terminal_size(sys.stdout.fileno()).columns or default
   except (AttributeError, OSError, ValueError):
     return default
   return None
