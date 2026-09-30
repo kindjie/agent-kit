@@ -896,6 +896,26 @@ class AgentQuotaTest(unittest.TestCase):
     )
     self.assertEqual(falling["rate_percent_per_hour"], -10)
     self.assertIsNone(falling["exhausts_at"])
+
+    # A new window's reset_at drifts by a second or so between readings;
+    # those readings are still one period and all count.
+    drifting = with_history(
+      limit_record("f", 40), [(4, 0), (2, 20), (1, 30), (0, 40)]
+    )
+    reset = AGENT_QUOTA.parse_timestamp(
+      drifting["last_observation"]["reset_at"])
+    for offset, entry in zip((3, 2, 1, 0), drifting["history"]):
+      entry["reset_at"] = AGENT_QUOTA.iso_utc(reset - timedelta(seconds=offset))
+    self.assertEqual(
+      AGENT_QUOTA.limit_burn(drifting, NOW)["rate_percent_per_hour"], 10)
+    # Readings from an earlier period never count.
+    earlier = with_history(
+      limit_record("g", 40), [(2, 90), (1, 30), (0, 40)]
+    )
+    earlier["history"][0]["reset_at"] = AGENT_QUOTA.iso_utc(
+      reset - timedelta(days=7))
+    self.assertEqual(
+      AGENT_QUOTA.limit_burn(earlier, NOW)["rate_percent_per_hour"], 10)
     self.assertFalse(falling["exhausts_before_reset"])
     stale_points = with_history(
       limit_record("f", 40), [(5, 0), (4, 10), (0, 40)]
