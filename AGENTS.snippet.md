@@ -46,6 +46,8 @@ commands. Pass `--agent $(agent-id show)` on every call that writes.
 
 - Before starting work, check `agent-task list --here` for a task that
   covers it; claim it, or create one and claim it.
+- Use `estimate-agent-work` when creating or materially refining tracked
+  work, or before starting an unestimated task; apply it proportionally.
 - While you hold a claim, watch the task for messages addressed to you:
   keep `agent-task watch` running in the background where your tool
   allows, or read `show --after` at each milestone and before you close,

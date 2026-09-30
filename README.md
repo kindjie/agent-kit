@@ -40,6 +40,7 @@ Nothing here assumes that repository.
 | `profiling` | Collecting or reading a performance profile, CPU, GPU or Wasm |
 | `pull-requests` | Taking a change through a pull-request workflow |
 | `agent-records` | Tracking work and lasting machine state with `agent-task` and `agent-changelog` |
+| `estimate-agent-work` | Sizing tracked work and identifying useful decomposition |
 | `repository-records` | Creating changelogs, decisions, ADRs or incident records |
 | `testing-requirements` | Designing or changing a test strategy |
 | `verification-systems` | Judging whether a green check means the work happened |
@@ -282,6 +283,14 @@ usage. Estimate edits have the same permissions as dependency edits.
 an empty field means unspecified. Storypoints edits follow the existing
 owner-only field editing policy for claimed tasks. Older records without
 these optional headers remain valid; no migration is required.
+Use `agent-task --agent <id> log TASK 'rationale or scope change'` for brief
+estimation context.
+The `estimate-agent-work` skill provides sizing and decomposition guidance;
+it does not require estimating the existing backlog. Executable pieces are
+ordinary tasks. Associate them with
+`agent-task --agent <id> link TASK --related OTHER_TASK`. Declare real blockers
+with `agent-task --agent <id> dependency add TASK PREREQUISITE`, adding
+`--reason 'result needed'` to explain the prerequisite.
 Like all header values in `show --json` and `list --json`, `estimates` is
 returned as a string; decode that string as JSON to read its model entries.
 

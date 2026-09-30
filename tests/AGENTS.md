@@ -1,5 +1,14 @@
 # Focused Tests
 
+## Estimation Skill
+
+For changes to `skills/estimate-agent-work/SKILL.md`, use the synthetic
+behavior and routing cases in
+[estimate_agent_work_cases.md](estimate_agent_work_cases.md).
+Have an independent agent evaluate decisions, including near-misses; these
+are behavioral checks, not automated wording assertions. Also run the rules
+and privacy suites when changing the skill's always-loaded integration.
+
 Run everything from the repository root:
 
 ```bash
