@@ -318,6 +318,26 @@ class AgentViewTest(unittest.TestCase):
     self.assertNotIn("after", output.split("\n\n")[0])
     self.assertIn("Fix the build pipeline", output)
 
+  def test_now_shows_only_while_every_label_fits_whole(self):
+    agents = self.ladder_agents()
+    with patch.object(AGENTS, "display_width", return_value=200):
+      output = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 1000)
+    header = output.splitlines()[0]
+    self.assertIn(" Now ", header)
+    self.assertIn("Cache", header)
+    # A label that fits whole only without Now folds Now before anything
+    # else is compacted, and that label is then shown whole.
+    long = "Weigh the whole-skeleton corrector against per-bone IK fixes"
+    agents[1]["work"] = long
+    # The table needs 182 columns beside Now and 165 without it.
+    with patch.object(AGENTS, "display_width", return_value=175):
+      output = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 1000)
+    header = output.splitlines()[0]
+    self.assertNotIn(" Now ", header + " ")
+    self.assertIn("Cache", header)
+    self.assertIn(long, output)
+    self.assertIn("Fix the build pipeline · Bash: make test", output)
+
   def test_folded_now_follows_the_summary_in_spare_room(self):
     agents = self.ladder_agents()
     for width, expected in (
@@ -382,6 +402,7 @@ class AgentViewTest(unittest.TestCase):
     lines = output.splitlines()
     header, table = lines[0], "\n".join(lines[2:5])
     return [step for step, present in (
+      ("fold_now", "Now" not in header),
       ("drop_cache", "Cache" not in header),
       ("drop_seen", "Seen" not in header),
       ("state_glyphs", "▸" in table),
@@ -389,7 +410,6 @@ class AgentViewTest(unittest.TestCase):
       ("short_dir", "dotfiles…" in table or "Dir" not in header),
       ("drop_tokens", "Tokens" not in header),
       ("effort_prefix", " medium " not in table),
-      ("fold_now", "Now" not in header),
       ("short_model", "auto-re…" in table),
       ("drop_dir", "Dir" not in header)) if present]
 

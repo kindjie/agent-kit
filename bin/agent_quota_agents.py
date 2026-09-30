@@ -1273,8 +1273,10 @@ STATE_STYLES = {"working": ("green",), "stalled": ("bold", "red"),
 
 # Table compaction, applied in this order and only while the table is too
 # wide for the terminal: cheapest information loss first.
-COMPACTION = ("drop_cache", "drop_seen", "state_glyphs", "short_ids",
-              "short_dir", "drop_tokens", "effort_prefix", "fold_now",
+# Now goes first: most rows show "—" there, and a working agent's step still
+# follows its label in Work when there is room.
+COMPACTION = ("fold_now", "drop_cache", "drop_seen", "state_glyphs",
+              "short_ids", "short_dir", "drop_tokens", "effort_prefix",
               "short_model", "drop_dir")
 WORK_MIN = 16
 # Compaction continues until Work has this much room: the work label is the
@@ -1578,9 +1580,14 @@ def render(agents, cache, quota, now, verbose=False, color=False,
   # first, abbreviations interleaved with dropped columns.
   steps = set()
   headers, rows, styles, works, keys = build(steps)
+  # Now keeps its column only while every label fits whole beside it.
+  longest = max((min(len(work), LABEL_BOUND) for _, work, _ in works),
+                default=0)
   if width is not None:
     for step in COMPACTION:
-      if fixed_width(headers, rows, keys) + WORK_TARGET <= width:
+      need = (WORK_TARGET if "fold_now" in steps
+              else max(WORK_TARGET, longest))
+      if fixed_width(headers, rows, keys) + need <= width:
         break
       steps.add(step)
       headers, rows, styles, works, keys = build(steps)

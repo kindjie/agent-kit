@@ -510,16 +510,17 @@ glyph with its meaning when wrapped.
 
 When a terminal width applies and the table would leave Work under 30
 columns, it compacts one step at a time, in this order, stopping as soon as
-it fits: drop Cache; drop Seen (State's age covers it); show State as a
-glyph and compact age (`▸` working, `⬥` waiting, `∙` idle, `!` stalled, `✓`
-done, `✗` aborted, `+` for a long turn) with a generated legend; shorten
-agent IDs to the shortest unique provider prefix and ID suffix (`cl:9cf6`,
-growing on collision); clip the middle of Dir to 16 columns, keeping its
-first segment and its end (`gameproj…defects`); drop lifetime Tokens;
-shorten efforts to their shortest unique prefix among the rows shown
-(`Eff`); fold Now into Work; shorten model names with an ellipsis; drop Dir.
-Short forms are derived from the values shown, never from a fixed table, so
-new models, efforts, states or providers appear in full rather than mis-
+it fits: fold Now into Work, which happens first and whenever any Work label
+would not fit whole beside Now; drop Cache; drop Seen (State's age covers
+it); show State as a glyph and compact age (`▸` working, `⬥` waiting, `∙`
+idle, `!` stalled, `✓` done, `✗` aborted, `+` for a long turn) with a
+generated legend; shorten agent IDs to the shortest unique provider prefix
+and ID suffix (`cl:9cf6`, growing on collision); clip the middle of Dir to
+16 columns, keeping its first segment and its end (`gameproj…defects`); drop
+lifetime Tokens; shorten efforts to their shortest unique prefix among the
+rows shown (`Eff`); shorten model names with an ellipsis; drop Dir. Short
+forms are derived from the values shown, never from a fixed table, so new
+models, efforts, states or providers appear in full rather than mis-
 abbreviated. Glyphs are Unicode width N or Na without emoji forms. Piped
 output is unconstrained and never compacted. The footer wraps to the width.
 
