@@ -107,8 +107,45 @@ class TimelineTest(unittest.TestCase):
       timeline_limit("c:week", "weekly", 40, timedelta(days=4),
                      runs_out_in=timedelta(days=1)),
     )}})
-    self.row(output, "BURN", "Claude", "me@example.test", "40% left, 2.5%/h")
+    self.row(output, "BURN", "Claude", "me@example.test",
+             "40% left, 2.5%/h, out 3d 0h before reset, lasts at ≤0.42%/h")
     self.row(output, "RESET", "Claude", "me@example.test", "40% left")
+
+  def burning(self) -> dict[str, Any]:
+    """40% left at 2.5%/h: out in 1 day, 3 days before a 4-day reset."""
+    document = {"services": {"claude_code": self.claude(
+      timeline_limit("c:week", "weekly", 40, timedelta(days=4),
+                     runs_out_in=timedelta(days=1)))}}
+    document.setdefault("generated_at", AGENT_QUOTA.iso_utc(NOW))
+    return document
+
+  def test_burn_details_follow_in_priority_order_as_width_allows(self):
+    shares = {"claude_code": [("cl:9cf6", 60), ("cl:015c", 30)]}
+    details = ("40% left, 2.5%/h", ", out 3d 0h before reset",
+               ", lasts at ≤0.42%/h", ", 15m: cl:9cf6 60%, cl:015c 30%")
+    piped = AGENT_QUOTA.render_timeline(self.burning(), timezone.utc,
+                                        consumers=shares)
+    self.row(piped, "BURN", "Claude", "me@example.test", "".join(details))
+    line = next(line for line in piped.splitlines() if "BURN" in line)
+    # Each narrower width drops the lowest-priority detail still shown.
+    for kept in range(len(details), 0, -1):
+      width = len(line) - sum(map(len, details[kept:]))
+      output = AGENT_QUOTA.render_timeline(
+        self.burning(), timezone.utc, consumers=shares, width=width)
+      self.row(output, "BURN", "Claude", "me@example.test",
+               "".join(details[:kept]))
+      output = AGENT_QUOTA.render_timeline(
+        self.burning(), timezone.utc, consumers=shares, width=width - 1)
+      self.assertNotIn(details[kept - 1] if kept > 1 else "\x00", output)
+    # Without agent data the consumers detail is simply absent.
+    self.row(AGENT_QUOTA.render_timeline(self.burning(), timezone.utc),
+             "BURN", "Claude", "me@example.test", "".join(details[:3]))
+
+  def test_burn_json_carries_the_reset(self):
+    events = AGENT_QUOTA.timeline_document(self.burning())["events"]
+    burn = next(event for event in events if event["type"] == "burn")
+    self.assertEqual(burn["reset_at"],
+                     AGENT_QUOTA.iso_utc(NOW + timedelta(days=4)))
 
   def test_exhausted_quota_and_the_reset_that_restores_it(self):
     fable = {"id": "fable", "name": "Fable", "scope_kind": "model"}
@@ -343,7 +380,9 @@ class TimelineTest(unittest.TestCase):
                       side_effect=lambda doc, *_: doc), \
          patch.object(AGENT_QUOTA, "agents_module",
                       return_value=SimpleNamespace(claude_observation=Mock(
-                        side_effect=OSError("no agents")))), \
+                        side_effect=OSError("no agents")),
+                        display_width=lambda: None)), \
+         patch.object(AGENT_QUOTA, "live_consumers", return_value=None), \
          patch("builtins.print") as printed:
       status = AGENT_QUOTA.main(
         ["--cached", *flags, "--cache-file", f"{tmp}/c.json"])
@@ -361,6 +400,12 @@ class TimelineTest(unittest.TestCase):
 
 
 class LiveTest(unittest.TestCase):
+  def setUp(self) -> None:
+    # Never read the real agents cache for BURN consumers.
+    consumers = patch.object(AGENT_QUOTA, "live_consumers", return_value=None)
+    consumers.start()
+    self.addCleanup(consumers.stop)
+
   def args(self, **overrides) -> SimpleNamespace:
     values = dict(timeline=True, agents=False, interval=None, notify=False,
                   color_on=False, cached=True, no_cache=False, provider="all",

@@ -2559,7 +2559,10 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(timeline_document(document), separators=(",", ":"),
                      ensure_ascii=False))
   elif args.timeline:
-    print(render_timeline(document, color=args.color_on))
+    print(render_timeline(
+      document, color=args.color_on,
+      width=agents_module().display_width(),
+      consumers=live_consumers(args, time.time())))
   elif args.brief:
     print(render_brief(document, args.color_on))
   elif args.compact:

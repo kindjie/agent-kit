@@ -1980,11 +1980,8 @@ def blocked_models(service):
                  and item["last_observation"]["remaining_percent"] <= 0})
 
 
-def live_header(document, agents, quota, now, color=False):
-  """Per provider: the account bucket's outlook, blocked models and the
-  busiest agents, fitted to one line each."""
-  width = display_width()
-  agents = group_internal(agents)
+def compact_namer(agents):
+  """The table's compact ID style (`cl:9cf6`) for these grouped agents."""
   providers = unique_prefixes([agent["provider"] for agent in agents], 2)
   suffix = unique_suffix_length([agent["id"] for agent in agents
                                  if not agent.get("group")])
@@ -1992,6 +1989,39 @@ def live_header(document, agents, quota, now, color=False):
   def compact(agent):
     return providers[agent["provider"]] + ":" + (
       agent["id"] if agent.get("group") else agent["id"][-suffix:])
+  return compact
+
+
+def recent_shares(agents, count=3):
+  """Per quota service, the busiest agents' shares of the last 15 minutes'
+  uncached tokens, as (compact ID, percent), busiest first."""
+  agents = group_internal(agents)
+  compact = compact_namer(agents)
+  shares = {}
+  for service_id, provider in (("claude_code", "claude"), ("codex", "codex")):
+    busy = sorted((a for a in agents if a["provider"] == provider
+                   and a.get("recent_tokens")),
+                  key=lambda a: -a["recent_tokens"])
+    total = sum(a["recent_tokens"] for a in busy)
+    if total:
+      shares[service_id] = [(compact(a), 100 * a["recent_tokens"] / total)
+                            for a in busy[:count]]
+  return shares
+
+
+def timeline_consumers(args, quota, now):
+  """recent_shares from the last agents scan. The timeline never scans
+  transcripts itself, so this is only as fresh as an agents view keeps it."""
+  path, _ = agent_paths(args, quota)
+  return recent_shares(view_agents(load_cache(path), args, now))
+
+
+def live_header(document, agents, quota, now, color=False):
+  """Per provider: the account bucket's outlook, blocked models and the
+  busiest agents, fitted to one line each."""
+  width = display_width()
+  agents = group_internal(agents)
+  compact = compact_namer(agents)
 
   def visible(text):
     return len(re.sub(r"\x1b\[[0-9;]*m", "", text))

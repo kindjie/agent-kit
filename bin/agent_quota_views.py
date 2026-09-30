@@ -609,7 +609,7 @@ def timeline_event(moment: datetime, order: int, kind: str, quota: str,
            "provider": None, "account": "account unknown", "active": True,
            "limit_id": None, "remaining": None, "unit": "percent",
            "restores": False, "blocked": False, "stale": False,
-           "rate": None, "short_window": False}
+           "rate": None, "short_window": False, "reset_at": None}
   event.update(fields)
   return event
 
@@ -632,6 +632,7 @@ def timeline_limit_events(
   events = []
   burn = limit.get("burn") or {}
   exhausts = parse_timestamp(burn.get("exhausts_at"))
+  reset = parse_timestamp(observation.get("reset_at"))
   if remaining == 0:
     if active:
       events.append(timeline_event(now, 0, "exhausted", quota, **fields))
@@ -639,8 +640,7 @@ def timeline_limit_events(
         and not fields["stale"]):
     rate = burn.get("rate_percent_per_hour")
     events.append(timeline_event(max(exhausts, now), 1, "burn", quota,
-                                 **dict(fields, rate=rate)))
-  reset = parse_timestamp(observation.get("reset_at"))
+                                 **dict(fields, rate=rate, reset_at=reset)))
   if reset is not None and reset > now:
     # While spent account-wide buckets block the account, a reset before
     # the last of them frees nothing; that last reset frees the account.
@@ -739,6 +739,7 @@ def timeline_document(document: dict[str, Any]) -> dict[str, Any]:
       "unit": event["unit"], "restores": event["restores"],
       "blocked": event["blocked"], "stale": event["stale"],
       "rate_per_hour": event["rate"],
+      "reset_at": iso_utc(event["reset_at"]) if event["reset_at"] else None,
     } for event in timeline_events(document, now)],
   }
 
@@ -801,6 +802,31 @@ def merge_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                    else row["tail"].lstrip(", ").strip())
     row["quota"] = ", ".join(row["quotas"])
   return list(rows.values())
+
+
+def burn_details(row: dict[str, Any], now: datetime,
+                 consumers: dict[str, list[tuple[str, float]]] | None
+                 ) -> list[str]:
+  """Optional BURN notes, most useful first; width decides how many show.
+
+  How long before its reset the quota runs out, the rate that would last
+  until then, and the agents using most of it lately.
+  """
+  if row["type"] != "burn" or len(row["quotas"]) != 1:
+    return []
+  details = []
+  reset = row["reset_at"]
+  if row["unit"] == "percent" and reset is not None:
+    details.append("out " + format_duration(
+      (reset - row["moment"]).total_seconds()) + " before reset")
+    hours = (reset - now).total_seconds() / 3600
+    if row["remaining"] is not None and hours > 0:
+      details.append(f"lasts at ≤{row['remaining'] / hours:.2f}%/h")
+  shares = (consumers or {}).get(row["provider"])
+  if shares:
+    details.append("15m: " + ", ".join(
+      f"{label} {share:.0f}%" for label, share in shares))
+  return details
 
 
 def timeline_when(moment: datetime, now: datetime) -> str:
@@ -881,13 +907,18 @@ def timeline_row_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
 
 
 def render_timeline(document: dict[str, Any], tz: Any = None,
-                    color: bool = False, marked: Any = frozenset()) -> str:
+                    color: bool = False, marked: Any = frozenset(),
+                    width: int | None = None,
+                    consumers: dict[str, list[tuple[str, float]]]
+                    | None = None) -> str:
   """Upcoming resets and projected run-outs, grouped by day.
 
   Run-out times come from each quota's recent burn and appear only when a
   quota would run out before it resets. Accounts other than the one each
   service last checked contribute their last known resets, unverified.
-  Rows whose key is in `marked` are highlighted as changed.
+  Rows whose key is in `marked` are highlighted as changed. BURN rows add
+  details in priority order while they fit `width` (all when None);
+  `consumers` maps a service to its busiest agents and their shares.
   """
   now = parse_timestamp(document.get("generated_at")) or utc_now()
   events, rows, hidden = timeline_rows(document, now)
@@ -907,7 +938,15 @@ def render_timeline(document: dict[str, Any], tz: Any = None,
     if heading != day:
       day = heading
       lines.append("  " + paint(heading, ("bold",), color))
-    lines.append(timeline_line(row, now, tz, colours[row["account"]],
+    details = burn_details(row, now, consumers)
+    shown = row
+    for count in range(len(details), -1, -1):
+      shown = dict(row, note=row["note"] + "".join(
+        ", " + detail for detail in details[:count]))
+      if width is None or len(timeline_line(
+          shown, now, tz, "", widths, False)) <= width:
+        break
+    lines.append(timeline_line(shown, now, tz, colours[row["account"]],
                                widths, color,
                                timeline_row_key(row) in marked))
   if not rows:
@@ -918,7 +957,9 @@ def render_timeline(document: dict[str, Any], tz: Any = None,
       "BURN extrapolates the last "
       f"{BURN_RECENT_SECONDS // 3600}h of use and is listed only when a "
       "quota",
-      "would run out before it resets.",
+      "would run out before it resets. As width allows, it adds how long",
+      "before the reset it runs out, the hourly rate that would last until",
+      "then, and the busiest agents' shares of the last 15 minutes.",
     ]
   if hidden:
     footer.append("5h resets are shown only when low, exhausted, running out"
@@ -1139,6 +1180,16 @@ def timeline_alerts(previous: dict[tuple, dict[str, Any]],
   return alerts
 
 
+def live_consumers(args: argparse.Namespace, now: float
+                   ) -> dict[str, list[tuple[str, float]]] | None:
+  """Busiest agents per service for BURN rows, or None if unreadable."""
+  try:
+    return agents_module().timeline_consumers(
+      args, SimpleNamespace(**globals()), now)
+  except (OSError, ValueError, KeyError, TypeError):
+    return None
+
+
 def fit_screen(lines: list[str], height: int) -> list[str]:
   """Keep the header visible: drop what does not fit, and say so."""
   if len(lines) <= height:
@@ -1175,7 +1226,10 @@ def run_live(args: argparse.Namespace, cache_path: Path,
         keys = {timeline_row_key(row): row for row in rows}
         marked = frozenset() if first else frozenset(
           set(keys) - set(previous_rows))
-        body = render_timeline(document, color=args.color_on, marked=marked)
+        body = render_timeline(
+          document, color=args.color_on, marked=marked,
+          width=shutil.get_terminal_size((100, 40)).columns,
+          consumers=live_consumers(args, now))
         alerts = timeline_alerts(previous_rows, rows, moment, sent)
         previous_rows = keys
       else:

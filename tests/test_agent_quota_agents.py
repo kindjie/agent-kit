@@ -310,6 +310,22 @@ class AgentViewTest(unittest.TestCase):
       if expected:
         self.assertIn(expected, line)
 
+  def test_recent_shares_use_compact_ids_busiest_first(self):
+    agents = self.ladder_agents()
+    agents[1]["recent_tokens"] = 300_000
+    agents[2]["recent_tokens"] = 100_000
+    shares = AGENTS.recent_shares(agents)
+    self.assertEqual(shares["claude_code"], [("cl:9cf6", 100.0)])
+    self.assertEqual([label for label, _ in shares["codex"]],
+                     ["co:4b37", "co:61d4"])
+    self.assertEqual([round(share) for _, share in shares["codex"]],
+                     [75, 25])
+    self.assertEqual(AGENTS.recent_shares(agents, count=1)["codex"],
+                     [("co:4b37", 75.0)])
+    for agent in agents:
+      agent["recent_tokens"] = 0
+    self.assertEqual(AGENTS.recent_shares(agents), {})
+
   def test_folded_now_skips_quiet_steps(self):
     agents = self.ladder_agents()
     agents[0].update(now="after Bash: make test", now_quiet=True)

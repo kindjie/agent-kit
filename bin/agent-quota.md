@@ -48,6 +48,12 @@ without passing a flag. Ordinary quota queries never start summarization.
   with the same moment, type, account and meaning merge
   (`Claude, Fable … was 0% / 56% → ~100%`). 5h items appear only when low
   (under 10%), exhausted, running out, or freeing an account.
+  A single-quota `BURN` note adds details in priority order while the line
+  fits the terminal (all of them when piped): how long before the reset
+  it runs out (`out 5d 8h before reset`), the hourly rate that would last
+  until then (`lasts at ≤0.02%/h`), and the busiest agents' shares of the
+  last 15 minutes (`15m: co:314e 39%, …`). The shares come from the last
+  `--agents` scan; the timeline never scans transcripts itself.
   On a terminal the timeline is styled: `EXHAUSTED` bold red reverse,
   `BURN` bold red within 24 hours and bold yellow later, `RESET` bold
   green, restoring resets highlighted in bold green, quota names bold,
@@ -59,7 +65,8 @@ without passing a flag. Ordinary quota queries never start summarization.
   has `at`, `type` (`reset`, `burn`, `exhausted`), `provider`, `account`,
   `active`, `quota`, `limit_id`, `short_window`, `remaining_percent` (or
   `remaining_credits` with `unit` `credits`), `unit`, `restores`,
-  `blocked`, `stale` and `rate_per_hour`. Events are in time order.
+  `blocked`, `stale`, `rate_per_hour` and `reset_at` (the reset a `burn`
+  event runs out before, else null). Events are in time order.
 - `--live` keeps `--timeline` or `--agents` on screen, redrawing every
   `--interval` seconds (default 30, minimum 5) on the terminal's alternate
   screen, and restores the terminal on exit. `q`, a lone Escape or Ctrl-C
