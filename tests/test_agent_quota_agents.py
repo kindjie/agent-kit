@@ -336,6 +336,16 @@ class AgentViewTest(unittest.TestCase):
     self.assertNotIn(" Now ", header + " ")
     self.assertIn("Cache", header)
     self.assertIn(long, output)
+    self.assertIn("working 12m", output)   # fits whole: states spelled out
+    # Narrower, the label fits whole only once states are glyphs, which
+    # still comes before any other compaction.
+    with patch.object(AGENTS, "display_width", return_value=162):
+      output = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 1000)
+    table = output.split("\n\n")[0]
+    self.assertIn("▸ 12m", table)
+    self.assertNotIn("working", table)
+    self.assertIn("Cache", table.splitlines()[0])
+    self.assertIn(long, table)
     self.assertIn("Fix the build pipeline · Bash: make test", output)
 
   def test_folded_now_follows_the_summary_in_spare_room(self):
@@ -403,9 +413,9 @@ class AgentViewTest(unittest.TestCase):
     header, table = lines[0], "\n".join(lines[2:5])
     return [step for step, present in (
       ("fold_now", "Now" not in header),
+      ("state_glyphs", "▸" in table),
       ("drop_cache", "Cache" not in header),
       ("drop_seen", "Seen" not in header),
-      ("state_glyphs", "▸" in table),
       ("short_ids", "claude:" not in table),
       ("short_dir", "dotfiles…" in table or "Dir" not in header),
       ("drop_tokens", "Tokens" not in header),
