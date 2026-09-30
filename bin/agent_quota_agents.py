@@ -1280,6 +1280,8 @@ WORK_MIN = 16
 # Compaction continues until Work has this much room: the work label is the
 # most informative column, so a barely-visible one counts as needing space.
 WORK_TARGET = 30
+# Below this a folded action clips to little more than its tool name.
+FOLDED_ACTION_MIN = 12
 # Glyph, meaning. Only characters of Unicode East Asian width N or Na
 # (never "ambiguous", which some terminals draw double-width) and without
 # emoji forms, so columns stay aligned everywhere; a test checks the width.
@@ -1592,16 +1594,14 @@ def render(agents, cache, quota, now, verbose=False, color=False,
   )
   work_index = keys.index("work")
   for row, (folded, work, brief) in zip(rows, works):
-    if folded:
-      # A folded action gets what the shortest label leaves, or half of Work
-      # when that is too little, clipped so a command keeps its end.
-      spare = work_width - 3 - min(len(work), len(brief or work))
-      budget = min(28, spare if spare >= 12 else work_width // 2)
-      action = fit_action(folded[0], budget, folded[1])
-      row[work_index] = action + " · " + fit(work, brief,
-                                             work_width - len(action) - 3)
-    else:
-      row[work_index] = fit(work, brief, work_width)
+    label = fit(work, brief, work_width)
+    # The summary says more than a raw step such as `Bash: …cat x`, so a
+    # folded action only follows it, in room the label leaves, clipped so
+    # a command keeps its end.
+    spare = work_width - len(label) - 3
+    if folded and spare >= FOLDED_ACTION_MIN:
+      label += " · " + fit_action(folded[0], min(28, spare), folded[1])
+    row[work_index] = label
   lines = (
     quota.text_table(headers, rows, styles, color)
     if rows
@@ -1614,7 +1614,7 @@ def render(agents, cache, quota, now, verbose=False, color=False,
   if "drop_cache" not in steps:
     notes.append("Cache = cached input / all input.")
   notes.append("Work: ~ marks a fallback excerpt"
-               + ("; it leads with the current action or plan."
+               + ("; the current action follows when there is room."
                   if "fold_now" in steps else "."))
   notes.append("15m: uncached tokens, last 15 minutes.")
   if "state_glyphs" in steps:

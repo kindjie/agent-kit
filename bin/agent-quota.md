@@ -502,9 +502,10 @@ Internal sessions, such as Codex's automatic reviewers (`guardian`), are
 many, short-lived and never summarized, so the table shows one row per
 provider and label: its busiest member's state, the group's total tokens,
 and a count in Work (`5 guardian sessions`). `--verbose` and `--compact`
-list each session. When Now is folded into Work, it keeps only a step in
-progress with a real detail; `after …` steps and bare tool names such as
-`exec: write_stdin` leave the room to the label. The State legend keeps each
+list each session. When Now is folded into Work, the label comes first and
+the step follows only in room the label leaves (at least 12 columns); only a
+step in progress with a real detail qualifies, so `after …` steps and bare
+tool names such as `exec: write_stdin` are dropped. The State legend keeps each
 glyph with its meaning when wrapped.
 
 When a terminal width applies and the table would leave Work under 30

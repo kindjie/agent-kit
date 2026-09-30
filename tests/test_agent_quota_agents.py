@@ -318,6 +318,23 @@ class AgentViewTest(unittest.TestCase):
     self.assertNotIn("after", output.split("\n\n")[0])
     self.assertIn("Fix the build pipeline", output)
 
+  def test_folded_now_follows_the_summary_in_spare_room(self):
+    agents = self.ladder_agents()
+    for width, expected in (
+      (80, "Fix the build pipeline · Bash: make test"),
+      (76, "Fix the build pipeline · Bash: …e test"),  # keeps its end
+    ):
+      with patch.object(AGENTS, "display_width", return_value=width):
+        output = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 1000)
+      self.assertNotIn(" Now ", output.splitlines()[0] + " ")
+      self.assertIn(expected, output)
+    # A summary too long for Work falls back to its brief before any action
+    # is given room, and the action never leads.
+    agents[0]["work"] = "Fix the build pipeline and every flaky test " * 3
+    with patch.object(AGENTS, "display_width", return_value=80):
+      output = AGENTS.render(agents, {"sessions": {}}, AGENT_QUOTA, 1000)
+    self.assertIn("Fix build · Bash: make test", output)
+
   def test_internal_sessions_share_one_row_unless_verbose(self):
     def guardian(ident, tokens):
       return dict(self.work_row(ident, "g", "g"), provider="codex",
@@ -406,7 +423,9 @@ class AgentViewTest(unittest.TestCase):
     self.assertIn("cl:9cf6", output)
     self.assertIn("└co:61d4", output)
     self.assertIn("▸ 12m", output)
-    self.assertIn("Bash: …test · ", output)    # Now folded, keeps its end
+    # Too narrow for a useful folded action: the summary keeps Work.
+    self.assertIn("  Fix the build pipeline  ", output)
+    self.assertNotIn("Bash:", output.split("\n\n")[0])
     self.assertNotIn(" Now ", output.splitlines()[0] + " ")
     self.assertIn(" Eff ", output.splitlines()[0] + " ")
     self.assertIn(" med ", output)     # as wide as its heading allows
