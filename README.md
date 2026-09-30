@@ -239,6 +239,52 @@ checking an item again rewrites its evidence, and the owner can `uncheck
 work-reviewed check. `agent-task --help` summarizes transitions; each
 subcommand's `--help` describes its options.
 
+Declare a prerequisite with `dependency add TASK PREREQUISITE`, or repeat
+`new --depends-on PREREQUISITE` when creating a task. Revoke it with
+`dependency remove TASK PREREQUISITE`. Dependencies are directional:
+TASK depends on PREREQUISITE. Missing tasks, self-dependencies and cycles
+are refused. These commands update only TASK and log the change; `--reason`
+adds context. The owner may edit dependencies, or any agent when no live
+claim exists. Helpers need the owner to make the change.
+
+`agent-task dependency show TASK` lists its direct prerequisites and
+dependents with their current status and title, including archived tasks.
+Use `--json` for full task fields in `prerequisites` and `dependents` arrays.
+`next` skips tasks until every declared prerequisite is `done`. Cancelled,
+abandoned and superseded prerequisites remain unsatisfied; revoke or replace
+those dependencies explicitly. Reopening a prerequisite makes it unsatisfied
+again. Dependencies do not change task status or prevent explicit claims or
+closure, so preparatory work can still proceed.
+An invalid or missing prerequisite makes its candidate unavailable, with a
+warning on stderr; other candidates remain eligible. A relationship view
+with unreadable or malformed unrelated records is marked `UNVERIFIED`
+(`authoritative: false` in JSON) because its dependent list may be incomplete.
+Run `lint` to diagnose graph errors after reconciling records from other clones.
+
+Record estimates against exact model IDs:
+
+```sh
+agent-task --agent helper estimate set T-0001 provider/model-v1 \
+  --wall-seconds 600 --tokens 20000
+agent-task --agent helper estimate set T-0001 provider/model-v1 --tokens 25000
+agent-task --agent helper estimate remove T-0001 provider/model-v1 \
+  --reason 'no longer considered'
+agent-task --agent helper set T-0001 --storypoints 5
+```
+
+The optional `estimates` header is a JSON object keyed by model ID, with
+`wall-seconds` (finite, nonnegative elapsed seconds) and `tokens`
+(nonnegative integer total tokens). At least one metric is required for
+`set`; omitted metrics and other models are preserved. `remove` revokes the
+model's whole estimate. These are manual planning estimates, not measured
+usage. Estimate edits have the same permissions as dependency edits.
+`storypoints` accepts only 1, 2, 3, 5, 8, 13 or 20 through `new` or `set`;
+an empty field means unspecified. Storypoints edits follow the existing
+owner-only field editing policy for claimed tasks. Older records without
+these optional headers remain valid; no migration is required.
+Like all header values in `show --json` and `list --json`, `estimates` is
+returned as a string; decode that string as JSON to read its model entries.
+
 Changelog entries are `entries/YYYY-MM-DD-HHMM-scope-slug.md`; mistakes are
 `mistakes/YYYY-MM-DD-slug.md`. Their headers record the event, location,
 reason, cleanup plan, repository keys and associated task IDs. The `tasks:`

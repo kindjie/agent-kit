@@ -858,6 +858,7 @@ class ParsedFields(dict):
 KNOWN_FIELDS = {
   "id", "title", "status", "owner", "expires", "helpers", "priority",
   "severity", "repos", "produces-changes", "created", "links", "related",
+  "depends-on", "estimates", "storypoints",
   "review", "blocked-on-owner", "closed", "date", "machine", "agent",
   "kind", "location", "why", "cleanup-when", "cleanup-how", "notes",
   "tasks", "scope", "summary", "impact", "cause", "detection",

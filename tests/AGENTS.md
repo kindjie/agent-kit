@@ -241,6 +241,15 @@ lifecycle, records, commands, transitions and watch suites cover identity,
 initialization, task claims, permissions, help, checklist corrections
 (re-checking, owner-only unchecking, and edits confined to the checklist),
 closing and watch cursors.
+The planning suite covers dependency declaration/revocation, graph validation,
+prerequisite and dependent status views, `next` readiness across closure and
+reopening, per-model estimate updates/removal, storypoints, permissions,
+invalid inputs without writes, lint rejection and legacy records. Run it alone:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_records_planning
+```
+
 The recovery and cross suites exercise real git signing children, index
 locks, staged deletions, journals, and cross-repository races. The privacy
 suite scans tracked and new files;

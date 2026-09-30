@@ -18,7 +18,7 @@ from agent_records_core import (
   validate_root,
 )
 from agent_records_tasks import (alter_task, close_task, lint_tasks, new_task,
-                                 task_read, watch_task)
+                                 dependency_view, task_read, watch_task)
 
 
 def positive_index(value):
@@ -93,6 +93,8 @@ def parser():
   new.add_argument("--check", action="append")
   new.add_argument("--from-design")
   new.add_argument("--review")
+  new.add_argument("--depends-on", action="append")
+  new.add_argument("--storypoints", type=int, choices=[1, 2, 3, 5, 8, 13, 20])
 
   show = add("show", "Read a task, associations and cursor; writes nothing.",
              "agent-task show T-0001")
@@ -114,6 +116,32 @@ def parser():
   next_cmd = add("next", "Read the highest-priority available task.",
                  "agent-task next")
   next_cmd.add_argument("--repo", action="append")
+
+  dependency = add("dependency", "Declare, revoke or view direct task "
+                   "dependencies: TASK depends on PREREQUISITE. "
+                   "Only done prerequisites satisfy next; "
+                   "claim and close remain explicit operations.",
+                   "agent-task dependency show T-0001")
+  dependency.add_argument("action", choices=["add", "remove", "show"],
+                          help="declare, revoke or view relationships")
+  dependency.add_argument("task")
+  dependency.add_argument("prerequisite", nargs="?",
+                          help="prerequisite task ID; required for add/remove")
+  dependency.add_argument("--reason")
+  dependency.add_argument("--json", action="store_true")
+  estimate = add("estimate", "Set or remove planning estimates by exact "
+                 "model ID; writes task commit. Omitted metrics are kept.",
+                 "agent-task --agent helper estimate set T-0001 model-v1 "
+                 "--wall-seconds 600 --tokens 20000")
+  estimate.add_argument("action", choices=["set", "remove"],
+                        help="set metrics or remove this model's estimate")
+  estimate.add_argument("task")
+  estimate.add_argument("model", help="exact model ID, no whitespace")
+  estimate.add_argument("--wall-seconds", type=float,
+                        help="finite, nonnegative estimated elapsed seconds")
+  estimate.add_argument("--tokens", type=int,
+                        help="estimated total tokens, nonnegative integer")
+  estimate.add_argument("--reason")
 
   claim = add("claim", "Claim or extend a task; writes task commit.",
               "agent-task --agent helper claim T-0001")
@@ -144,6 +172,8 @@ def parser():
   set_cmd = add("set", "Edit task fields or body; writes task commit.",
                 "agent-task --agent helper set T-0001 --priority P1")
   set_cmd.add_argument("task")
+  set_cmd.add_argument("--storypoints", type=int,
+                       choices=[1, 2, 3, 5, 8, 13, 20])
   for name in ("title", "review", "known", "plan", "add-repo",
                "remove-repo", "add-check", "reason"):
     set_cmd.add_argument("--" + name)
@@ -208,7 +238,7 @@ def parser():
   recover.add_argument("--discard", action="append", default=[])
   add("lint", "Check record formats; writes nothing.", "agent-task lint")
   for name in ("claim", "release", "handoff", "helper", "status", "set",
-               "check", "uncheck", "link", "close"):
+               "check", "uncheck", "link", "close", "dependency", "estimate"):
     sub.choices[name].add_argument("--force", metavar="REASON", help=FORCE_TEXT)
   option_help = {
     "path": "dedicated records directory to initialize",
@@ -224,6 +254,8 @@ def parser():
     "check": "additional completion check; repeatable",
     "from_design": "link design document and require design review",
     "review": "design review: n/a, required, pending, passed REF, failed REF",
+    "depends_on": "prerequisite task ID; repeatable",
+    "storypoints": "planning size: 1, 2, 3, 5, 8, 13 or 20",
     "task": "task ID such as T-0001",
     "after": "resume after N:HASH cursor; rewritten logs print in full",
     "no_messages": "omit Log content from show output",
@@ -287,6 +319,13 @@ def parser():
 
 def main():
   args = parser().parse_args()
+  dependency_read = args.command == "dependency" and args.action == "show"
+  if args.command == "dependency":
+    if dependency_read and (args.prerequisite or args.reason or args.force):
+      raise RecordsError("dependency show accepts only task and --json", 2)
+    if not dependency_read and (not args.prerequisite or args.json):
+      raise RecordsError("dependency add/remove requires prerequisite, "
+                         "without --json", 2)
   if not shutil.which("git"):
     raise RecordsError("git is required", 2)
   duration(args.wait, "wait")
@@ -316,7 +355,7 @@ def main():
     return 0
   if args.command == "watch":
     return watch_task(root, changes, args)
-  read = args.command in ("show", "list", "next", "lint")
+  read = args.command in ("show", "list", "next", "lint") or dependency_read
   agent = "reader" if read else require_agent(args.agent)
   roots_to_write = [] if read else [root]
   if args.command == "close" and (args.transfer or args.by):
@@ -330,6 +369,8 @@ def main():
       new_task(root, args, agent, push_policy(cfg, root, changes))
     elif args.command in ("show", "list", "next"):
       task_read(root, changes, args, authoritative)
+    elif dependency_read:
+      dependency_view(root, args, authoritative)
     elif args.command == "lint":
       errors = lint_tasks(root, changes)
       for error in errors:

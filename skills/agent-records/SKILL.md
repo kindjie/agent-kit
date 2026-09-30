@@ -33,6 +33,14 @@ so without its own ID it writes as you.
   `agent-task claim T-NNNN`. Claims expire; claim again to extend.
 - **Progress:** `agent-task log T-NNNN 'what changed'` at milestones, not
   every step. `status` moves between in-progress, in-review and blocked.
+- **Planning:** `dependency add TASK PREREQUISITE` declares a dependency;
+  `dependency remove TASK PREREQUISITE` revokes it. `dependency show TASK`
+  lists direct prerequisites and dependents with status. `next` skips tasks
+  whose prerequisites are not `done`; explicit claims and closure remain
+  available. `estimate set TASK MODEL --wall-seconds N --tokens N` records
+  manual per-model estimates (either metric may be omitted), and
+  `estimate remove TASK MODEL` removes them. `new` and `set` accept
+  `--storypoints` of 1, 2, 3, 5, 8, 13 or 20.
 - **While you hold a claim, watch it:** others may address you on the task
   with `log --to`. Where your tool can wait in the background (Claude
   Code's background Bash re-invokes you when it exits), keep

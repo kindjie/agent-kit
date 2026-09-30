@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -23,7 +24,10 @@ from agent_records_core import (
 
 ORDER = ("id", "title", "status", "owner", "expires", "helpers", "priority",
          "severity", "repos", "produces-changes", "created", "links",
-         "related", "review", "blocked-on-owner", "closed")
+         "related", "depends-on", "estimates", "storypoints", "review",
+         "blocked-on-owner", "closed")
+OPTIONAL = ("depends-on", "estimates", "storypoints")
+STORYPOINTS = ("1", "2", "3", "5", "8", "13", "20")
 FIXED = (
   ("merged", "merged on the default branch, its CI green"),
   ("cleanup", "worktrees, branches, stashes and scratch removed"),
@@ -32,6 +36,125 @@ FIXED = (
 )
 LIVE = ("open", "in-progress", "in-review", "blocked")
 CLOSED = ("done", "cancelled", "abandoned", "superseded")
+
+
+def dependency_ids(value):
+  if not value:
+    return []
+  ids = [part.strip() for part in value.split(",")]
+  if (any(not re.fullmatch(r"T-[0-9]{4,}", ident) for ident in ids) or
+      len(ids) != len(set(ids))):
+    raise RecordsError("invalid or duplicate dependency task ID", 1)
+  return ids
+
+
+def prerequisite_id(value):
+  if not re.fullmatch(r"T-[0-9]{4,}", value):
+    raise RecordsError("invalid prerequisite task ID", 2)
+  return value
+
+
+def model_id(value):
+  if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+\[\]-]{0,199}", value):
+    raise RecordsError("invalid model ID", 2)
+  return value
+
+
+def validate_estimates(estimates):
+  if not isinstance(estimates, dict):
+    raise RecordsError("estimates must be a model-to-metrics object", 2)
+  for model, metrics in estimates.items():
+    model_id(model)
+    if (not isinstance(metrics, dict) or not metrics or
+        set(metrics) - {"wall-seconds", "tokens"}):
+      raise RecordsError("invalid estimate metrics", 2)
+    for key, value in metrics.items():
+      if key == "tokens":
+        valid = type(value) is int and value >= 0
+      else:
+        valid = (type(value) in (int, float) and value >= 0 and
+                 (type(value) is int or math.isfinite(value)))
+      if not valid:
+        raise RecordsError("invalid estimated " + key, 2)
+  return estimates
+
+
+def read_estimates(value):
+  def unique_object(pairs):
+    result = {}
+    for key, item in pairs:
+      if key in result:
+        raise RecordsError("duplicate estimate key: " + key, 2)
+      result[key] = item
+    return result
+  try:
+    estimates = json.loads(value or "{}", object_pairs_hook=unique_object)
+  except (ValueError, TypeError):
+    raise RecordsError("invalid estimates JSON", 2)
+  return validate_estimates(estimates)
+
+
+def dependency_inventory(root):
+  records, duplicates = {}, set()
+  verified = True
+  for path in task_files(root, True):
+    try:
+      fields, _, _ = read_task(path)
+      ident = fields["id"]
+      if ident in records or ident in duplicates:
+        duplicates.add(ident)
+        records.pop(ident, None)
+        raise RecordsError("duplicate task ID: " + ident, 1)
+      records[ident] = fields
+    except RecordsError as exc:
+      verified = False
+      print("Warning: " + str(exc), file=sys.stderr)
+  return records, verified
+
+
+def dependency_view(root, args, authoritative=True):
+  fields, _, _ = read_task(task_path(root, args.task))
+  records, verified = dependency_inventory(root)
+  authoritative = authoritative and verified
+  prerequisites = [read_task(task_path(root, ident))[0]
+                   for ident in dependency_ids(fields.get("depends-on", ""))]
+  dependents = []
+  for other in records.values():
+    try:
+      if args.task in dependency_ids(other.get("depends-on", "")):
+        dependents.append(other)
+    except RecordsError as exc:
+      authoritative = False
+      print("Warning: " + other["id"] + ": " + str(exc), file=sys.stderr)
+  dependents.sort(key=lambda row: row["id"])
+  if args.json:
+    print(json.dumps({"task": fields, "prerequisites": prerequisites,
+                      "dependents": dependents,
+                      "authoritative": authoritative}))
+    return
+  prefix = "" if authoritative else "UNVERIFIED "
+  print(prefix + fields["id"] + " " + fields["status"] + " " + fields["title"])
+  for heading, rows in (("Prerequisites", prerequisites),
+                        ("Dependents", dependents)):
+    print(prefix + heading + ":")
+    if not rows:
+      print(prefix + "  none")
+    for row in rows:
+      print(prefix + "  " + row["id"] + " " + row["status"] + " " +
+            row["title"])
+
+
+def dependencies_done(records, fields):
+  try:
+    for ident in dependency_ids(fields.get("depends-on", "")):
+      if ident not in records:
+        raise RecordsError("missing or unreadable dependency " + ident, 1)
+      if records[ident].get("status") != "done":
+        return False
+    return True
+  except RecordsError as exc:
+    print("Warning: " + fields["id"] + ": " + str(exc), file=sys.stderr)
+    return False
 
 
 def task_files(root, archived=False):
@@ -160,6 +283,11 @@ def new_task(root, args, agent, push):
     raise RecordsError("invalid .next-id", 2)
   number = max(counter, highest + 1)
   ident = "T-" + str(number).zfill(4)
+  for prerequisite in args.depends_on or []:
+    prerequisite_id(prerequisite)
+    if prerequisite == ident:
+      raise RecordsError("task cannot depend on itself", 1)
+    task_path(root, prerequisite)
   relative = ident + "-" + slug(title) + ".md"
   if (root / relative).exists():
     raise RecordsError("task path already exists", 1)
@@ -173,6 +301,10 @@ def new_task(root, args, agent, push):
                  "review": one_line(args.review, "review") if args.review else
                  ("required" if args.from_design else "n/a"),
                  "blocked-on-owner": "no"})
+  fields["depends-on"] = joined(args.depends_on or [])
+  fields["estimates"] = "{}"
+  fields["storypoints"] = (str(args.storypoints)
+                           if args.storypoints is not None else "")
   checklist = "\n".join("- [ ] " + key + ": " + text
                         for key, text in FIXED)
   for check in args.check or []:
@@ -342,6 +474,48 @@ def alter_task(root, args, agent, push, changes=None):
       helpers = [x for x in helpers if x != args.helper_id]
     fields["helpers"] = joined(helpers)
     body = append_log(body, agent, args.action + " helper " + args.helper_id)
+  elif command == "dependency":
+    forced_action = permission(fields, agent, command, force, unowned=True)
+    prerequisite_id(args.prerequisite)
+    dependencies = dependency_ids(fields.get("depends-on", ""))
+    if args.action == "add":
+      if args.prerequisite == args.task:
+        raise RecordsError("task cannot depend on itself", 1)
+      task_path(root, args.prerequisite)
+      dependencies.append(args.prerequisite)
+    else:
+      if args.prerequisite not in dependencies:
+        raise RecordsError("dependency is not declared", 1)
+      dependencies.remove(args.prerequisite)
+    fields["depends-on"] = joined(dependencies)
+    body = append_log(body, agent, args.action.capitalize() +
+                      " dependency " + args.prerequisite +
+                      (": " + one_line(args.reason) if args.reason else ""))
+  elif command == "estimate":
+    forced_action = permission(fields, agent, command, force, unowned=True)
+    model = model_id(args.model)
+    estimates = read_estimates(fields.get("estimates", ""))
+    if args.action == "remove":
+      if args.wall_seconds is not None or args.tokens is not None:
+        raise RecordsError("estimate remove does not accept metrics", 2)
+      if model not in estimates:
+        raise RecordsError("model estimate is not recorded", 1)
+      del estimates[model]
+    else:
+      if args.wall_seconds is None and args.tokens is None:
+        raise RecordsError("estimate set requires at least one metric", 2)
+      metrics = estimates.setdefault(model, {})
+      if args.wall_seconds is not None:
+        metrics["wall-seconds"] = args.wall_seconds
+      if args.tokens is not None:
+        metrics["tokens"] = args.tokens
+    validate_estimates(estimates)
+    fields["estimates"] = json.dumps(estimates, sort_keys=True, allow_nan=False)
+    body = append_log(body, agent, args.action.capitalize() + " estimate " +
+                      model + (" " + json.dumps(estimates[model], sort_keys=True)
+                               if args.action == "set" else "") +
+                      (": " + one_line(args.reason)
+                               if args.reason else ""))
   elif command == "status":
     old = fields["status"]
     new = args.state
@@ -385,6 +559,7 @@ def alter_task(root, args, agent, push, changes=None):
       args.title, args.priority, args.severity, args.review,
       args.blocked_on_owner, args.produces_changes, args.add_repo,
       args.remove_repo, args.add_check, args.remove_check))
+    restricted = restricted or args.storypoints is not None
     if restricted and live_owner(fields) != agent and not no_claim:
       forced_action = permission(fields, agent, command, force)
     for key, value in (("title", args.title), ("priority", args.priority),
@@ -392,6 +567,8 @@ def alter_task(root, args, agent, push, changes=None):
                        ("produces-changes", args.produces_changes)):
       if value is not None:
         fields[key] = one_line(value, key)
+    if args.storypoints is not None:
+      fields["storypoints"] = str(args.storypoints)
     if args.review is not None and args.review not in (
         "n/a", "required", "pending") and not re.fullmatch(
           r"(?:passed|failed) .+", args.review):
@@ -713,6 +890,7 @@ def task_read(root, changes, args, authoritative=True):
     else:
       return fields, body
   elif command in ("list", "next"):
+    dependencies = dependency_inventory(root)[0] if command == "next" else {}
     repos = list(getattr(args, "repo", None) or [])
     if getattr(args, "here", False):
       here = repo_key()
@@ -739,6 +917,8 @@ def task_read(root, changes, args, authoritative=True):
       record_repos = comma(fields.get("repos", ""))
       if repos and not any((r == "none" and not record_repos) or
                            r in record_repos for r in repos):
+        continue
+      if command == "next" and not dependencies_done(dependencies, fields):
         continue
       rows.append(fields)
     rows.sort(key=lambda f: (("P0", "P1", "P2", "P3", "unset").index(
@@ -843,6 +1023,7 @@ def lint_tasks(root, changes=None, overrides=None):
   overrides = overrides or {}
   errors = lint_layout(root, "tasks")
   highest = 0
+  graph = {}
   paths = {p.relative_to(root).as_posix(): p
            for p in task_files(root, True)}
   for relative, data in overrides.items():
@@ -861,8 +1042,14 @@ def lint_tasks(root, changes=None, overrides=None):
     try:
       fields, _, body = read_current(path)
       for key in ORDER:
-        if key not in fields:
+        if key not in fields and key not in OPTIONAL:
           errors.append(str(path) + ": missing " + key)
+      if fields["id"] in graph:
+        errors.append(str(path) + ": duplicate task ID")
+      graph[fields["id"]] = dependency_ids(fields.get("depends-on", ""))
+      read_estimates(fields.get("estimates", ""))
+      if fields.get("storypoints", "") not in ("",) + STORYPOINTS:
+        errors.append(str(path) + ": invalid storypoints")
       highest = max(highest, int(fields["id"][2:]))
       if fields.get("status") not in LIVE + CLOSED:
         errors.append(str(path) + ": invalid status")
@@ -944,6 +1131,26 @@ def lint_tasks(root, changes=None, overrides=None):
           errors.append(str(path) + ": missing related task")
     except (RecordsError, KeyError) as exc:
       errors.append(str(path) + ": " + str(exc))
+  # Iterative traversal keeps long dependency chains independent of recursion.
+  visited = set()
+  active = set()
+  for ident, dependencies in graph.items():
+    for dependency in dependencies:
+      if dependency not in graph:
+        errors.append(ident + ": missing dependency " + dependency)
+    stack = [(ident, False)]
+    while stack:
+      node, leaving = stack.pop()
+      if leaving:
+        active.discard(node)
+        visited.add(node)
+      elif node in active:
+        errors.append("dependency cycle involving " + node)
+      elif node not in visited:
+        active.add(node)
+        stack.append((node, True))
+        stack.extend((dependency, False) for dependency in
+                     graph.get(node, []) if dependency in graph)
   try:
     counter_raw = overrides.get(".next-id")
     counter = int((counter_raw.decode() if counter_raw is not None else
