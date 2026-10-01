@@ -57,7 +57,9 @@ observations, and visible refresh errors. Detailed output assertions exercise
 the verbose renderer. Timeline tests cover quota names without the default
 weekly window, day grouping in time order with aligned columns, notes
 (`N% left`, burn rates, credits, `stale`), BURN details added in priority
-order as width allows, exhausted quotas and the reset
+order as width allows, resets read from history (early ones with what was
+due, scheduled ones, a fresh window rolling forward not counted, an hour's
+visibility, one alert and none on expiry), exhausted quotas and the reset
 that restores them, merged simultaneous events, inactive accounts (the
 reset that frees a blocked account highlighted, earlier ones `blocked`,
 past resets only when likely available), hidden routine 5h items and

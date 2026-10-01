@@ -349,9 +349,11 @@ def merge_history(
           if last_time is not None and new_time is not None
           else HISTORY_MIN_GAP_SECONDS
         )
+        # A period change is always kept: it is when a reset was seen.
         if (
           last.get("used_percent") != entry["used_percent"]
           or gap >= HISTORY_MIN_GAP_SECONDS
+          or not same_period(last, entry)
         ):
           entries.append(entry)
     item["history"] = entries[-HISTORY_MAX_ENTRIES:]

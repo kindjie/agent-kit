@@ -147,6 +147,76 @@ class TimelineTest(unittest.TestCase):
     self.assertEqual(burn["reset_at"],
                      AGENT_QUOTA.iso_utc(NOW + timedelta(days=4)))
 
+  def reset_history(self, *points) -> dict[str, Any]:
+    """A Codex weekly limit whose history is (minutes ago, reset_at, used)."""
+    limit = timeline_limit("x:week", "weekly", 97, timedelta(days=7))
+    limit["history"] = [
+      {"observed_at": AGENT_QUOTA.iso_utc(NOW - timedelta(minutes=ago)),
+       "reset_at": AGENT_QUOTA.iso_utc(reset), "used_percent": used}
+      for ago, reset, used in points]
+    limit["last_observation"]["reset_at"] = points[-1][1] and \
+      AGENT_QUOTA.iso_utc(points[-1][1])
+    return {"generated_at": AGENT_QUOTA.iso_utc(NOW), "services": {
+      "codex": timeline_service("Codex", "me@example.test", "pro", [limit])}}
+
+  def test_early_reset_shows_both_times_for_an_hour(self):
+    due = NOW + timedelta(days=5, hours=9)
+    new = NOW + timedelta(days=7)
+    document = self.reset_history(
+      (25, due, 99), (14, new - timedelta(minutes=11), 0),
+      # A fresh window rolls its reset forward until first used.
+      (9, new - timedelta(minutes=8), 0), (0, new, 3))
+    output = AGENT_QUOTA.render_timeline(document, timezone.utc)
+    self.row(output, "14m ago", "21:16", "RESET", "Codex", "me@example.test",
+             "early: 1% → 100% left, due Tue 25 Aug 06:30 (5d 9h early)")
+    self.assertEqual(output.count("RESET"), 2)   # the event and the new one
+    events = AGENT_QUOTA.timeline_document(document)["events"]
+    early = [event for event in events if event.get("early")]
+    self.assertEqual(len(early), 1)
+    self.assertEqual(early[0]["due_at"], AGENT_QUOTA.iso_utc(due))
+    self.assertEqual(early[0]["at"], AGENT_QUOTA.iso_utc(
+      NOW - timedelta(minutes=14)))
+    # An hour later only the upcoming reset remains.
+    later = dict(document, generated_at=AGENT_QUOTA.iso_utc(
+      NOW + timedelta(minutes=47)))
+    self.assertNotIn("early", AGENT_QUOTA.render_timeline(later,
+                                                          timezone.utc))
+
+  def test_scheduled_reset_is_shown_without_early(self):
+    due = NOW - timedelta(minutes=20)
+    document = self.reset_history(
+      (30, due, 40), (10, due + timedelta(days=7), 0),
+      (0, due + timedelta(days=7), 1))
+    output = AGENT_QUOTA.render_timeline(document, timezone.utc)
+    self.row(output, "10m ago", "21:20", "RESET", "Codex", "me@example.test",
+             "60% → 100% left")
+    self.assertNotIn("early", output)
+
+  def test_a_rolling_unstarted_window_is_not_a_reset(self):
+    start = NOW + timedelta(days=7)
+    output = AGENT_QUOTA.render_timeline(self.reset_history(
+      (20, start - timedelta(minutes=20), 0),
+      (10, start - timedelta(minutes=10), 0), (0, start, 0)), timezone.utc)
+    self.assertNotIn("ago", output)
+
+  def test_early_reset_alerts_once(self):
+    due = NOW + timedelta(days=5)
+    document = self.reset_history(
+      (5, due, 99), (0, NOW + timedelta(days=7), 0))
+    _, rows, _ = AGENT_QUOTA.timeline_rows(document, NOW)
+    sent: set = set()
+    alerts = AGENT_QUOTA.timeline_alerts({}, rows, NOW, sent)
+    self.assertEqual(alerts, ["Codex reset early for me@example.test "
+                              "(1% → 100% left)"])
+    self.assertEqual(AGENT_QUOTA.timeline_alerts({}, rows, NOW, sent), [])
+    # The same reset under a reordered merged quota name is not new.
+    renamed = [dict(row, quota="Fable, " + row["quota"]) for row in rows]
+    self.assertEqual(AGENT_QUOTA.timeline_alerts({}, renamed, NOW, sent), [])
+    # When the detected row leaves the timeline, no "reset" alert follows.
+    previous = {AGENT_QUOTA.timeline_row_key(row): row for row in rows}
+    self.assertEqual(AGENT_QUOTA.timeline_alerts(
+      previous, [], NOW + timedelta(hours=2), sent), [])
+
   def test_exhausted_quota_and_the_reset_that_restores_it(self):
     fable = {"id": "fable", "name": "Fable", "scope_kind": "model"}
     document = {"services": {"claude_code": self.claude(

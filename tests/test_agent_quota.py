@@ -855,6 +855,19 @@ class AgentQuotaTest(unittest.TestCase):
     fresh = AGENT_QUOTA.merge_history(current, None, NOW)
     self.assertEqual(len(fresh["limits"][0]["history"]), 1)
 
+    # A reading that starts a new period is kept even inside the thinning
+    # gap with unchanged usage: it is when the reset was seen.
+    newest = AGENT_QUOTA.history_entry(
+      current["limits"][0]["last_observation"])
+    boundary = dict(
+      newest, observed_at=AGENT_QUOTA.iso_utc(
+        AGENT_QUOTA.parse_timestamp(newest["observed_at"])
+        - timedelta(minutes=2)),
+      reset_at="2026-08-19T19:59:00Z")
+    across = AGENT_QUOTA.merge_history(
+      current, {"limits": [{"limit_id": "a", "history": [boundary]}]}, NOW)
+    self.assertEqual(len(across["limits"][0]["history"]), 2)
+
   def test_burn_uses_trailing_window_and_flags_exhaustion(self) -> None:
     def with_history(limit: dict, points: list[tuple[float, float]]) -> dict:
       limit["history"] = [

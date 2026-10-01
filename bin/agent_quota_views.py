@@ -528,6 +528,8 @@ def render_brief(document: dict[str, Any], color: bool = False) -> str:
 # A short-window (5h) event is shown only if it is noteworthy; this matches
 # the tmux component's 5h threshold.
 SHORT_WINDOW_LOW_PERCENT = 10
+# A reset seen in a limit's history stays on the timeline this long.
+DETECTED_RESET_SECONDS = 3600
 
 
 def timeline_quota(limit: dict[str, Any], name: str) -> str:
@@ -609,9 +611,37 @@ def timeline_event(moment: datetime, order: int, kind: str, quota: str,
            "provider": None, "account": "account unknown", "active": True,
            "limit_id": None, "remaining": None, "unit": "percent",
            "restores": False, "blocked": False, "stale": False,
-           "rate": None, "short_window": False, "reset_at": None}
+           "rate": None, "short_window": False, "reset_at": None,
+           "detected": False, "early": False, "due_at": None,
+           "was_used": None}
   event.update(fields)
   return event
+
+
+def detected_resets(limit: dict[str, Any], now: datetime
+                    ) -> list[tuple[datetime, float, float, datetime]]:
+  """Resets seen in a limit's history within DETECTED_RESET_SECONDS, as
+  (first reading of the new period, used before, used after, the reset
+  that was due).
+
+  A reading starts a new period when its reset moved later than drift
+  allows and either usage fell or the reset that was due had passed. A
+  fresh window rolls its reset forward until first used, which is neither.
+  """
+  found = []
+  points = history_points(limit.get("history"))
+  for (_, before_used, before), (seen, used, entry) in zip(points,
+                                                           points[1:]):
+    due = parse_timestamp(before.get("reset_at"))
+    after = parse_timestamp(entry.get("reset_at"))
+    if (due is None or after is None or after <= due
+        or same_period(before, entry)):
+      continue
+    if used >= before_used and seen < due:
+      continue
+    if 0 <= (now - seen).total_seconds() <= DETECTED_RESET_SECONDS:
+      found.append((seen, before_used, used, due))
+  return found
 
 
 def timeline_limit_events(
@@ -641,6 +671,10 @@ def timeline_limit_events(
     rate = burn.get("rate_percent_per_hour")
     events.append(timeline_event(max(exhausts, now), 1, "burn", quota,
                                  **dict(fields, rate=rate, reset_at=reset)))
+  for seen, before_used, used, due in detected_resets(limit, now):
+    events.append(timeline_event(seen, 2, "reset", quota, **dict(
+      fields, remaining=100 - used, stale=False, detected=True,
+      early=seen < due, due_at=due, was_used=before_used)))
   if reset is not None and reset > now:
     # While spent account-wide buckets block the account, a reset before
     # the last of them frees nothing; that last reset frees the account.
@@ -740,13 +774,15 @@ def timeline_document(document: dict[str, Any]) -> dict[str, Any]:
       "blocked": event["blocked"], "stale": event["stale"],
       "rate_per_hour": event["rate"],
       "reset_at": iso_utc(event["reset_at"]) if event["reset_at"] else None,
+      "detected": event["detected"], "early": event["early"],
+      "due_at": iso_utc(event["due_at"]) if event["due_at"] else None,
     } for event in timeline_events(document, now)],
   }
 
 
 def noteworthy(event: dict[str, Any]) -> bool:
   """Short-window items are noise unless they need attention."""
-  if not event["short_window"] or event["type"] != "reset":
+  if not event["short_window"] or event["type"] != "reset" or event["early"]:
     return True
   remaining = event["remaining"]
   return bool(event["restores"]) or (
@@ -754,10 +790,24 @@ def noteworthy(event: dict[str, Any]) -> bool:
     and remaining < SHORT_WINDOW_LOW_PERCENT)
 
 
-def note_parts(event: dict[str, Any]) -> tuple[str, str, str]:
+def detected_note(event: dict[str, Any], tz: Any = None) -> str:
+  """What a detected reset changed, and for an early one what was due."""
+  change = (f"{format_percent(100 - event['was_used'])} → "
+            f"{format_percent(event['remaining'])} left")
+  if not event["early"]:
+    return change
+  return (f"early: {change}, due {timeline_clock(event['due_at'], tz)} ("
+          + format_duration((event["due_at"] - event["moment"])
+                            .total_seconds()) + " early)")
+
+
+def note_parts(event: dict[str, Any], tz: Any = None
+               ) -> tuple[str, str, str]:
   """(head, value, tail) of an event's note; merging joins the values."""
   if event["type"] == "exhausted":
     return "", "", ""
+  if event["detected"]:
+    return "", "", detected_note(event, tz)
   remaining = event["remaining"]
   if remaining is None:
     value = ""
@@ -781,11 +831,12 @@ def note_parts(event: dict[str, Any]) -> tuple[str, str, str]:
   return head, value, tail + "".join(", " + extra for extra in extras)
 
 
-def merge_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def merge_events(events: list[dict[str, Any]], tz: Any = None
+                 ) -> list[dict[str, Any]]:
   """Join events that share a moment, type, account and meaning."""
   rows: dict[tuple, dict[str, Any]] = {}
   for event in events:
-    head, value, tail = note_parts(event)
+    head, value, tail = note_parts(event, tz)
     key = (event["moment"], event["order"], event["type"], event["account"],
            event["active"], event["restores"], event["stale"], head, tail)
     row = rows.get(key)
@@ -892,13 +943,13 @@ def timeline_line(row: dict[str, Any], now: datetime, tz: Any,
   return ("    " + "  ".join(parts)).rstrip()
 
 
-def timeline_rows(document: dict[str, Any], now: datetime
+def timeline_rows(document: dict[str, Any], now: datetime, tz: Any = None
                   ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
   """(events, displayed rows, whether any routine event was hidden)."""
   events = timeline_events(document, now)
   hidden = any(not noteworthy(event) for event in events)
   return events, merge_events([event for event in events
-                               if noteworthy(event)]), hidden
+                               if noteworthy(event)], tz), hidden
 
 
 def timeline_row_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
@@ -921,7 +972,7 @@ def render_timeline(document: dict[str, Any], tz: Any = None,
   `consumers` maps a service to its busiest agents and their shares.
   """
   now = parse_timestamp(document.get("generated_at")) or utc_now()
-  events, rows, hidden = timeline_rows(document, now)
+  events, rows, hidden = timeline_rows(document, now, tz)
   colours: dict[str, str] = {}
   for event in events:
     colours.setdefault(event["account"], ACCOUNT_COLOURS[
@@ -1163,11 +1214,20 @@ def timeline_alerts(previous: dict[tuple, dict[str, Any]],
   alerts = []
   current = {timeline_row_key(row): row for row in rows}
   for key, row in previous.items():
+    # A detected reset leaving the timeline is not a new reset.
     if (row["type"] == "reset" and row["moment"] <= now
+        and not row.get("detected")
         and key not in current and ("reset", key) not in sent):
       sent.add(("reset", key))
       alerts.append(f"{row['quota']} reset for {row['account']}")
   for key, row in current.items():
+    # Keyed by account and moment: a merged row's quota list can reorder.
+    early = ("early", row["account"], iso_utc(row["moment"]))
+    if row.get("early") and early not in sent:
+      sent.add(early)
+      alerts.append(f"{row['quota']} reset early for {row['account']} ("
+                    f"{format_percent(100 - row['was_used'])} → "
+                    f"{format_percent(row['remaining'])} left)")
     if row["type"] == "burn" and (row["moment"] - now).total_seconds() <= 3600:
       if ("burn", key) not in sent:
         sent.add(("burn", key))

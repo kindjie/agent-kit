@@ -54,6 +54,13 @@ without passing a flag. Ordinary quota queries never start summarization.
   until then (`lasts at ≤0.02%/h`), and the busiest agents' shares of the
   last 15 minutes (`15m: co:314e 39%, …`). The shares come from the last
   `--agents` scan; the timeline never scans transcripts itself.
+  For an hour after a checked account's quota resets, a past `RESET` row
+  shows the change (`60% → 100% left`). A reset is read from the limit's
+  history: the reset time moved later than drift allows and either usage
+  fell or the reset that was due had passed (a fresh window rolls its
+  reset forward until first used, which is neither). One before its due
+  time is early and also shows what was due (`early: 1% → 100% left, due
+  Tue 06 Oct 01:36 (5d 10h early)`); `--live --notify` alerts it once.
   On a terminal the timeline is styled: `EXHAUSTED` bold red reverse,
   `BURN` bold red within 24 hours and bold yellow later, `RESET` bold
   green, restoring resets highlighted in bold green, quota names bold,
@@ -65,8 +72,10 @@ without passing a flag. Ordinary quota queries never start summarization.
   has `at`, `type` (`reset`, `burn`, `exhausted`), `provider`, `account`,
   `active`, `quota`, `limit_id`, `short_window`, `remaining_percent` (or
   `remaining_credits` with `unit` `credits`), `unit`, `restores`,
-  `blocked`, `stale`, `rate_per_hour` and `reset_at` (the reset a `burn`
-  event runs out before, else null). Events are in time order.
+  `blocked`, `stale`, `rate_per_hour`, `reset_at` (the reset a `burn`
+  event runs out before, else null), and for a reset read from history
+  `detected`, `early` and `due_at` (the reset that was due). Events are in
+  time order.
 - `--live` keeps `--timeline` or `--agents` on screen, redrawing every
   `--interval` seconds (default 30, minimum 5) on the terminal's alternate
   screen, and restores the terminal on exit. `q`, a lone Escape or Ctrl-C
@@ -89,8 +98,8 @@ without passing a flag. Ordinary quota queries never start summarization.
   combined with `--compact`, `--brief` or `--models`.
 - `--notify` (with `--live`) rings the terminal bell and posts a desktop
   notification (`osascript` on macOS, `notify-send` on Linux) once per
-  event: a quota reset passing, an inactive account likely available, a
-  BURN within an hour, an agent turning stalled, or one agent using over
+  event: a quota reset passing, an early reset, an inactive account likely
+  available, a BURN within an hour, an agent turning stalled, or one agent using over
   70% of its provider's last 15 minutes of tokens (at most hourly).
 - `--color {auto,always,never}` colours the text views (`--brief`,
   `--verbose`, `--timeline`, `--agents`, `--models --brief`). `auto`, the
