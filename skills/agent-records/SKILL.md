@@ -31,6 +31,8 @@ so without its own ID it writes as you.
   highest-priority unclaimed task.
 - **Start:** `agent-task new --title ...` for new work, then
   `agent-task claim T-NNNN`. Claims expire; claim again to extend.
+  When estimate policy is enabled, select `--model MODEL` or explain
+  `--model-unknown REASON`; same-owner renewals reuse the selection.
 - **Estimate:** when creating or materially refining tracked work, or before
   starting unestimated work, use `estimate-agent-work` and record its points
   and available per-model wall-time/token estimates. Briefly explain metrics
@@ -42,7 +44,8 @@ so without its own ID it writes as you.
   lists direct prerequisites and dependents with status. `next` skips tasks
   whose prerequisites are not `done`; explicit claims and closure remain
   available. `estimate set TASK MODEL --wall-seconds N --tokens N` records
-  manual per-model estimates (either metric may be omitted), and
+  manual per-model estimates (either metric may be omitted);
+  `--wall-unknown REASON` or `--tokens-unknown REASON` records honest unknowns.
   `estimate remove TASK MODEL` removes them. `new` and `set` accept
   `--storypoints` of 1, 2, 3, 5, 8, 13 or 20.
 - **While you hold a claim, watch it:** others may address you on the task
@@ -87,8 +90,10 @@ have no log: say why in an entry's `--notes`, or for a mistake, in a
 When several agents share an ongoing task, coordinate through it so the
 exchange stays with the work:
 
-- the owner adds collaborators with `helper add T-NNNN <id>`; an agent
-  asks with `log T-NNNN '...' --request helper`;
+- the owner adds collaborators with `helper add T-NNNN <id> --model MODEL`
+  or `--model-unknown REASON`; record that model's estimates first when
+  policy requires them. Helper selection is separate from the owner's.
+  An agent asks with `log T-NNNN '...' --request helper`;
 - address a message with `log T-NNNN '...' --to <id>[,<id>]`;
 - read what is new with `show T-NNNN --after <cursor>`, or wait with
   `watch T-NNNN --for <id> --until message`.

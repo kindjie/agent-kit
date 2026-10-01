@@ -141,12 +141,17 @@ def parser():
                         help="finite, nonnegative estimated elapsed seconds")
   estimate.add_argument("--tokens", type=int,
                         help="estimated total tokens, nonnegative integer")
+  estimate.add_argument("--wall-unknown", help="why wall time is unknown")
+  estimate.add_argument("--tokens-unknown", help="why tokens are unknown")
   estimate.add_argument("--reason")
 
   claim = add("claim", "Claim or extend a task; writes task commit.",
-              "agent-task --agent helper claim T-0001")
+              "agent-task --agent helper claim T-0001 --model model-v1")
   claim.add_argument("task")
   claim.add_argument("--hours", default="2")
+  selection = claim.add_mutually_exclusive_group()
+  selection.add_argument("--model", help="intended exact execution model ID")
+  selection.add_argument("--model-unknown", help="why the model ID is unknown")
   release = add("release", "Release a task; writes task commit.",
                 "agent-task --agent helper release T-0001 --note done")
   release.add_argument("task")
@@ -158,11 +163,19 @@ def parser():
   handoff.add_argument("task")
   handoff.add_argument("--to", required=True)
   handoff.add_argument("--note", required=True)
+  selection = handoff.add_mutually_exclusive_group()
+  selection.add_argument("--model", help="recipient's intended model ID")
+  selection.add_argument("--model-unknown",
+                        help="why recipient model is unknown")
   helper = add("helper", "Add or remove a helper; writes task commit.",
-               "agent-task --agent helper helper add T-0001 peer")
+               "agent-task --agent helper helper add T-0001 peer "
+               "--model model-v1")
   helper.add_argument("action", choices=["add", "remove"])
   helper.add_argument("task")
   helper.add_argument("helper_id")
+  selection = helper.add_mutually_exclusive_group()
+  selection.add_argument("--model", help="helper's intended model ID")
+  selection.add_argument("--model-unknown", help="why helper model is unknown")
   state = add("status", "Transition a live status; writes task commit.",
               "agent-task --agent helper status T-0001 blocked --reason wait")
   state.add_argument("task")

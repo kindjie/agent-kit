@@ -24,9 +24,11 @@ from agent_records_core import (
 
 ORDER = ("id", "title", "status", "owner", "expires", "helpers", "priority",
          "severity", "repos", "produces-changes", "created", "links",
-         "related", "depends-on", "estimates", "storypoints", "review",
+         "related", "depends-on", "estimates", "storypoints",
+         "execution-model", "estimate-model-unknown", "helper-models", "review",
          "blocked-on-owner", "closed")
-OPTIONAL = ("depends-on", "estimates", "storypoints")
+OPTIONAL = ("depends-on", "estimates", "storypoints", "execution-model",
+            "estimate-model-unknown", "helper-models")
 STORYPOINTS = ("1", "2", "3", "5", "8", "13", "20")
 FIXED = (
   ("merged", "merged on the default branch, its CI green"),
@@ -55,7 +57,8 @@ def prerequisite_id(value):
 
 
 def model_id(value):
-  if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+\[\]-]{0,199}", value):
+  if not isinstance(value, str) or not re.fullmatch(
+      r"[A-Za-z0-9][A-Za-z0-9._:/@+\[\]-]{0,199}", value):
     raise RecordsError("invalid model ID", 2)
   return value
 
@@ -66,10 +69,16 @@ def validate_estimates(estimates):
   for model, metrics in estimates.items():
     model_id(model)
     if (not isinstance(metrics, dict) or not metrics or
-        set(metrics) - {"wall-seconds", "tokens"}):
+        set(metrics) - {"wall-seconds", "tokens", "wall-seconds-unknown",
+                        "tokens-unknown"}):
       raise RecordsError("invalid estimate metrics", 2)
     for key, value in metrics.items():
-      if key == "tokens":
+      if key.endswith("-unknown"):
+        unknown_reason(value)
+        if key[:-8] in metrics:
+          raise RecordsError("estimate has both value and unknown reason", 2)
+        continue
+      elif key == "tokens":
         valid = type(value) is int and value >= 0
       else:
         valid = (type(value) in (int, float) and value >= 0 and
@@ -79,19 +88,104 @@ def validate_estimates(estimates):
   return estimates
 
 
-def read_estimates(value):
+def unknown_reason(value):
+  if not isinstance(value, str) or not value.strip():
+    raise RecordsError("unknown estimate requires a nonblank reason", 2)
+  return one_line(value, "unknown estimate reason")
+
+
+def execution_estimates(fields, args=None, reuse=False):
+  """Select the execution model, then apply the local estimate policy."""
+  selected = getattr(args, "model", None)
+  unknown = getattr(args, "model_unknown", None)
+  model = model_id(selected) if selected is not None else (
+    fields.get("execution-model", "") if reuse else "")
+  reason = unknown_reason(unknown) if unknown is not None else (
+    fields.get("estimate-model-unknown", "") if reuse else "")
+  if selected is not None:
+    reason = ""
+  if unknown is not None:
+    model = ""
+  if model and reason:
+    raise RecordsError("execution model also marked unknown", 2)
+  if model:
+    fields["execution-model"] = model_id(model)
+  else:
+    fields.pop("execution-model", None)
+  if reason:
+    fields["estimate-model-unknown"] = unknown_reason(reason)
+  else:
+    fields.pop("estimate-model-unknown", None)
+  policy = config().get("estimate_policy", "off")
+  if policy == "off":
+    return
+  missing = []
+  if not model and not reason:
+    missing.append("execution model (--model ID or --model-unknown REASON)")
+  elif model:
+    metrics = read_estimates(fields.get("estimates", "")).get(model, {})
+    missing = [key for key in ("wall-seconds", "tokens")
+               if key not in metrics and key + "-unknown" not in metrics]
+  if missing:
+    message = "missing execution estimates: " + ", ".join(missing)
+    if args is not None:
+      selection = "claim " + args.task
+      if args.command == "helper":
+        selection = "helper add " + args.task + " " + args.helper_id
+      elif args.command == "handoff":
+        selection = ("handoff " + args.task + " --to " + args.to +
+                     " --note REASON")
+      message += (". Record resources with agent-task --agent <id> estimate "
+                  "set " + args.task + " MODEL --wall-seconds N --tokens N "
+                  "(or --wall-unknown/--tokens-unknown REASON); select with "
+                  "agent-task --agent <id> " + selection +
+                  " --model MODEL (or --model-unknown REASON)")
+      candidates = read_estimates(fields.get("estimates", ""))
+      if candidates:
+        message += ". Recorded model IDs: " + ", ".join(sorted(candidates))
+    if policy == "require":
+      raise RecordsError(message, 1)
+    print("warning: " + message, file=sys.stderr)
+
+
+def read_object(value, label):
   def unique_object(pairs):
     result = {}
     for key, item in pairs:
       if key in result:
-        raise RecordsError("duplicate estimate key: " + key, 2)
+        raise RecordsError("duplicate " + ("estimate" if label == "estimates"
+                                           else label) + " key: " + key, 2)
       result[key] = item
     return result
   try:
-    estimates = json.loads(value or "{}", object_pairs_hook=unique_object)
+    result = json.loads(value or "{}", object_pairs_hook=unique_object)
   except (ValueError, TypeError):
-    raise RecordsError("invalid estimates JSON", 2)
-  return validate_estimates(estimates)
+    raise RecordsError("invalid " + label + " JSON", 2)
+  if not isinstance(result, dict):
+    message = ("estimates must be a model-to-metrics object"
+               if label == "estimates" else label + " must be an object")
+    raise RecordsError(message, 2)
+  return result
+
+
+def read_estimates(value):
+  return validate_estimates(read_object(value, "estimates"))
+
+
+def read_helper_models(value):
+  result = read_object(value, "helper-models")
+  for agent, selection in result.items():
+    if not re.fullmatch(r"[A-Za-z0-9._@:-]{1,64}", agent):
+      raise RecordsError("invalid helper model agent ID", 2)
+    if not isinstance(selection, dict):
+      raise RecordsError("invalid helper model selection", 2)
+    if set(selection) == {"model"}:
+      model_id(selection["model"])
+    elif set(selection) == {"unknown"}:
+      unknown_reason(selection["unknown"])
+    else:
+      raise RecordsError("helper needs model or unknown reason", 2)
+  return result
 
 
 def dependency_inventory(root):
@@ -292,6 +386,9 @@ def new_task(root, args, agent, push):
   if (root / relative).exists():
     raise RecordsError("task path already exists", 1)
   fields = dict.fromkeys(ORDER, "")
+  fields.pop("execution-model")
+  fields.pop("estimate-model-unknown")
+  fields.pop("helper-models")
   fields.update({"id": ident, "title": title, "status": "open",
                  "owner": "none", "priority": args.priority or "unset",
                  "severity": args.severity or "unset",
@@ -431,24 +528,33 @@ def alter_task(root, args, agent, push, changes=None):
     hours = duration(args.hours, "hours")
     if hours > 24:
       raise RecordsError("claim is limited to 24 hours", 2)
+    execution_estimates(fields, args, reuse=owner == agent)
     fields["owner"] = agent
     fields["expires"] = stamp(max(
       parse_time(old_expiry) if owner == agent else now(),
       now() + timedelta(hours=hours)))
     if owner != agent:
       fields["helpers"] = ""
+      fields.pop("helper-models", None)
     if fields["status"] in ("open", "blocked") and owner is None:
       fields["status"] = "in-progress"
     takeover = old != "none" and (owner is None or forced_action)
     body = append_log(body, agent, "Claimed task" +
                       (" from " + old + " (expiry " + old_expiry + ")"
-                       if takeover else ""))
+                       if takeover else "") +
+                      ("; execution model " + fields["execution-model"]
+                       if fields.get("execution-model") else "") +
+                      ("; model unknown: " + fields["estimate-model-unknown"]
+                       if fields.get("estimate-model-unknown") else ""))
   elif command == "release":
     forced_action = permission(fields, agent, command, force)
     fields["status"] = args.status or "open"
     fields["owner"] = "none"
     fields["expires"] = ""
     fields["helpers"] = ""
+    fields.pop("execution-model", None)
+    fields.pop("estimate-model-unknown", None)
+    fields.pop("helper-models", None)
     body = append_log(body, agent, "Released task: " + one_line(args.note))
   elif command == "handoff":
     if fields["owner"] == "none":
@@ -458,9 +564,11 @@ def alter_task(root, args, agent, push, changes=None):
     if live_owner(fields):
       forced_action = permission(fields, agent, command, force)
     old = fields["owner"]
+    execution_estimates(fields, args)
     fields["owner"] = one_line(args.to)
     fields["expires"] = stamp(now() + timedelta(hours=2))
     fields["helpers"] = ""
+    fields.pop("helper-models", None)
     body = append_log(body, agent, "Handed off from " + old + " to " +
                       args.to + ": " + one_line(args.note))
   elif command == "helper":
@@ -468,12 +576,33 @@ def alter_task(root, args, agent, push, changes=None):
       raise RecordsError("invalid helper ID", 2)
     forced_action = permission(fields, agent, command, force)
     helpers = comma(fields.get("helpers", ""))
+    models = read_helper_models(fields.get("helper-models", ""))
     if args.action == "add":
+      old = models.get(args.helper_id, {})
+      selection = {"estimates": fields.get("estimates", ""),
+                   "execution-model": old.get("model", ""),
+                   "estimate-model-unknown": old.get("unknown", "")}
+      execution_estimates(selection, args, reuse=args.helper_id in helpers)
+      if selection.get("execution-model"):
+        models[args.helper_id] = {"model": selection["execution-model"]}
+      elif selection.get("estimate-model-unknown"):
+        models[args.helper_id] = {"unknown":
+                                 selection["estimate-model-unknown"]}
       helpers.append(args.helper_id)
     else:
+      if args.model is not None or args.model_unknown is not None:
+        raise RecordsError("helper remove does not accept model selection", 2)
       helpers = [x for x in helpers if x != args.helper_id]
+      models.pop(args.helper_id, None)
     fields["helpers"] = joined(helpers)
-    body = append_log(body, agent, args.action + " helper " + args.helper_id)
+    if models:
+      fields["helper-models"] = json.dumps(models, sort_keys=True)
+    else:
+      fields.pop("helper-models", None)
+    body = append_log(body, agent, args.action + " helper " + args.helper_id +
+                      (" " + json.dumps(models[args.helper_id], sort_keys=True)
+                       if args.action == "add" and args.helper_id in models
+                       else ""))
   elif command == "dependency":
     forced_action = permission(fields, agent, command, force, unowned=True)
     prerequisite_id(args.prerequisite)
@@ -496,19 +625,30 @@ def alter_task(root, args, agent, push, changes=None):
     model = model_id(args.model)
     estimates = read_estimates(fields.get("estimates", ""))
     if args.action == "remove":
-      if args.wall_seconds is not None or args.tokens is not None:
+      if any(value is not None for value in (
+          args.wall_seconds, args.tokens, args.wall_unknown,
+          args.tokens_unknown)):
         raise RecordsError("estimate remove does not accept metrics", 2)
       if model not in estimates:
         raise RecordsError("model estimate is not recorded", 1)
       del estimates[model]
     else:
-      if args.wall_seconds is None and args.tokens is None:
+      if all(value is None for value in (
+          args.wall_seconds, args.tokens, args.wall_unknown,
+          args.tokens_unknown)):
         raise RecordsError("estimate set requires at least one metric", 2)
       metrics = estimates.setdefault(model, {})
-      if args.wall_seconds is not None:
-        metrics["wall-seconds"] = args.wall_seconds
-      if args.tokens is not None:
-        metrics["tokens"] = args.tokens
+      for key, value, reason in (
+          ("wall-seconds", args.wall_seconds, args.wall_unknown),
+          ("tokens", args.tokens, args.tokens_unknown)):
+        if value is not None and reason is not None:
+          raise RecordsError("choose estimate value or unknown reason", 2)
+        if value is not None:
+          metrics.pop(key + "-unknown", None)
+          metrics[key] = value
+        elif reason is not None:
+          metrics.pop(key, None)
+          metrics[key + "-unknown"] = unknown_reason(reason)
     validate_estimates(estimates)
     fields["estimates"] = json.dumps(estimates, sort_keys=True, allow_nan=False)
     body = append_log(body, agent, args.action.capitalize() + " estimate " +
@@ -537,6 +677,12 @@ def alter_task(root, args, agent, push, changes=None):
       raise RecordsError("use release", 1)
     if live_owner(fields):
       forced_action = permission(fields, agent, command, force, helper=True)
+    if new == "in-progress" and old != new:
+      execution_estimates(fields, args, reuse=True)
+    if new == "open":
+      fields.pop("execution-model", None)
+      fields.pop("estimate-model-unknown", None)
+      fields.pop("helper-models", None)
     if new in ("blocked", "open") and not args.reason:
       raise RecordsError("--reason is required", 2)
     fields["status"] = new
@@ -751,6 +897,9 @@ def alter_task(root, args, agent, push, changes=None):
     fields["owner"] = "none"
     fields["expires"] = ""
     fields["helpers"] = ""
+    fields.pop("execution-model", None)
+    fields.pop("estimate-model-unknown", None)
+    fields.pop("helper-models", None)
     fields["closed"] = ""
     body = append_log(body, agent, "Reopened from " + old + ": " +
                       one_line(args.reason))
@@ -829,6 +978,7 @@ def close_task(root, changes, args, agent, push):
   fields["owner"] = "none"
   fields["expires"] = ""
   fields["helpers"] = ""
+  fields.pop("helper-models", None)
   fields["closed"] = (stamp() + " by " + agent + " -- " + args.state +
                       ": " + one_line(args.reason or "completed"))
   body = append_log(body, agent, "Closed " + args.state + ": " +
@@ -1048,6 +1198,15 @@ def lint_tasks(root, changes=None, overrides=None):
         errors.append(str(path) + ": duplicate task ID")
       graph[fields["id"]] = dependency_ids(fields.get("depends-on", ""))
       read_estimates(fields.get("estimates", ""))
+      helper_models = read_helper_models(fields.get("helper-models", ""))
+      if set(helper_models) - set(comma(fields.get("helpers", ""))):
+        errors.append(str(path) + ": model selection for unregistered helper")
+      if fields.get("execution-model"):
+        model_id(fields["execution-model"])
+      if fields.get("estimate-model-unknown"):
+        unknown_reason(fields["estimate-model-unknown"])
+        if fields.get("execution-model"):
+          errors.append(str(path) + ": execution model also marked unknown")
       if fields.get("storypoints", "") not in ("",) + STORYPOINTS:
         errors.append(str(path) + ": invalid storypoints")
       highest = max(highest, int(fields["id"][2:]))

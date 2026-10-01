@@ -203,6 +203,7 @@ put a `records.json` in `${XDG_CONFIG_HOME:-~/.config}/agent-kit/`:
   "changelog_dir": "/path/to/changelog",
   "machine": "example-machine",
   "push": false,
+  "estimate_policy": "off",
   "repos": {"/path/to/checkout": "example-repo"}
 }
 ```
@@ -275,8 +276,9 @@ agent-task --agent helper set T-0001 --storypoints 5
 
 The optional `estimates` header is a JSON object keyed by model ID, with
 `wall-seconds` (finite, nonnegative elapsed seconds) and `tokens`
-(nonnegative integer total tokens). At least one metric is required for
-`set`; omitted metrics and other models are preserved. `remove` revokes the
+(nonnegative integer total tokens), or nonblank `wall-seconds-unknown` and
+`tokens-unknown` reasons in place of numeric values. At least one metric or
+unknown reason is required for `set`; omitted metrics and other models are preserved. `remove` revokes the
 model's whole estimate. These are manual planning estimates, not measured
 usage. Estimate edits have the same permissions as dependency edits.
 `storypoints` accepts only 1, 2, 3, 5, 8, 13 or 20 through `new` or `set`;
@@ -291,6 +293,58 @@ ordinary tasks. Associate them with
 `agent-task --agent <id> link TASK --related OTHER_TASK`. Declare real blockers
 with `agent-task --agent <id> dependency add TASK PREREQUISITE`, adding
 `--reason 'result needed'` to explain the prerequisite.
+
+Set the per-machine `estimate_policy` in `records.json` to `off` (default),
+`warn` or `require`. At claim/extension, handoff, helper registration and
+resumption into `in-progress`, `warn` prints missing execution estimates;
+`require` refuses without changing
+the task. Creation and closure remain unaffected, with no backlog migration
+or storypoint gate. Select the intended model when claiming or handing off:
+
+```sh
+agent-task --agent helper estimate set T-0001 provider/model-v1 \
+  --wall-seconds 600 --tokens-unknown 'context size not yet known'
+agent-task --agent helper claim T-0001 --model provider/model-v1
+agent-task --agent helper claim T-0002 \
+  --model-unknown 'runtime does not expose its model ID'
+```
+
+Both metrics must have a numeric value or a nonblank unknown reason for the
+selected model. Use `--wall-unknown REASON` and `--tokens-unknown REASON` on
+`estimate set`; each replaces its numeric value, and a later numeric estimate
+replaces that reason. Unknown values are never converted to zero. A recorded
+unknown model reason acknowledges that neither metric can be keyed reliably.
+These reasons are explicit exceptions, not verified predictions.
+
+The optional `execution-model` and `estimate-model-unknown` task headers store
+the selection. Renewals by the same live owner reuse it; takeovers and
+handoffs need a fresh selection or explanation. Estimates for unrelated
+models do not satisfy the check and are never used to infer a selection.
+Warnings show commands for recording resources and choosing the model.
+
+Register each helper's intended model separately, after recording its
+per-model estimates:
+
+```sh
+agent-task --agent owner estimate set T-0001 provider/worker-v1 \
+  --wall-seconds 300 --tokens 5000
+agent-task --agent owner helper add T-0001 helper-id \
+  --model provider/worker-v1
+```
+
+`helper add` also accepts `--model-unknown REASON`. Repeating it reuses the
+helper's previous selection unless a new selection is supplied. The optional
+`helper-models` JSON header maps helper IDs to `{"model":"ID"}` or
+`{"unknown":"reason"}`; it never changes the owner's selection. Estimates
+remain task-wide per-model entries, not separate per-helper budgets. Removing
+a helper clears its selection; release, takeover, handoff and closure clear
+all helper registrations and selections.
+The policy checks these task transitions, not whether arbitrary work outside
+the tool actually started, and does not validate estimate accuracy.
+Implicit claim heartbeats on ordinary task edits are not rechecked; this is
+a start/resume check, not continuous enforcement. Other machines can use a
+different policy. Invalid policy configuration is refused by all commands.
+
 Like all header values in `show --json` and `list --json`, `estimates` is
 returned as a string; decode that string as JSON to read its model entries.
 

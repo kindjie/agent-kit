@@ -118,6 +118,8 @@ def config():
     raise RecordsError("invalid config: " + str(exc), 2)
   if not isinstance(data, dict):
     raise RecordsError("config must be a JSON object", 2)
+  if data.get("estimate_policy", "off") not in ("off", "warn", "require"):
+    raise RecordsError("estimate_policy must be off, warn or require", 2)
   for key in ("tasks_dir", "changelog_dir", "machine"):
     if key in data and not isinstance(data[key], str):
       raise RecordsError(key + " must be text", 2)
@@ -858,7 +860,8 @@ class ParsedFields(dict):
 KNOWN_FIELDS = {
   "id", "title", "status", "owner", "expires", "helpers", "priority",
   "severity", "repos", "produces-changes", "created", "links", "related",
-  "depends-on", "estimates", "storypoints",
+  "depends-on", "estimates", "storypoints", "execution-model",
+  "estimate-model-unknown", "helper-models",
   "review", "blocked-on-owner", "closed", "date", "machine", "agent",
   "kind", "location", "why", "cleanup-when", "cleanup-how", "notes",
   "tasks", "scope", "summary", "impact", "cause", "detection",

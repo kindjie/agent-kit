@@ -270,6 +270,16 @@ invalid inputs without writes, lint rejection and legacy records. Run it alone:
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_records_planning
 ```
 
+The estimate-policy suite covers default compatibility, warnings, strict
+refusal without writes, execution-model selection, partial/unknown estimates,
+replacement of unknowns, takeovers, handoffs, resumption, separate helper
+selection, registration/removal/closure, actionable warnings, invalid config
+and closed tasks. Run it alone:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_records_estimate_policy
+```
+
 The recovery and cross suites exercise real git signing children, index
 locks, staged deletions, journals, and cross-repository races. The privacy
 suite scans tracked and new files;
