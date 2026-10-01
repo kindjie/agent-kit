@@ -68,6 +68,14 @@ Assign one coordinator per shared resource; use an existing lease or queue
 rather than negotiating every transition among several coordinators. Distinguish
 quiet-machine performance measurements from ordinary functional validation.
 
+Where workers need local admission and no project lease already owns it,
+`agent-resource run --resource NAME --timeout SECONDS -- command` serializes
+cooperating commands. Agree names once; it neither establishes machine quiet
+nor constrains unwrapped work. Use foreground commands; see its README limits.
+For repeatable local usage audits, `agent-efficiency --since ISO --until ISO`
+reports deduplicated activity without model calls. Check coverage diagnostics;
+raw token totals and tool counts do not establish cost or avoidable overhead.
+
 ## Routing between Codex and Claude Code
 
 Before declaring a task unsupported, check the current session's tools and

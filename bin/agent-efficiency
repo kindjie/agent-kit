@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""Report observed local agent usage without network or model calls."""
+import os
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(os.path.realpath(__file__)).parent))
+from agent_efficiency import main
+if __name__ == '__main__':
+  sys.exit(main())
