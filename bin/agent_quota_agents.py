@@ -2048,6 +2048,8 @@ def live_header(document, agents, quota, now, color=False):
       else:
         parts.append("resets in " + quota.format_duration(
           (limit.get("pace") or {}).get("reset_in_seconds")))
+    elif not quota.has_quota_readings(service):
+      parts.append("No quota readings for this account yet")
     for model in blocked_models(service):
       parts.append(quota.paint(f"{model} blocked", ("red",), color))
     busy = sorted((a for a in agents if a["provider"] == provider

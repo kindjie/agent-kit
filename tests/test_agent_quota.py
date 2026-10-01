@@ -1533,6 +1533,78 @@ class AgentQuotaTest(unittest.TestCase):
     self.assertEqual(len(service["limits"][0]["history"]), 1)
     self.assertEqual(len(service["credits"][0]["history"]), 1)
 
+  def upgraded_account_document(self, live_reading=False):
+    previous = self.collect_account(
+      self.account_snapshot("older@example.test", used=99))
+    prior = self.account_snapshot("same@example.test", used=18)
+    for field in ("account_before", "account_after"):
+      prior[field]["result"]["account"]["planType"] = "prolite"
+    previous = self.collect_account(prior, previous)
+    current = self.account_snapshot("same@example.test", used=0)
+    for field in ("account_before", "account_after"):
+      current[field]["result"]["account"]["planType"] = "promax"
+    if not live_reading:
+      current["limits"] = {"result": {}}
+    return self.collect_account(current, previous)
+
+  def test_upgraded_identity_does_not_present_older_readings_as_current(self):
+    for live_reading in (False, True):
+      document = self.upgraded_account_document(live_reading)
+      service = document["services"]["codex"]
+      self.assertIsNone(service["account"]["key"])
+      for renderer in (AGENT_QUOTA.render_brief, AGENT_QUOTA.render_verbose):
+        with self.subTest(live_reading=live_reading, renderer=renderer):
+          output = renderer(document)
+          older, current = output.split(
+            "Codex account (last checked): same@example.test", 1)
+          self.assertIn("Other accounts", older)
+          for percent in (82, 1):
+            reading = f"last known {percent}% remaining"
+            self.assertIn(reading, older)
+            self.assertNotIn(reading, current)
+          for label, plan in (("same@example.test", "prolite"),
+                              ("older@example.test", "pro")):
+            heading = next(line for line in older.splitlines()
+                           if label in line)
+            self.assertIn(f"({plan})", heading)
+            self.assertIn("not current account", heading.casefold())
+            self.assertRegex(heading, r"\[[0-9a-f]{8}\]")
+          message = "No quota readings for this account yet."
+          if live_reading:
+            self.assertNotIn(message, current)
+            self.assertIn("100%", current)
+          else:
+            self.assertIn(message, current)
+      if live_reading:
+        self.assertEqual([item["used_percent"] for item in
+                          service["limits"][0]["history"]], [0])
+
+  def test_timeline_distinguishes_same_email_previous_identity(self):
+    document = self.upgraded_account_document(live_reading=True)
+    output = AGENT_QUOTA.render_timeline(document, timezone.utc)
+    rows = [line for line in output.splitlines()
+            if "same@example.test" in line]
+    self.assertEqual(len(rows), 2)
+    current = next(line for line in rows if "(promax)" in line)
+    previous = next(line for line in rows if "(prolite)" in line)
+    self.assertIn("current account", current)
+    self.assertNotIn("was 82%", current)
+    self.assertIn("not current account", previous)
+    self.assertIn("was 82%", previous)
+    # The machine-readable email field keeps its existing meaning.
+    events = AGENT_QUOTA.timeline_document(document)["events"]
+    self.assertEqual(sum(event["account"] == "same@example.test"
+                         for event in events), 2)
+
+  def test_timeline_keeps_same_email_archived_identities_separate(self):
+    document = self.upgraded_account_document()
+    archive = document["codex_accounts"]
+    for service in archive.values():
+      service["account"]["label"] = "same@example.test"
+    _, rows, _ = AGENT_QUOTA.timeline_rows(document, NOW, timezone.utc)
+    self.assertEqual(len(rows), 2)
+    self.assertEqual({row["note"] for row in rows}, {"was 82%", "was 1%"})
+
   def test_snapshot_rpc_uses_one_process_and_survives_usage_timeout(self):
     fake = self.root / "fake-snapshot"
     fake.write_text(

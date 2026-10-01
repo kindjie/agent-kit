@@ -358,6 +358,24 @@ def likely_available_line(document: dict[str, Any]) -> str | None:
           + "; ".join(items) + ".")
 
 
+def account_label(account: dict[str, Any]) -> str:
+  ident = account["key"][:8] if account.get("key") else "workspace unknown"
+  return (f"{account.get('label', 'UNKNOWN')} [{ident}] "
+          f"({account.get('plan', 'UNKNOWN')})")
+
+
+def has_quota_readings(service: dict[str, Any]) -> bool:
+  return any(isinstance(limit, dict) and limit.get("last_observation")
+             for limit in service.get("limits", []))
+
+
+def account_lines(service: dict[str, Any]) -> list[str]:
+  lines = [account_line(service)]
+  if not has_quota_readings(service):
+    lines.append("  No quota readings for this account yet.")
+  return lines
+
+
 def other_account_lines(document: dict[str, Any]) -> list[str]:
   """Describe accounts seen before but not checked in this report."""
   now = parse_timestamp(document.get("generated_at"))
@@ -366,13 +384,12 @@ def other_account_lines(document: dict[str, Any]) -> list[str]:
   for service in archived_accounts(document, now):
     account = service["account"]
     name = str(service.get("display_name", service.get("service_id")))
-    ident = account["key"][:8] if account.get("key") else "workspace unknown"
     availability = archived_availability(service, moment)
     lines.append(
-      f"  {account.get('label', 'UNKNOWN')} [{ident}] "
-      f"({account.get('plan', 'UNKNOWN')}); checked "
+      f"  {account_label(account)}; checked "
       f"{account.get('observed_at', 'UNKNOWN')}."
       + (" LIKELY AVAILABLE." if availability["likely_available"] else "")
+      + " Not current account."
     )
     for limit in service.get("limits", []):
       if not isinstance(limit, dict):
@@ -495,14 +512,16 @@ def render_brief(document: dict[str, Any], color: bool = False) -> str:
   available = likely_available_line(document)
   if available:
     lines.append(available)
+  others = other_account_lines(document)
+  if others:
+    if lines:
+      lines.append("")
+    lines.extend(others)
   for service_id in ("claude_code", "codex"):
     if service_id in document.get("services", {}):
       if lines:
         lines.append("")
-      lines.append(account_line(document["services"][service_id]))
-  others = other_account_lines(document)
-  if others:
-    lines.extend(["", *others])
+      lines.extend(account_lines(document["services"][service_id]))
   lines = [highlight(line, color) for line in lines]
   if rows:
     if lines:
@@ -738,6 +757,8 @@ def timeline_events(document: dict[str, Any], now: datetime
              if isinstance(services.get(sid), dict)]
   sources += [(item, item.get("service_id"), False)
               for item in archived_accounts(document, now)]
+  labels = [(sid, (service.get("account") or {}).get("label"))
+            for service, sid, _ in sources]
   events: list[dict[str, Any]] = []
   for service, service_id, active in sources:
     name = str(service.get("display_name", service_id or "?"))
@@ -745,6 +766,11 @@ def timeline_events(document: dict[str, Any], now: datetime
     account = account if isinstance(account, dict) else {}
     base = {"provider": service_id, "active": active,
             "account": str(account.get("label") or "account unknown")}
+    # Keep the JSON email field, but distinguish identities in text rows
+    # and their merge/alert keys when a provider has reused the same label.
+    if labels.count((service_id, account.get("label"))) > 1:
+      status = "current account" if active else "not current account"
+      base["account_display"] = f"{account_label(account)}; {status}"
     unblock = unblock_moment(service)
     for limit in service.get("limits", []):
       if isinstance(limit, dict):
@@ -948,8 +974,10 @@ def timeline_rows(document: dict[str, Any], now: datetime, tz: Any = None
   """(events, displayed rows, whether any routine event was hidden)."""
   events = timeline_events(document, now)
   hidden = any(not noteworthy(event) for event in events)
-  return events, merge_events([event for event in events
-                               if noteworthy(event)], tz), hidden
+  displayed = [dict(event, account=event.get("account_display",
+                                            event["account"]))
+               for event in events if noteworthy(event)]
+  return events, merge_events(displayed, tz), hidden
 
 
 def timeline_row_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
@@ -975,7 +1003,8 @@ def render_timeline(document: dict[str, Any], tz: Any = None,
   events, rows, hidden = timeline_rows(document, now, tz)
   colours: dict[str, str] = {}
   for event in events:
-    colours.setdefault(event["account"], ACCOUNT_COLOURS[
+    label = event.get("account_display", event["account"])
+    colours.setdefault(label, ACCOUNT_COLOURS[
       len(colours) % len(ACCOUNT_COLOURS)])
   zone = now.astimezone(tz).tzname() or "local"
   lines = [paint("Timeline", ("bold",), color) + paint(
@@ -1043,9 +1072,6 @@ def render_verbose_text(document: dict[str, Any]) -> str:
   if available:
     lines.append(available)
   services = document.get("services", {})
-  for service_id in ("claude_code", "codex"):
-    if service_id in services:
-      lines.append(account_line(services[service_id]))
   others = other_account_lines(document)
   if others:
     lines.extend(others)
@@ -1062,6 +1088,7 @@ def render_verbose_text(document: dict[str, Any]) -> str:
     status = str(refresh.get("status", "unknown")).upper()
     attempted = refresh.get("attempted_at") or "not attempted"
     lines.append("")
+    lines.extend(account_lines(service))
     if refresh.get("status") == "not_needed":
       last_success = refresh.get("last_success_at") or "UNKNOWN"
       lines.append(

@@ -200,6 +200,12 @@ cache-only readers do not verify the current login. Tmux keeps its compact
 quota display without account identifiers. Run a normal quota refresh after
 switching; the status refresh will also pick it up.
 
+The current account heading covers only that identity's quota readings.
+If it has none, text output says `No quota readings for this account yet.`
+Fresh live readings remain visible even before usage history is available;
+older identities' values never fill that gap. The `--agents --live` provider
+header also reports missing readings instead of using an archived account.
+
 The documented API currently exposes no workspace ID. Email identity is used
 only for recognized personal plans. Other plans retain live measurements and
 a display label, but have a null key and partial status: workspace-specific
@@ -212,7 +218,8 @@ eight account snapshots, keeping those most recently checked. Only
 `services.codex` represents the account just collected; archived snapshots
 are not active allowances and are never summed or used for provider selection.
 Switching back restores that account's quota and credit histories, subject to
-normal history expiry; text output lists them meanwhile. A plan change starts new history. Failed quota reads
+normal history expiry; text output lists them meanwhile. A plan change starts
+new history. Failed quota reads
 retain last-good data only for the same verified account and plan. Legacy
 unlabelled history is not assigned to the first account encountered.
 
@@ -261,12 +268,19 @@ that file can still race with collection. This tool never switches accounts.
 
 `--brief` and `--verbose` list every archived snapshot whose account is not
 the one its service just checked, newest check first, under `Other accounts
-(last checked; not verified now)`. Each account shows its label, short key,
+(last checked; not verified now)`, before the current account headings. Each
+account explicitly says `not current account` and shows its label, short key,
 plan, and check time; each of its buckets shows the last known remaining
 percentage and its recorded reset: `(in <duration>)` while it is ahead,
 `reset time UNKNOWN` when none was recorded, and, once the reset is behind
 the report's `generated_at`, `RESET <time> (<duration> ago)` followed by
 either `likely 100% now (was N%)` or `was N%, blocked`.
+
+When several identities of one provider share an email, timeline text adds
+the short key (or `workspace unknown`), plan, and `current account` or
+`not current account` to distinguish their rows. Their events are kept
+separate when merging simultaneous resets. Timeline JSON retains the email
+in `account` and the existing `active` flag.
 
 An account is `LIKELY AVAILABLE` when at least one bucket has reset since
 its check and no account-wide bucket is still at 0%. Both text modes then

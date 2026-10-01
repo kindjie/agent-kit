@@ -274,6 +274,19 @@ class AgentViewTest(unittest.TestCase):
     self.assertIn("weekly 30% left", AGENTS.live_header(
       document, agents, AGENT_QUOTA, 1000)[0])
 
+  def test_live_header_does_not_fall_back_to_previous_identity(self):
+    document = {"services": {"codex": {
+      "display_name": "Codex", "limits": [],
+      "account": {"label": "same@example.test", "plan": "promax",
+                  "key": None}}}, "codex_accounts": {"old": {
+      "display_name": "Codex", "limits": [{
+        "last_observation": {"remaining_percent": 82}}],
+      "account": {"label": "same@example.test", "plan": "prolite",
+                  "key": "old"}}}}
+    header = AGENTS.live_header(document, [], AGENT_QUOTA, 1000)[0]
+    self.assertIn("No quota readings for this account yet", header)
+    self.assertNotIn("82%", header)
+
   def test_live_header_keeps_the_account_headline_and_fits(self):
     account = {"limit_id": "c:week", "window": {"label": "weekly"},
                "bucket": {"scope_kind": "account"},

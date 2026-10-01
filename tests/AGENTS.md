@@ -38,7 +38,12 @@ document, agent-readable output, private caching, and Codex app-server
 failures. Account-switch coverage includes A→B→A quota/credit isolation,
 same-account failure retention, legacy-cache migration, unknown identity, plan
 changes, bounded account snapshots, changes during collection, and a
-single-process RPC fixture with an optional usage timeout. Archived accounts
+single-process RPC fixture with an optional usage timeout. Identity-upgrade
+regressions cover older 82%/1% readings labelled as other identities before
+the current heading in brief and verbose output, a new identity without
+quota readings, and fresh 100% readings without inherited history. Timeline
+coverage distinguishes same-email plans and keys without changing JSON
+emails or merging archived identities' simultaneous resets. Archived accounts
 are covered for elapsed and live resets, newest-check ordering, exclusion of
 the account last checked, absence when only one account is known, and
 narrowing by provider selection. Claude coverage also verifies organization
@@ -117,6 +122,8 @@ Label tests cover the summary/brief pair from one call, briefs that are
 missing, overlong, or the wrong type, and the prompt-schema hash that
 refreshes stored labels once. Live-helper tests cover stall and dominance
 alerts and the per-provider quota header, including its fallback bucket.
+The live header reports an account without quota readings and never falls
+back to a previous identity's allowance.
 Status tests cover Claude Code turns, pending tool calls and `TodoWrite`
 progress, Codex turns, script actions, `update_plan` progress, aborts and per-
 event token deltas, derived stalled/idle/long states, the uncached 15-minute
