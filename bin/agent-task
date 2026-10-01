@@ -250,6 +250,13 @@ def parser():
                "agent-task --agent helper reopen T-0001 --reason resumed")
   reopen.add_argument("task")
   reopen.add_argument("--reason", required=True)
+  events = add("events", "Wait for a coalesced multi-task JSON batch.",
+               "agent-task events T-0001 T-0002")
+  events.add_argument("tasks", nargs="+")
+  events.add_argument("--after", help="JSON cursor from the preceding batch")
+  events.add_argument("--for", dest="for_id")
+  events.add_argument("--timeout", default="540")
+  events.add_argument("--interval", default="5")
   watch = add("watch", "Poll task changes; writes nothing.",
               "agent-task watch T-0001 --until closed")
   watch.add_argument("task")
@@ -381,6 +388,9 @@ def main():
     doctor(root, "tasks", push_policy(cfg, root, changes), args.wait, changes)
     print("ok")
     return 0
+  if args.command == "events":
+    from agent_records_events import events
+    return events(root, changes, args)
   if args.command == "watch":
     return watch_task(root, changes, args)
   read = args.command in ("show", "list", "next", "lint") or dependency_read

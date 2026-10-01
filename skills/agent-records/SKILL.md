@@ -63,6 +63,10 @@ so without its own ID it writes as you.
   re-arm it from the cursor it prints. Otherwise read
   `agent-task show T-NNNN --after <cursor>` at each milestone, and always
   before you close, release or hand off.
+  For several tasks, use `agent-task events T-0001 T-0002` and resume with
+  its JSON cursor via `--after`. It returns one batch per wake; `--for ID`
+  filters messages while preserving state changes. Exit 4 is a timeout,
+  not completion; retain the returned cursor. Exit 5 requires inspection.
 - **Finish:** tick the completion checks (`check T-NNNN merged --evidence
   ...`, or `--na 'reason'`), then `close T-NNNN done --reason ...`. The
   review check wants a real review.

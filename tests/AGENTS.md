@@ -315,3 +315,20 @@ independent test classes in parallel. Its worker count defaults to
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 tests/run_agent_records_parallel.py
 ```
+
+## Coordination and efficiency tools
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
+  tests.test_agent_records_events tests.test_agent_resource \
+  tests.test_agent_efficiency
+```
+
+Events use real temporary records repositories to check coalescing, recipient
+filtering, cursor advancement, rewriting and refusal of unverified reads.
+Resource tests run harmless child processes to check exclusion, timeout,
+interruption cleanup and exit propagation. Efficiency tests use independent
+synthetic ledgers for provider accounting, copied history, cumulative resets,
+request-record precedence and visibly incomplete input. Also run the existing
+records suites when changing the `agent-task` parser, and the privacy suite
+for all public additions. No provider/model calls are made by these tests.
