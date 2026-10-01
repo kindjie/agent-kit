@@ -633,9 +633,11 @@ or more base64-like characters become `[data]`, and image bytes and
 attachment paths or URLs are omitted. Tool steps can name ordinary files and
 commands. Over the byte cap, the oldest activity is dropped first, then the
 oldest messages. Recognized skill injections, environment/instruction
-blocks, tool results, and subagent reports are excluded. The previous
-summary is included for continuity. The serialized UTF-8 prompt is capped at
-12,000 bytes. One call returns two labels: a summary budgeted at 60
+blocks, tool results, and subagent reports are excluded.
+Automatic Codex goal-continuation messages contribute only the enclosed
+user objective; their wrapper, instructions, and accounting are excluded.
+The previous summary is included for continuity. The serialized UTF-8 prompt
+is capped at 12,000 bytes. One call returns two labels: a summary budgeted at 60
 characters and a brief at 28. Models overrun character budgets, so the
 summary is retained whole up to 120 characters and the brief doubles as the
 repair when the summary will not fit the table. A missing, invalid, or

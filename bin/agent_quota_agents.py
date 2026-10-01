@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
-CACHE_VERSION = 5
+CACHE_VERSION = 6
 # Bumped when the label schema changes so cached entries refresh once.
 PROMPT_VERSION = 5
 WORK_LIMIT = 60
@@ -130,6 +130,22 @@ def user_text(content):
     kind = block.get("type")
     if kind in ("text", "input_text"):
       text = block.get("text", "")
+      if isinstance(text, str) and text.lstrip().startswith(
+        "<codex_internal_context"
+      ):
+        # Automatic goal continuations contain the owner's objective plus
+        # internal instructions and accounting. Keep only the objective.
+        context = re.fullmatch(
+          r"\s*<codex_internal_context\b([^>]*)>(.*?)"
+          r"</codex_internal_context>\s*", text, re.S)
+        if not (context and re.search(r'''\bsource=["']goal["']''',
+                                     context.group(1))):
+          continue
+        objective = re.search(r"<objective>(.*?)</objective>",
+                              context.group(2), re.S)
+        if not objective:
+          continue
+        text = objective.group(1).strip()
       if not isinstance(text, str) or text.lstrip().startswith(INJECTED):
         continue
       parts.append(clip(scrub(text), 1000))

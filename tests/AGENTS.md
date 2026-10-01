@@ -149,8 +149,9 @@ latest model and effort and the starting directory; Dir labels grow a parent
 segment only on collision. A terminal reporting zero columns falls back to
 120. Gate tests defer summaries only under 3% left. Summary-input tests
 cover activity from Claude and Codex (descriptions, reply first sentences,
-reasoning headings), dropped noise messages, scrubbed and bounded activity
-with the oldest dropped first, the 15-minute activity refresh, and Now
+reasoning headings), dropped noise messages, objective-only extraction from
+automatic Codex goal continuations, scrubbed and bounded activity with the
+oldest dropped first, the 15-minute activity refresh, and Now
 showing the step just finished. Display tests cover rule-based model names
 and middle-clipped Dir, internal sessions sharing one row unless verbose,
 folded Now skipping quiet steps and following the label only in spare

@@ -644,6 +644,49 @@ class AgentViewTest(unittest.TestCase):
     self.assertEqual(bounded[-1], newest)
     self.assertLessEqual(sum(map(len, bounded)), 4000)
 
+  def test_goal_context_extracts_only_objective(self):
+    context = ('<codex_internal_context source="goal">\n'
+               'Continue working toward the active thread goal.\n'
+               '<objective>\nFix the parser\n</objective>\n'
+               'Budget: 10000\nOther internal instructions\n'
+               '</codex_internal_context>')
+    self.assertEqual(AGENTS.user_text(context), "Fix the parser")
+    for text in (
+      '<codex_internal_context source="goal">No objective</codex_internal_context>',
+      '<codex_internal_context source="goal"><objective>Unclosed',
+      '<codex_internal_context source="goal"><objective> </objective>',
+      '<codex_internal_context source="goal"><objective>Fix</objective>',
+      '<codex_internal_context source="other"><objective>Ignore</objective>',
+    ):
+      with self.subTest(text=text):
+        self.assertEqual(AGENTS.user_text(text), "")
+    # Ordinary owner text containing similar markup is still owner text.
+    self.assertEqual(AGENTS.user_text('Explain <objective> tags'),
+                     'Explain <objective> tags')
+    self.assertEqual(AGENTS.user_text("  " + context.replace('"', "'") + "\n"),
+                     "Fix the parser")
+
+  def test_goal_context_fallback_and_summary_input(self):
+    rows = self.codex_rows(None)
+    rows.append({
+      "type": "response_item", "timestamp": "2026-08-19T21:05:00Z",
+      "payload": {"type": "message", "role": "user", "content": [
+        {"type": "input_text", "text":
+         '<codex_internal_context source="goal">Continue working.\n'
+         '<objective>Fix parser labels</objective>\nBudget: 10000\n'
+         '</codex_internal_context>'}]}})
+    agent = AGENTS.parse_session(self.transcript(rows), "codex")
+    self.assertEqual(agent["messages"][-1], "Fix parser labels")
+    view = AGENTS.view_agents(
+      {"sessions": {"s": {"agent": agent}}, "summaries": {}},
+      SimpleNamespace(agent_days=10 ** 6, agent_limit=10, provider="all",
+                      cached=True), 1_790_000_000)
+    self.assertEqual(view[0]["work"], "Fix parser labels")
+    prompt = AGENTS.summary_prompt(agent, {})
+    self.assertIn("Fix parser labels", prompt)
+    self.assertNotIn("Continue working", prompt)
+    self.assertNotIn("Budget", prompt)
+
   def test_claude_deduplicates_and_normalizes_cache_tokens(self):
     def message(out):
       return {
