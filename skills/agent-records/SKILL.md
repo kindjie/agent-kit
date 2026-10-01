@@ -29,16 +29,24 @@ so without its own ID it writes as you.
   `agent-task list`. If a task covers the work, claim it; if another agent
   holds it, coordinate instead of duplicating. `agent-task next` offers the
   highest-priority unclaimed task.
-- **Start:** `agent-task new --title ...` for new work, then
-  `agent-task claim T-NNNN`. Claims expire; claim again to extend.
+- **Start:** use `agent-task new --title ... --claim --model MODEL
+  --wall-seconds N --tokens N` to create, estimate and claim in one commit.
+  Use `--wall-unknown` / `--tokens-unknown` for unavailable metrics, or
+  `--model-unknown REASON` when the model is unknown. Plain `new` still creates
+  an unclaimed task. Existing tasks use `claim T-NNNN`, which also accepts
+  inline estimates. Claims expire; claim again to extend.
   When estimate policy is enabled, select `--model MODEL` or explain
-  `--model-unknown REASON`; same-owner renewals reuse the selection.
+  `--model-unknown REASON`; same-owner renewals reuse the selection and helpers even after expiry,
+  provided nobody else has taken ownership.
 - **Estimate:** when creating or materially refining tracked work, or before
   starting unestimated work, use `estimate-agent-work` and record its points
   and available per-model wall-time/token estimates. Briefly explain metrics
   left unset. Follow that skill's guidance; do not re-estimate unchanged work.
 - **Progress:** `agent-task log T-NNNN 'what changed'` at milestones, not
-  every step. `status` moves between in-progress, in-review and blocked.
+  every step. Record changed decisions, blockers and results once; reference
+  that entry in peer messages instead of copying the same narrative. Routine
+  reads, waits and acknowledgments need no log entry. `status` moves between
+  in-progress, in-review and blocked.
 - **Planning:** `dependency add TASK PREREQUISITE` declares a dependency;
   `dependency remove TASK PREREQUISITE` revokes it. `dependency show TASK`
   lists direct prerequisites and dependents with status. `next` skips tasks
@@ -64,6 +72,23 @@ so without its own ID it writes as you.
 Your session plan (`TodoWrite`, `update_plan`) is separate: it tracks steps
 within one session. Tasks are for work other agents or later sessions need
 to see.
+
+## Access and recovery
+
+Verify required access once when the execution environment changes. Writers
+need the records roots and their Git metadata; readers need readable existing
+lock files. Use the normal sandbox when it permits the operation. Do not
+request escalation for every records command by habit.
+
+`show`, `list`, `next`, relationship views, lint and watches never repair a
+pending journal. Exit 5 means recovery is needed; an authorized writer uses
+`agent-task --agent ID recover` or `agent-changelog --agent ID recover`.
+An explicit `--unlocked` diagnostic read may show incomplete state and is
+marked unverified. Do not use it to establish a gate or ownership decision.
+`doctor` is a write/signing probe, not a routine status read; it also provisions
+missing lock files in newly cloned records repositories. If signing or recovery
+fails, retain the error, coordinate one recovery owner, and avoid parallel
+retries. Continue independent work where possible.
 
 ## Correcting records
 

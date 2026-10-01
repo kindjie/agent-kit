@@ -70,7 +70,8 @@ class RecoveryTest(RecordsFixture):
        str(self.tasks / ".records.lock")], env=env, capture_output=True,
       text=True)
     self.assertEqual(probe.returncode, 0, probe.stderr)
-    self.run_cmd("agent-task", "list", env=env)
+    self.run_cmd("agent-task", "list", env=env, code=5)
+    self.run_cmd("agent-task", "--agent", "agent-a", "recover", env=env)
     self.assertFalse((self.tasks / ".records-journal.json").exists())
     self.assertEqual(path.read_bytes(), self.git(
       self.tasks, "show", "HEAD:" + path.name).stdout.encode())
@@ -183,7 +184,8 @@ class RecoveryTest(RecordsFixture):
                  "pre": base64.b64encode(before).decode(),
                  "post": base64.b64encode(after).decode()}}}
     (self.tasks / ".records-journal.json").write_text(json.dumps(journal))
-    self.run_cmd("agent-task", "list")
+    self.run_cmd("agent-task", "list", code=5)
+    self.run_cmd("agent-task", "--agent", "agent-a", "recover")
     self.assertEqual(path.read_bytes(), after)
     self.assertFalse(self.git(self.tasks, "status", "--porcelain",
                               "--", path.name).stdout)
@@ -211,7 +213,8 @@ class RecoveryTest(RecordsFixture):
     (self.changes / ".records-journal.json").write_text(json.dumps(
       {"id": journal["id"], "cross_stub": True,
        "changelog": sides["changelog"]}))
-    self.run_cmd("agent-changelog", "list")
+    self.run_cmd("agent-changelog", "list", code=5)
+    self.run_cmd("agent-changelog", "--agent", "agent-a", "recover")
     for root in (self.tasks, self.changes):
       self.assertFalse(self.git(root, "status", "--porcelain",
                                 "--", "README.md").stdout)
@@ -269,7 +272,7 @@ class RecoveryTest(RecordsFixture):
                  "cancelled", "--reason", "moved", "--transfer", target,
                  code=5)
     result = subprocess.run(
-      [sys.executable, str(BIN / "agent-task"), "list"], env=self.env,
+      [sys.executable, str(BIN / "agent-task"), "--agent", "agent-a", "recover"], env=self.env,
       capture_output=True, text=True)
     self.assertEqual(result.returncode, 5)
     self.assertIn("/nonexistent", result.stderr)

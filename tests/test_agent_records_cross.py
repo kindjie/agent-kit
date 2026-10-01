@@ -54,7 +54,8 @@ class CrossTest(RecordsFixture):
     self.git(self.changes, "add", "README.md")
     self.git(self.changes, "commit", "-qm", "Cross edit", "-m",
              "Records-Journal: " + ident)
-    self.run_cmd("agent-changelog", "list")
+    self.run_cmd("agent-changelog", "list", code=5)
+    self.run_cmd("agent-changelog", "--agent", "agent-a", "recover")
     self.assertEqual(self.git(self.tasks, "rev-parse", "HEAD").strip(),
                      task_head)
     self.assertFalse((self.tasks / ".records-journal.json").exists())
@@ -95,7 +96,7 @@ class CrossTest(RecordsFixture):
     self.assertTrue((self.tasks / ".records-journal.json").exists())
     self.assertEqual((self.tasks / "README.md").read_bytes(), before)
 
-  def test_changelog_reader_rolls_forward_failed_task_commit(self):
+  def test_explicit_recovery_rolls_forward_failed_task_commit(self):
     self.init()
     source = self.task("Source")
     target = self.task("Target")
@@ -107,7 +108,8 @@ class CrossTest(RecordsFixture):
                  "cancelled", "--reason", "moved", "--transfer", target,
                  code=5)
     self.git(self.tasks, "config", "commit.gpgsign", "false")
-    self.run_cmd("agent-changelog", "list")
+    self.run_cmd("agent-changelog", "list", code=5)
+    self.run_cmd("agent-changelog", "--agent", "agent-a", "recover")
     self.assertIn("tasks: " + target,
                   self.run_cmd("agent-changelog", "show", entry))
 

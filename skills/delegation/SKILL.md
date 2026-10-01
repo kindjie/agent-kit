@@ -19,8 +19,10 @@ agrees.
 Delegate to cut wall-clock time, context noise, or token usage: a parent
 re-sends its context every turn, so in-thread exploration is paid again on
 each one. Skip it when briefing costs as much as doing. A fork inherits
-context. A fresh agent needs the question, constraints, files, and expected
-deliverable, and should return findings or a patch, not narration.
+context. Prefer a compact fresh brief when it supplies enough evidence; fork
+only when inherited context materially helps. A fresh agent needs the question,
+constraints, files, and expected deliverable, and should return findings or a
+patch, not narration.
 
 Where `agent-task` and `agent-changelog` are in use, give each delegate,
 fork or fresh, its own ID from `agent-id new <label>` and the task it works
@@ -37,6 +39,34 @@ report progress and blockers with `agent-task log T-NNNN --to <your id>`,
 and wait with `agent-task watch T-NNNN --for <its id> --until message` (or
 `--until closed`) instead of polling. Its final result still comes back as
 its output.
+
+## Coordination and waiting
+
+Send a message when it changes a decision, ownership, blocker, required action,
+or completed result. Address only affected agents. Do not acknowledge routine
+status, echo it back to the sender, or relay unchanged updates. Acknowledge a
+handoff or safety-critical stop when confirmation is needed. Put durable
+milestone evidence on the task once and reference it in messages.
+
+Use completion notifications or a task watch for known waits. Check at a
+meaningful milestone when background waiting is unavailable; do not repeatedly
+wake the model to ask whether anything changed. Respect higher-priority update
+and tool-wait limits. A waiting worker is not stalled merely because it has no
+new transcript activity; inspect its current operation before interrupting it.
+
+For requested ongoing monitoring, establish wake conditions, a fallback cadence
+and a bounded scope per pass. Prefer a watcher or scheduler to a continuously
+active model where available. Unchanged state needs no new work or report; a
+monitoring request does not authorize creating an unattended service. Preserve
+any persistent goal and its pause/completion rules.
+
+Keep coordinators focused on decisions, ownership, blockers and evidence
+references. At a phase boundary, use a verified handoff if a fresh context would
+avoid repeatedly carrying implementation history. Preserve authorization,
+unresolved findings, exact source/evidence references and the next action.
+Assign one coordinator per shared resource; use an existing lease or queue
+rather than negotiating every transition among several coordinators. Distinguish
+quiet-machine performance measurements from ordinary functional validation.
 
 ## Routing between Codex and Claude Code
 

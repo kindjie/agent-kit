@@ -32,6 +32,13 @@ Before judging branch state — merging, branching, or calling work unlanded
 commits unreachable from the default branch, so "not an ancestor of main"
 does not mean "not landed".
 
+## Coordination
+
+Send actionable changes and milestone results to affected agents; avoid
+acknowledgment loops and unchanged status relays. Prefer completion notifications
+or task watches during known waits. The delegation skill covers monitoring
+cadence and compact handoffs; required reviews and validation still apply.
+
 ## Session plans
 
 For work with several steps, keep your tool's plan current (Claude Code's

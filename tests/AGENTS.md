@@ -292,6 +292,15 @@ and closed tasks. Run it alone:
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_records_estimate_policy
 ```
 
+The efficiency suite covers atomic create/estimate/claim, invalid startup
+without ID allocation, inline claim estimates, expired same-owner renewal
+versus takeover, read-only lock access, pending-journal refusal across readers,
+and explicitly unverified diagnostic reads:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_records_efficiency
+```
+
 The recovery and cross suites exercise real git signing children, index
 locks, staged deletions, journals, and cross-repository races. The privacy
 suite scans tracked and new files;

@@ -12,6 +12,7 @@ import re
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -362,6 +363,7 @@ def init_repo(root, kind, adopt=False, allow=()):
       hook = active_hook(work)
       if hook:
         raise RecordsError("active git hook: " + hook, 2)
+    (work / ".records.lock").touch(mode=0o600, exist_ok=True)
     marker = {"kind": kind, "allow": list(allow)}
     atomic(work / ".agent-records", (json.dumps(marker) + "\n").encode())
     ignores = (".records.lock", ".records-journal.json", ".records-tmp-*")
@@ -471,13 +473,19 @@ def locks(roots, writes=(), wait=LOCK_WAIT, agent="reader", operation="read",
         continue
       path = root / ".records.lock"
       try:
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        flags = (os.O_RDWR | os.O_CREAT if root in writes else
+                 os.O_RDONLY | os.O_NONBLOCK)
+        fd = os.open(path, flags, 0o600)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+          os.close(fd)
+          raise OSError("records lock is not a regular file: " + str(path))
       except OSError as exc:
         if unlocked and root not in writes:
           yield False
           return
-        raise RecordsError("cannot open lock; add both records directories "
-                           "to sandbox writable roots: " + str(exc), 1)
+        raise RecordsError("cannot open lock; run doctor to provision missing "
+                           "locks, or check records directory access: " +
+                           str(exc), 1)
       mode = fcntl.LOCK_EX if root in writes else fcntl.LOCK_SH
       deadline = time.monotonic() + wait
       while True:
@@ -1349,6 +1357,16 @@ def record_locks(tasks, changes, writes=(), wait=LOCK_WAIT, agent="reader",
     with locks(roots, writes, wait, agent, operation,
                unlocked) as authoritative:
       pending = any(read_journal(root) for root in roots)
+      if pending and not writes:
+        if unlocked:
+          yield False
+          return
+        for root in roots:
+          operation_state(root)
+          check_index_lock(root)
+        raise RecordsError("pending journal; read refused without recovery. "
+                           "Run agent-task --agent ID recover or "
+                           "agent-changelog --agent ID recover explicitly", 5)
       if not pending or not auto_recover:
         yield authoritative
         return
@@ -1373,6 +1391,9 @@ def doctor(root, kind, push=False, wait=LOCK_WAIT, other=None):
   if hook:
     raise RecordsError("active git hook: " + hook, 2)
   ordered = ([root, other] if kind == "tasks" else [other, root])
+  for path in ordered:
+    if path:
+      (path / ".records.lock").touch(mode=0o600, exist_ok=True)
   with locks(ordered, [root], wait, "doctor", "probe"):
     if any(read_journal(path) for path in ordered if path):
       raise RecordsError("pending journal needs recovery", 5)
