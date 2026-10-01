@@ -1094,6 +1094,7 @@ def codex_rpc(
   method: str = "account/rateLimits/read",
   *,
   snapshot: bool = False,
+  include_usage: bool = True,
 ) -> dict[str, Any]:
   if shutil.which(codex_bin) is None and os.path.sep not in codex_bin:
     raise RuntimeError(f"'{codex_bin}' not found on PATH")
@@ -1201,6 +1202,8 @@ def codex_rpc(
       ("usage", "account/usage/read"),
       ("account_after", "account/read"),
     ):
+      if key == "usage" and not include_usage:
+        continue
       try:
         seconds = min(timeout, 5) if key == "usage" else timeout
         result[key] = {"result": request(rpc_method, seconds)}
@@ -1547,7 +1550,10 @@ def parse_token_usage(raw: dict[str, Any], now: datetime) -> dict[str, Any]:
 def brief_tokens(usage: dict[str, Any], name: str = "Codex") -> str:
   averages = usage.get("average_tokens")
   if not isinstance(averages, dict):
-    return f"{name} tokens: UNKNOWN (usage observations unavailable)."
+    reason = ("incomplete seven-day usage data"
+              if usage.get("status") == "partial"
+              else "usage observations unavailable")
+    return f"{name} tokens: UNKNOWN ({reason})."
 
   def short(value: float) -> str:
     for scale, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
@@ -1582,8 +1588,8 @@ def codex_account(raw: Any, now: datetime) -> dict[str, Any] | None:
     return None
   if any(not char.isprintable() for char in email) or len(email) > 320:
     return None
-  # The API has no workspace identifier. Only personal allocations can be
-  # safely keyed by login email; never combine organizational workspaces.
+  # Email alone cannot distinguish organizational/workspace allocations.
+  # This fallback keys recognized personal plans only.
   if not isinstance(plan, str) or not re.fullmatch(r"[a-z0-9_-]{1,40}", plan):
     return None
   label = email.strip()
@@ -1593,6 +1599,54 @@ def codex_account(raw: Any, now: datetime) -> dict[str, Any] | None:
   )
   return {"key": key, "label": label, "plan": plan,
           "observed_at": iso_utc(now), "source": "codex.account/read"}
+
+
+
+def valid_codex_account_id(value: Any) -> bool:
+  return (isinstance(value, str) and 0 < len(value) <= 512
+          and all(char.isprintable() and not char.isspace() for char in value))
+
+
+def codex_snapshot_account(snapshot: dict[str, Any],
+                           checked: datetime) -> dict[str, Any] | None:
+  """Bind identity to the quota response; do not persist the opaque ID."""
+  before_raw = snapshot.get("account_before", {}).get("result")
+  after_raw = snapshot.get("account_after", {}).get("result")
+  before = codex_account(before_raw, checked)
+  after = codex_account(after_raw, checked)
+  if before and after and (before["label"], before["plan"]) != (
+      after["label"], after["plan"]):
+    raise RuntimeError("Codex account changed during quota collection.")
+  if not before or not after:
+    return None
+  account = after
+  routes = []
+  for raw in (before_raw, after_raw):
+    routing = raw.get("workspaceRouting")
+    if routing is None:
+      routes.append(None)
+      continue
+    identity = (routing.get("chatgptAccountId")
+                if isinstance(routing, dict) else None)
+    if not valid_codex_account_id(identity):
+      account["key"] = None
+      return account
+    routes.append(identity)
+  if routes[0] != routes[1]:
+    if all(route is not None for route in routes):
+      raise RuntimeError("Codex workspace changed during quota collection.")
+    account["key"] = None
+    return account
+  # Routing and quota IDs are not assumed to share a namespace. The quota ID
+  # identifies these limits/credits; routing only helps detect a switch.
+  response = snapshot.get("limits", {}).get("result")
+  identity = response.get("accountId") if isinstance(response, dict) else None
+  if identity is not None:
+    account["key"] = (
+      hashlib.sha256(("codex-account-id\0" + identity).encode()).hexdigest()
+      if valid_codex_account_id(identity) else None)
+    account["source"] = "codex.account/rateLimits/read"
+  return account
 
 
 def account_line(service: dict[str, Any]) -> str:
@@ -1617,16 +1671,7 @@ def get_codex(
   try:
     snapshot = codex_rpc(timeout=timeout, codex_bin=codex_bin, snapshot=True)
     checked = now or utc_now()
-    before = codex_account(snapshot.get("account_before", {}).get("result"),
-                           checked)
-    after = codex_account(snapshot.get("account_after", {}).get("result"),
-                          checked)
-    if before and after and (before["label"], before["plan"]) != (
-      after["label"], after["plan"]
-    ):
-      raise RuntimeError("Codex account changed during quota collection.")
-    # Unknown identity permits live measurements but never historical reuse.
-    account = after if before and after else None
+    account = codex_snapshot_account(snapshot, checked)
     limits = snapshot.get("limits", {})
     if "error" in limits:
       raise RuntimeError(limits["error"])
@@ -2113,6 +2158,26 @@ def build_document(
   if provider in {"all", "codex"}:
     codex = get_codex(codex_timeout, codex_bin, now=now)
     account = codex.get("account") or {}
+    # Once retained evidence identifies this login by a quota-bound ID,
+    # downgrading to an email key must not resurrect its legacy history.
+    if account.get("key") and account.get("source") == "codex.account/read":
+      label = account["label"].strip().casefold()
+      provider_known = any(
+        isinstance(saved.get("account"), dict)
+        and saved["account"].get("key") == key
+        and isinstance(key, str) and re.fullmatch(r"[0-9a-f]{64}", key)
+        and saved["account"].get("source") == "codex.account/rateLimits/read"
+        and str(saved["account"].get("label", "")).strip().casefold() == label
+        for key, saved in accounts.items())
+      if provider_known:
+        account["key"] = None
+        if codex.get("limits"):
+          codex["data_status"] = "partial"
+        codex["warnings"].append(warning(
+          "codex_identity_downgrade",
+          "Quota-bound identity was observed for this login; current "
+          "identity is incomplete, so history reuse is disabled.",
+        ))
     prior = accounts.get(account.get("key"))
     if prior and (prior.get("account") or {}).get("plan") != account.get("plan"):
       prior = None

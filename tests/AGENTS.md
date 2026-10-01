@@ -18,6 +18,17 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -t .
 `test_md_preview.py` skips unless its dependencies are importable by the
 interpreter running the suite; the recipe below supplies them.
 
+## Quota Snapshot Identity
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_quota_snapshot_identity
+```
+
+These tests use synthetic provider snapshots to cover namespaced quota-ID
+hashes without raw-ID persistence, same-email workspace isolation and return,
+identity-source upgrades, failed reads, malformed or absent IDs, routing
+changes, summary rechecks, and partial daily coverage without zero filling.
+
 ## Agent Quota
 
 Run from the repository root:

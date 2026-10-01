@@ -1733,6 +1733,30 @@ def quota_needs_refresh(document):
   return not services
 
 
+def check_summary_account(provider, document, args, quota):
+  service_id = "codex" if provider == "codex" else "claude_code"
+  expected = document.get("services", {}).get(service_id, {}).get("account")
+  try:
+    if provider == "codex":
+      current = quota.codex_snapshot_account(quota.codex_rpc(
+        timeout=min(args.timeout, 5), codex_bin=args.codex_bin,
+        snapshot=True, include_usage=False,
+      ), quota.utc_now())
+    else:
+      current = quota.claude_account(quota.claude_auth_status(
+        args.claude_bin, args.claude_timeout,
+      ), quota.utc_now())
+  except Exception:
+    current = None
+  if not current or not current.get("key") or not expected:
+    return f"{provider} account identity not verified"
+  if (current["key"], current["plan"]) != (
+    expected.get("key"), expected.get("plan")
+  ):
+    return f"{provider} account differs from quota snapshot"
+  return None
+
+
 def main(args, quota, script):
   now = time.time()
   path, quota_path = agent_paths(args, quota)
@@ -1747,27 +1771,7 @@ def main(args, quota, script):
       agents = view_agents(cache, args, now)
       document = quota.reevaluate_document(quota.load_cache(quota_path) or {})
       def account_check(provider):
-        service_id = "codex" if provider == "codex" else "claude_code"
-        expected = document.get("services", {}).get(service_id, {}).get("account")
-        try:
-          if provider == "codex":
-            current = quota.codex_account(quota.codex_rpc(
-              timeout=min(args.timeout, 5), codex_bin=args.codex_bin,
-              method="account/read",
-            ), quota.utc_now())
-          else:
-            current = quota.claude_account(quota.claude_auth_status(
-              args.claude_bin, args.claude_timeout,
-            ), quota.utc_now())
-        except Exception:
-          current = None
-        if not current or not current.get("key") or not expected:
-          return f"{provider} account identity not verified"
-        if (current["key"], current["plan"]) != (
-          expected.get("key"), expected.get("plan")
-        ):
-          return f"{provider} account differs from quota snapshot"
-        return None
+        return check_summary_account(provider, document, args, quota)
 
       if quota_needs_refresh(document) or any(account_check(p) for p in MODELS):
         with quota.cache_lock(quota_path) as quota_acquired:

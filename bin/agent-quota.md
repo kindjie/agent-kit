@@ -206,10 +206,23 @@ Fresh live readings remain visible even before usage history is available;
 older identities' values never fill that gap. The `--agents --live` provider
 header also reports missing readings instead of using an archived account.
 
-The documented API currently exposes no workspace ID. Email identity is used
-only for recognized personal plans. Other plans retain live measurements and
-a display label, but have a null key and partial status: workspace-specific
-history and background summaries cannot be trusted without that identity.
+When `account/rateLimits/read` supplies `accountId`, its exact opaque value
+is hashed with a separate namespace to identify that quota/credit snapshot.
+The raw identifier is never stored. Account reads before and after collection
+must agree on email and plan. Optional `workspaceRouting.chatgptAccountId`
+values must also be valid and stable when supplied; routing IDs are not
+assumed to use the quota ID's namespace. When routing IDs are absent, this
+bracketing cannot detect every same-email workspace change. The separate
+usage response has no account ID and is not independently workspace-bound.
+
+Without a quota ID, email identity is used only for recognized personal plans.
+Other plans retain live measurements and a display label, but have a null key
+and partial status. A malformed supplied ID disables history reuse. Provider
+ID keys never inherit legacy email-keyed history. While the bounded archive
+retains provider-ID evidence for a login, later missing-ID snapshots cannot
+restore that login's legacy email history. Fresh readings stay usable with
+partial identity and an explicit warning. Background summary rechecks
+use the same snapshot identity derivation and compare both key and plan.
 A failed identity lookup similarly leaves fresh quota usable as partial data,
 without carrying forward history or last-good balances.
 
@@ -436,6 +449,10 @@ The source is the `credits` field of the documented
 [Codex app-server rate-limit response](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt).
 
 ## Token activity
+
+Successful daily usage responses with incomplete consecutive seven-day
+coverage keep averages unknown; the text view names the incomplete period.
+Missing days are not assumed to have zero tokens.
 
 Codex's optional `token_usage` observation comes from the documented
 `account/usage/read` endpoint. Brief output adds one line with average
