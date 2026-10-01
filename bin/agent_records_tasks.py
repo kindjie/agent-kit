@@ -297,6 +297,15 @@ def dependencies_done(records, fields):
     return False
 
 
+def task_available(records, fields):
+  """The shared advisory readiness rule used by next and the live view."""
+  return (fields.get("status") in LIVE and not live_owner(fields) and
+          fields["status"] != "blocked" and
+          fields.get("review", "").split(" ")[0] not in
+          ("required", "pending", "failed") and
+          dependencies_done(records, fields))
+
+
 def task_files(root, archived=False):
   valid = re.compile(r"T-\d{4,}-[a-z0-9-]+\.md\Z")
   paths = [p for p in root.glob("T-*-*.md") if valid.fullmatch(p.name)]
@@ -1115,15 +1124,11 @@ def task_read(root, changes, args, authoritative=True):
           continue
         if args.archived and path.parent.name != "archive":
           continue
-      else:
-        if live_owner(fields) or fields["status"] == "blocked" or fields[
-            "review"].split(" ")[0] in ("required", "pending", "failed"):
-          continue
       record_repos = comma(fields.get("repos", ""))
       if repos and not any((r == "none" and not record_repos) or
                            r in record_repos for r in repos):
         continue
-      if command == "next" and not dependencies_done(dependencies, fields):
+      if command == "next" and not task_available(dependencies, fields):
         continue
       rows.append(fields)
     rows.sort(key=lambda f: (("P0", "P1", "P2", "P3", "unset").index(

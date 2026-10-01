@@ -265,6 +265,73 @@ with unreadable or malformed unrelated records is marked `UNVERIFIED`
 (`authoritative: false` in JSON) because its dependent list may be incomplete.
 Run `lint` to diagnose graph errors after reconciling records from other clones.
 
+### Live task view
+
+```sh
+agent-task list --live
+agent-task list --live --here
+agent-task list --live --repo example --interval 1
+```
+
+The read-only terminal view refreshes verified local records every two seconds
+by default (minimum interval 0.1 seconds). It includes live tasks and tasks
+closed in the last hour; `--all` includes older closed tasks and `--archived`
+shows closed tasks only. Existing status, owner and repository filters apply.
+Without a usable input/output terminal it prints one plain snapshot and exits.
+Interactive mode uses Python's standard-library curses on macOS and Linux.
+
+| Keys | Action |
+| --- | --- |
+| `j` / `k`, Down / Up | Select next / previous task |
+| `gg` / `G` | Select first / last task |
+| Ctrl-d / Ctrl-u | Move half a page |
+| `/` | Filter IDs, titles, repositories, owners and states without case |
+| Enter | Keep the filter, or expand/collapse task details |
+| Tab | Show progress, dependencies or completion evidence |
+| `[` / `]` | Scroll detail lines up / down |
+| `?` | Help; `?` or Esc closes it |
+| Esc | Clear an edited filter, cancel a key sequence, or close details |
+| `q` / `ZZ`, Ctrl-C | Quit |
+
+Filter editing supports UTF-8, arrows, Home/End, Ctrl-a/e, Backspace,
+Ctrl-w to remove a word and Ctrl-u to clear. Selection follows the task ID
+across updates; selected titles wrap, with an ellipsis when space runs out.
+Tasks group by state, then priority and ID. Mutating taskglance keys are not
+assigned: the dashboard cannot edit, claim, close, delete or undo tasks.
+
+Changed rows are bold for ten seconds. Event badges last five minutes and
+recent closures remain visible for one hour. The recent strip distinguishes
+creation, completion, reopening, cancellation, supersession, rewritten logs
+and prerequisites becoming satisfied. The initial snapshot establishes a
+baseline rather than announcing every existing task as new. A disappeared
+task is never counted as completed. Changes entirely undone between polls
+cannot be observed. Session totals cover all repositories; health counts
+follow CLI filters, and `/` filters only the list. Event history is bounded
+and kept in memory, so restarting resets session counts.
+
+The header shows recorded states, expired claims, owner holds, eligibility
+under the existing `next` rule, recent completions and estimate coverage.
+Owner holds remain separate from `next` eligibility, whose existing rule
+does not interpret that field. A valid claim does not prove an agent is
+running; an expired one does not prove work stopped. The last-record age
+measures recorded activity, not productive progress. Completion checks show
+counts and recorded evidence, not a percentage of effort or freshly queried
+CI results. Dependency details include records outside the selected scope;
+only `done` satisfies a prerequisite. Missing dependencies stay unsatisfied.
+
+Time estimates are for the selected model's participation, not a task finish
+forecast. Zero is a known estimate; absent estimates remain unknown. The view
+does not add overlapping model estimates, turn points into hours, infer
+remaining work from elapsed time, or invent completion ETAs. An owner hold
+is labelled explicitly. Details include the recorded reason for unknown time.
+
+Refresh errors keep the last good snapshot behind a `STALE` banner with its
+verification time. The reader never repairs pending journals, writes cache or
+record files, synchronizes Git, scans transcripts or calls models. Locks are
+held only during snapshots, with a short bounded wait. `--unlocked`, `--json`
+and `--with-changes` cannot be combined with `--live`. Keyboard input, screen
+and cursor are restored on normal exit and SIGINT, SIGTERM or SIGHUP.
+
 Record estimates against exact model IDs:
 
 ```sh

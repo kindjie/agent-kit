@@ -10,6 +10,9 @@ import sys
 import textwrap
 from pathlib import Path
 
+# Readers must not create bytecode caches beside installed command modules.
+sys.dont_write_bytecode = True
+
 sys.path.insert(0, str(Path(os.path.realpath(__file__)).parent))
 from agent_records_core import (
   push_policy,
@@ -127,6 +130,10 @@ def parser():
   listing.add_argument("--all", action="store_true")
   listing.add_argument("--with-changes", action="store_true")
   listing.add_argument("--json", action="store_true")
+  listing.add_argument("--live", action="store_true",
+                       help="read-only interactive task dashboard")
+  listing.add_argument("--interval", type=float,
+                       help="live refresh seconds (default 2, minimum 0.1)")
   next_cmd = add("next", "Read the highest-priority available task.",
                  "agent-task next")
   next_cmd.add_argument("--repo", action="append")
@@ -364,6 +371,17 @@ def main():
   if not shutil.which("git"):
     raise RecordsError("git is required", 2)
   duration(args.wait, "wait")
+  if args.command == "list":
+    if args.interval is not None and not args.live:
+      raise RecordsError("--interval requires --live", 2)
+    if args.live:
+      if args.json or args.with_changes or args.unlocked:
+        raise RecordsError("--live cannot use --json, --with-changes or "
+                           "--unlocked", 2)
+      args.interval = duration(2 if args.interval is None else args.interval,
+                               "interval")
+      if args.interval < 0.1:
+        raise RecordsError("interval must be at least 0.1 second", 2)
   if getattr(args, "force", None) is not None:
     one_line(args.force, "force reason")
     if not args.force.strip():
@@ -393,6 +411,9 @@ def main():
     return events(root, changes, args)
   if args.command == "watch":
     return watch_task(root, changes, args)
+  if args.command == "list" and args.live:
+    from agent_records_live_terminal import run_live
+    return run_live(root, changes, args)
   read = args.command in ("show", "list", "next", "lint") or dependency_read
   agent = "reader" if read else require_agent(args.agent)
   roots_to_write = [] if read else [root]
