@@ -222,8 +222,10 @@ agent-changelog doctor
 
 `init --adopt` accepts an existing records-only git repository. Other tracked
 paths need a repeated `--allow PATH`; the marker records these exceptions.
-Both roots must be writable in an agent sandbox, including their lock and
-journal files. `doctor` probes writability and tests git signing in a
+Writers need both roots writable in an agent sandbox, including Git metadata,
+lock and journal files. Readers open existing lock files read-only. `init`
+creates them; run `doctor` after cloning records to provision missing locks.
+`doctor` probes writability and tests git signing in a
 temporary repository. It may open a signing prompt. The commands respect
 the repository's signing settings and hooks; an executable commit or push
 hook makes mutations refuse because it could change unjournaled files.
@@ -317,10 +319,26 @@ unknown model reason acknowledges that neither metric can be keyed reliably.
 These reasons are explicit exceptions, not verified predictions.
 
 The optional `execution-model` and `estimate-model-unknown` task headers store
-the selection. Renewals by the same live owner reuse it; takeovers and
+the selection. Renewals by the same recorded owner reuse it, even after expiry; takeovers and
 handoffs need a fresh selection or explanation. Estimates for unrelated
 models do not satisfy the check and are never used to infer a selection.
 Warnings show commands for recording resources and choosing the model.
+
+For a new task, combine creation, estimates and ownership in one transaction:
+
+```sh
+agent-task --agent helper new --title 'Example task' --storypoints 3 \
+  --claim --model provider/model-v1 --wall-seconds 600 --tokens 20000
+```
+
+`new --claim` accepts `--hours` (default 2, maximum 24). Without `--claim`,
+startup options are rejected. Missing required estimates or invalid input
+leave no task, allocation or commit behind. Use `--model-unknown REASON` alone
+when the model is unavailable. For a known model, the same numeric or unknown
+metric options as `estimate set` are available. Existing `claim` accepts those
+options too; same-owner renewals can update metrics for their retained model.
+Omitted metrics are preserved, and takeovers never inherit a model selection.
+Helper registration remains explicit and separate from owner selection.
 
 Register each helper's intended model separately, after recording its
 per-model estimates:
@@ -338,7 +356,8 @@ helper's previous selection unless a new selection is supplied. The optional
 `{"unknown":"reason"}`; it never changes the owner's selection. Estimates
 remain task-wide per-model entries, not separate per-helper budgets. Removing
 a helper clears its selection; release, takeover, handoff and closure clear
-all helper registrations and selections.
+all helper registrations and selections. Same-owner renewal after expiry keeps
+helpers and their selections unless another agent has taken ownership.
 The policy checks these task transitions, not whether arbitrary work outside
 the tool actually started, and does not validate estimate accuracy.
 Implicit claim heartbeats on ordinary task edits are not rechecked; this is
@@ -387,6 +406,16 @@ resolve conflicts manually. If two machines allocate the same task ID and
 `.next-id` conflicts, renumber the local task file and its `id:`, `related:`
 references and changelog `tasks:` values, then run both `lint` commands.
 Never use a records entry itself as permission to remove a worktree or file.
+
+Ordinary reads and watches never invoke recovery or signing. A pending journal
+makes them exit 5 without changing records; use an explicitly authorized
+`agent-task --agent ID recover` or `agent-changelog --agent ID recover`.
+Mutations retain automatic recovery before applying their own transaction.
+`--unlocked` permits a diagnostic read of pending state marked `UNVERIFIED`
+(`authoritative: false` in JSON); it cannot establish completion or ownership.
+A live writer may still hold a lock: readers wait up to `--wait` rather than
+inspect its in-flight transaction. Do not delete its lock or launch competing
+recovery operations. `doctor` and explicit recovery are mutating operations.
 
 ## What it reads, and what leaves the machine
 

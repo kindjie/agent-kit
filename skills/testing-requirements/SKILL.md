@@ -70,6 +70,14 @@ runtime exercise. Do not fabricate throwaway tests merely to satisfy a rule,
 but do add durable automated coverage when the behaviour is important and a
 repeatable oracle is available.
 
+Reuse completed evidence only when its relevant source, dependencies,
+configuration and environment still match. Re-run affected checks after a
+material change or failure; do not repeat unchanged suites merely because a
+status message arrived or a different agent took over. Project-required final
+checks still apply. For costly experiments, state the hypothesis, discriminating
+result, timeout and stopping condition before running; preserve failed evidence
+and change the hypothesis or input before retrying.
+
 Document new test targets or catalogue entries only where the project requires
 them. Keep test instructions focused on commands, fixtures, constraints, and
 non-obvious rationale that the tests themselves cannot express.

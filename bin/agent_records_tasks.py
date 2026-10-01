@@ -94,6 +94,46 @@ def unknown_reason(value):
   return one_line(value, "unknown estimate reason")
 
 
+def estimate_metrics(args):
+  metrics = {}
+  for key, attr in (("wall-seconds", "wall_seconds"), ("tokens", "tokens")):
+    value = getattr(args, attr, None)
+    reason = getattr(args, "wall_unknown" if key == "wall-seconds"
+                     else "tokens_unknown", None)
+    if value is not None and reason is not None:
+      raise RecordsError("choose estimate value or unknown reason", 2)
+    if value is not None:
+      metrics[key] = value
+    elif reason is not None:
+      metrics[key + "-unknown"] = unknown_reason(reason)
+  return metrics
+
+
+def apply_start_estimates(fields, args, reuse=False):
+  metrics = estimate_metrics(args)
+  if metrics:
+    model = getattr(args, "model", None) or (
+      fields.get("execution-model") if reuse else None)
+    if not model or getattr(args, "model_unknown", None) is not None:
+      raise RecordsError("inline estimates require a known execution model", 2)
+    estimates = read_estimates(fields.get("estimates", ""))
+    prior = estimates.setdefault(model_id(model), {})
+    for key, value in metrics.items():
+      prior.pop(key[:-8] if key.endswith("-unknown") else key + "-unknown",
+                None)
+      prior[key] = value
+    validate_estimates(estimates)
+    fields["estimates"] = json.dumps(estimates, sort_keys=True, allow_nan=False)
+  execution_estimates(fields, args, reuse=reuse)
+
+
+def claim_hours(value):
+  hours = duration(value if value is not None else "2", "hours")
+  if hours > 24:
+    raise RecordsError("claim is limited to 24 hours", 2)
+  return hours
+
+
 def execution_estimates(fields, args=None, reuse=False):
   """Select the execution model, then apply the local estimate policy."""
   selected = getattr(args, "model", None)
@@ -129,17 +169,23 @@ def execution_estimates(fields, args=None, reuse=False):
   if missing:
     message = "missing execution estimates: " + ", ".join(missing)
     if args is not None:
-      selection = "claim " + args.task
+      task = fields["id"] if args.command == "new" else args.task
+      selection = "claim " + task
       if args.command == "helper":
         selection = "helper add " + args.task + " " + args.helper_id
       elif args.command == "handoff":
         selection = ("handoff " + args.task + " --to " + args.to +
                      " --note REASON")
       message += (". Record resources with agent-task --agent <id> estimate "
-                  "set " + args.task + " MODEL --wall-seconds N --tokens N "
+                  "set " + task + " MODEL --wall-seconds N --tokens N "
                   "(or --wall-unknown/--tokens-unknown REASON); select with "
                   "agent-task --agent <id> " + selection +
                   " --model MODEL (or --model-unknown REASON)")
+      if args.command == "new" and policy == "require":
+        message = ("missing execution estimates: " + ", ".join(missing) +
+                   ". Retry new --claim with --model MODEL and "
+                   "--wall-seconds N --tokens N (or unknown reasons), "
+                   "or --model-unknown REASON; no task was created")
       candidates = read_estimates(fields.get("estimates", ""))
       if candidates:
         message += ". Recorded model IDs: " + ", ".join(sorted(candidates))
@@ -366,6 +412,10 @@ def default_repos(extra):
 
 def new_task(root, args, agent, push):
   title = one_line(args.title, "title")
+  if not args.claim and (args.model is not None or
+                         args.model_unknown is not None or
+                         args.hours is not None or estimate_metrics(args)):
+    raise RecordsError("startup options require new --claim", 2)
   if args.review and (not args.from_design or not re.fullmatch(
       r"passed .+", args.review)):
     raise RecordsError("--review requires --from-design and passed REF", 2)
@@ -424,7 +474,13 @@ def new_task(root, args, agent, push):
           "\n\n## Log\n")
   if args.from_design:
     fields["links"] = "doc:" + one_line(args.from_design)
-  body = append_log(body, agent, "Created task")
+  if args.claim:
+    hours = claim_hours(args.hours)
+    apply_start_estimates(fields, args)
+    fields.update(owner=agent, status="in-progress",
+                  expires=stamp(now() + timedelta(hours=hours)))
+  body = append_log(body, agent, "Created and claimed task" if args.claim
+                    else "Created task")
   edits = {relative: put_task(fields, ORDER, body),
            ".next-id": (str(number + 1) + "\n").encode()}
   validate_task_post(root, edits)
@@ -525,20 +581,19 @@ def alter_task(root, args, agent, push, changes=None):
       forced_action = permission(fields, agent, command, force)
     old = fields.get("owner", "none")
     old_expiry = fields.get("expires", "")
-    hours = duration(args.hours, "hours")
-    if hours > 24:
-      raise RecordsError("claim is limited to 24 hours", 2)
-    execution_estimates(fields, args, reuse=owner == agent)
+    same_owner = old == agent
+    hours = claim_hours(args.hours)
+    apply_start_estimates(fields, args, reuse=same_owner)
     fields["owner"] = agent
     fields["expires"] = stamp(max(
       parse_time(old_expiry) if owner == agent else now(),
       now() + timedelta(hours=hours)))
-    if owner != agent:
+    if not same_owner:
       fields["helpers"] = ""
       fields.pop("helper-models", None)
     if fields["status"] in ("open", "blocked") and owner is None:
       fields["status"] = "in-progress"
-    takeover = old != "none" and (owner is None or forced_action)
+    takeover = old not in ("none", agent) and (owner is None or forced_action)
     body = append_log(body, agent, "Claimed task" +
                       (" from " + old + " (expiry " + old_expiry + ")"
                        if takeover else "") +

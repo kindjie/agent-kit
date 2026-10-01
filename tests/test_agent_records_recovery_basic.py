@@ -52,7 +52,7 @@ class RecoveryBasicTest(RecordsFixture):
     self.assertFalse(list(self.tasks.glob("T-*.md")))
     self.assertEqual((self.tasks / ".next-id").read_text(), "1\n")
 
-  def test_killed_writer_recovered_by_read(self):
+  def test_killed_writer_requires_explicit_recovery(self):
     self.init()
     task = self.run_cmd("agent-task", "--agent", "agent-a", "new",
                         "--title", "Original").strip()
@@ -86,6 +86,9 @@ with core.locks([root], [root], 1, 'agent-a', 'test'):
     self.assertNotEqual(path.read_bytes(), before)
     self.run_cmd("agent-task", "doctor", code=5)
     self.assertTrue((self.tasks / ".records-journal.json").exists())
+    self.run_cmd("agent-task", "list", code=5)
+    self.assertNotEqual(path.read_bytes(), before)
+    self.run_cmd("agent-task", "--agent", "agent-a", "recover")
     self.assertIn(task, self.run_cmd("agent-task", "list"))
     self.assertEqual(path.read_bytes(), before)
     self.assertFalse((self.tasks / ".records-journal.json").exists())
@@ -195,7 +198,8 @@ with core.locks([tasks, changes], [tasks, changes], 1, 'agent-a', 'cross'):
         process.stderr.close()
         if pause_side == "after-tasks":
           (self.changes / ".records-journal.json").unlink()
-        self.run_cmd("agent-task", "list")
+        self.run_cmd("agent-task", "list", code=5)
+        self.run_cmd("agent-task", "--agent", "agent-a", "recover")
         if pause_side in ("tasks", "after-tasks"):
           self.assertEqual((self.tasks / "README.md").read_bytes(),
                            task_before + b"task post\n")

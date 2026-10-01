@@ -95,6 +95,20 @@ def parser():
   new.add_argument("--review")
   new.add_argument("--depends-on", action="append")
   new.add_argument("--storypoints", type=int, choices=[1, 2, 3, 5, 8, 13, 20])
+  new.add_argument("--claim", action="store_true",
+                   help="create, estimate and claim in one transaction")
+  new.add_argument("--hours", help="claim duration; requires --claim")
+  selection = new.add_mutually_exclusive_group()
+  selection.add_argument("--model", help="execution model; requires --claim")
+  selection.add_argument("--model-unknown", help="reason; requires --claim")
+
+  def estimate_options(command):
+    command.add_argument("--wall-seconds", type=float)
+    command.add_argument("--tokens", type=int)
+    command.add_argument("--wall-unknown")
+    command.add_argument("--tokens-unknown")
+
+  estimate_options(new)
 
   show = add("show", "Read a task, associations and cursor; writes nothing.",
              "agent-task show T-0001")
@@ -149,6 +163,7 @@ def parser():
               "agent-task --agent helper claim T-0001 --model model-v1")
   claim.add_argument("task")
   claim.add_argument("--hours", default="2")
+  estimate_options(claim)
   selection = claim.add_mutually_exclusive_group()
   selection.add_argument("--model", help="intended exact execution model ID")
   selection.add_argument("--model-unknown", help="why the model ID is unknown")

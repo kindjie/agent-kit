@@ -48,7 +48,7 @@ class RecordsTest(RecordsFixture):
                  "--note", "unclaimed")
     self.assertIn("status: open", self.run_cmd("agent-task", "show", task))
 
-  def test_expiry_ends_helper_rights_and_reclaim_clears_helpers(self):
+  def test_expiry_ends_helper_rights_until_same_owner_reclaims(self):
     self.init()
     task = self.run_cmd("agent-task", "--agent", "agent-a", "new",
                         "--title", "Expiry").strip()
@@ -76,7 +76,9 @@ class RecordsTest(RecordsFixture):
                  "After expiry")
     self.assertIn("After expiry (not owner)", path.read_text())
     self.run_cmd("agent-task", "--agent", "agent-a", "claim", task)
-    self.assertIn("helpers: \n", path.read_text())
+    self.assertIn("helpers: agent-b\n", path.read_text())
+    self.run_cmd("agent-task", "--agent", "agent-b", "check", task,
+                 "docs", "--na", "No docs")
 
   def test_closed_entry_force_adds_correction(self):
     self.init()
