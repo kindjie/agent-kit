@@ -21,6 +21,9 @@ not a keyword-matching test.
 | Continue implementing an unchanged task already estimated at 5. | Do not invoke. |
 | Before starting this tracked task, it has no estimate. | Invoke; estimate proportionally, without a backlog-wide pass. |
 | Compare token usage by model for two completed runs. | Do not invoke merely for resource analysis; do not convert tokens to points. |
+| Create a bounded task with a known model ID and usable local resource references. | Record points and rough wall-time/token estimates separately; include expected tests and review. |
+| Estimate a task using two models in parallel, with an additional reviewer. | Estimate each model's participation; do not sum overlapping wall times as task elapsed time. State any excluded reviewer usage. |
+| Scope is bounded, but the model ID or token basis is unknown. | Record the useful estimates; leave unsupported per-model metrics unset with a brief reason, without inventing precision. |
 
 Review also checks that examples contain no private calibration and that
 task writes, when explicitly requested, follow existing records permissions.

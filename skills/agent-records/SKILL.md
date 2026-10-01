@@ -31,6 +31,10 @@ so without its own ID it writes as you.
   highest-priority unclaimed task.
 - **Start:** `agent-task new --title ...` for new work, then
   `agent-task claim T-NNNN`. Claims expire; claim again to extend.
+- **Estimate:** when creating or materially refining tracked work, or before
+  starting unestimated work, use `estimate-agent-work` and record its points
+  and available per-model wall-time/token estimates. Briefly explain metrics
+  left unset. Follow that skill's guidance; do not re-estimate unchanged work.
 - **Progress:** `agent-task log T-NNNN 'what changed'` at milestones, not
   every step. `status` moves between in-progress, in-review and blocked.
 - **Planning:** `dependency add TASK PREREQUISITE` declares a dependency;
