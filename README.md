@@ -290,6 +290,7 @@ Interactive mode uses Python's standard-library curses on macOS and Linux.
 | Tab | Show progress, dependencies, evidence or observed waits |
 | `[` / `]`, Ctrl-k / Ctrl-j | Scroll detail lines up / down |
 | `f` | Toggle full-screen / split details |
+| Mouse wheel / click | Scroll list or details / select a task row |
 | `?` | Help; `?` or Esc closes it |
 | Esc | Clear an edited filter, cancel a key sequence, or close details |
 | `q` / `ZZ`, Ctrl-C | Quit |
@@ -303,6 +304,8 @@ For collapsible parent/subagent groups, use `agent-quota --agents --live`.
 The live default is 100 parent groups with their observed subagents; groups
 start collapsed. Rows lead with recorded session titles when available;
 IDs, activity and descendant summaries occupy a separate column.
+Click selects an agent row; click its fold marker to toggle its group.
+Wheel over the list moves selection; wheel over details scrolls those details.
 Space toggles a group, Left/Right navigate the hierarchy, and Enter shows
 observation details. Rows distinguish ended turns, explicit waits, reasoning
 and tool calls, with descendant activity visible even when collapsed.

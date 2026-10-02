@@ -541,6 +541,8 @@ A process can die without a transcript event. The view does not infer a stall
 or emit a stall alert from silence alone.
 
 `--agents --live` displays a collapsible tree with explicit branch connectors.
+Mouse wheel moves selection, or scrolls details under the pointer. Click a
+row to select it; click its fold marker to collapse/expand.
 Space toggles a group; Left collapses or selects its parent; Right expands
 or selects its first child. `j`/`k` or arrows select, `gg`/`G` jump, Ctrl-d/u
 move half a page, `/` filters while retaining ancestors, Enter toggles details,

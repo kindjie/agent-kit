@@ -1277,6 +1277,32 @@ def live_consumers(args: argparse.Namespace, now: float
     return None
 
 
+def live_terminal_size(out: Any):
+  try:
+    return os.get_terminal_size(out.fileno())
+  except (OSError, ValueError, AttributeError):
+    return shutil.get_terminal_size((100, 40))
+
+
+def clip_live_line(line: str, width: int) -> str:
+  """Keep ANSI styles while preventing terminal wrap and viewport scroll."""
+  import unicodedata
+  out, used = [], 0
+  for token in re.findall(r'\x1b\[[0-9;]*m|.', line):
+    if token.startswith('\x1b'):
+      out.append(token)
+      continue
+    columns = (0 if unicodedata.combining(token) else
+               2 if unicodedata.east_asian_width(token) in ('W', 'F') else 1)
+    if used + columns > max(0, width):
+      if '\x1b' in line:
+        out.append('\x1b[0m')
+      break
+    out.append(token)
+    used += columns
+  return ''.join(out)
+
+
 def fit_screen(lines: list[str], height: int) -> list[str]:
   """Keep the header visible: drop what does not fit, and say so."""
   if len(lines) <= height:
@@ -1356,8 +1382,10 @@ def run_live(args: argparse.Namespace, cache_path: Path,
         f"{SPINNER[tick % len(SPINNER)]} agent-quota --{view} --live · every "
         f"{f'{interval:g}s' if interval < 60 else format_duration(interval)} "
         f"· quota data {age} old · q to quit", ("dim",), args.color_on)
-      size = shutil.get_terminal_size((100, 40))
-      lines = fit_screen([status, "", *body.splitlines()], size.lines - 1)
+      size = live_terminal_size(out)
+      lines = fit_screen([clip_live_line(line, size.columns - 1)
+                          for line in [status, "", *body.splitlines()]],
+                         size.lines - 1)
       out.write("\033[H\033[2J" + "\n".join(lines) + "\n")
       out.flush()
       if args.notify and not first:

@@ -36,6 +36,7 @@ class AgentView:
     self.error = ''
     self.refreshed = None
     self.labels = {}
+    self.mouse_rows, self.mouse_details = {}, (0, 0)
 
   def update(self, agents, now, incomplete=False):
     old = self.tree
@@ -188,7 +189,21 @@ class AgentView:
               'Local observations only; no watcher count or liveness proof.']
     return lines
 
+  def mouse(self, action, x, y, page):
+    if self.mode != 'normal':
+      return
+    if action in ('up', 'down'):
+      in_details = self.mouse_details[0] <= y < self.mouse_details[1]
+      self.key(('[' if action == 'up' else ']') if in_details else
+               ('k' if action == 'up' else 'j'), page)
+    elif action == 'click' and y in self.mouse_rows:
+      key, fold_x = self.mouse_rows[y]
+      self.selected, self.offset = key, 0
+      if x == fold_x and self.tree.children[key]:
+        self.collapsed[key] = not self.collapsed[key]
+
   def frame(self, width, height, now):
+    self.mouse_rows, self.mouse_details = {}, (0, 0)
     width, height = max(0, width - 1), max(1, height)
     self.tree.refresh(now)
     shown = self.sync()
@@ -211,10 +226,8 @@ class AgentView:
              ' ago · ' + self.error if self.error else
              'AGENTS · observed activity · refreshed ' +
              elapsed(self.refreshed, now) + ' ago')
-    coverage = 'local observations only'
-    if self.tree.incomplete:
-      coverage += ' · coverage unknown'
-    lines = [(title, 'bold'), (coverage, '')]
+    title += ' · partial list' if self.tree.incomplete else ''
+    lines = [(title, 'bold')]
     details = [part for line in self.detail(now) for part in wrap(line, width)]
     detail_slots = min(len(details), height // 2) if self.details else 0
     slots = max(0, height - len(lines) - detail_slots - 1)
@@ -264,10 +277,12 @@ class AgentView:
           'waiting' if state.startswith('WAIT') else
           'working' if state in ('TOOL', 'THINKING') else
           'bold' if group else '')
+        self.mouse_rows[len(lines)] = (key, cells(prefix))
         lines.append((text, style))
     elif slots:
       lines.append(('No matching agents observed', ''))
     if detail_slots:
+      self.mouse_details = (len(lines), len(lines) + detail_slots)
       self.offset = min(self.offset, max(0, len(details) - detail_slots))
       lines.extend((t, '') for t in details[self.offset:self.offset + detail_slots])
     start = self.first + 1 if shown and slots else 0
@@ -288,6 +303,7 @@ class AgentView:
 def run_agent_live(args, cache_path, quota, loader=None):
   import curses
   import termios
+  from agent_records_live_terminal import enable_mouse, read_input, mouse_screen
   module = quota.agents_module()
   interval = args.interval or quota.LIVE_INTERVAL
   if loader is None:
@@ -333,6 +349,7 @@ def run_agent_live(args, cache_path, quota, loader=None):
       except curses.error:
         pass
     stdscr.keypad(True)
+    enable_mouse(curses)
     stdscr.timeout(100)
     pending, deadline, last_summaries = False, 0, 0
     previous_states, sent = {}, set()
@@ -387,8 +404,13 @@ def run_agent_live(args, cache_path, quota, loader=None):
         stdscr.refresh()
         previous = (lines, height, width)
       try:
-        key = stdscr.get_wch()
+        key, event = read_input(stdscr, curses)
       except curses.error:
+        continue
+      if event:
+        action, x, y = event
+        view.mouse(action, x, y - len(top), max(1, height - len(top) - 3))
+      if key is None:
         continue
       key = mapping.get(key, '') if isinstance(key, int) else key
       if view.key(key, max(1, height - len(top) - 3)):
@@ -397,7 +419,7 @@ def run_agent_live(args, cache_path, quota, loader=None):
   try:
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
       handlers[sig] = signal.signal(sig, stop)
-    return curses.wrapper(screen)
+    return mouse_screen(curses, screen)
   except KeyboardInterrupt:
     return 0
   finally:

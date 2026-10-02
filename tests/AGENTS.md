@@ -329,7 +329,8 @@ non-predictive estimates, new/done/reopened/removed events, rewritten logs,
 selection and filter controls, full selected-block scrolling, update times,
 semantic row styles, selected-model estimate columns, local-day update
 columns, full-screen details and
-Ctrl-j/k scrolling with Enter preserved, Unicode width and terminal sanitization,
+Ctrl-j/k scrolling with Enter preserved, mouse routing, Unicode width and
+terminal sanitization,
 stale snapshots, lock contention and unchanged record bytes. Real PTYs test
 help, resize, quit and terminal mode restoration after SIGINT, SIGTERM and
 SIGHUP. Also run the full records suite after parser/readiness changes.
@@ -361,5 +362,7 @@ and cyclic hierarchies, descendant summaries, stable selection/collapse,
 filter ancestors, family-preserving live limits, title metadata, title-first Unicode-aligned columns, explicit
 on-screen ranges and cached task waits without writes. Real PTYs exercise
 help, collapse/expand, resize and terminal restoration on quit and signals
-while collection is slow. Run the quota, agents, timeline and task-live suites
+while collection is slow. PTY mouse reports exercise clicks and both wheel
+directions; timeline clipping covers ANSI colours and wide Unicode.
+Run the quota, agents, timeline and task-live suites
 when changing their shared presentation or parsing.

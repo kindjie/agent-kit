@@ -242,6 +242,7 @@ class LiveView:
     self.detail_offset = 0
     self.first = 0
     self.wait_observations = None
+    self.mouse_rows, self.mouse_details = {}, (0, 0)
     self.sync()
 
   def scoped(self, row):
@@ -438,7 +439,18 @@ class LiveView:
         lines += ['No current waits observed; this is not a watcher count.']
     return lines
 
+  def mouse(self, action, x, y, page):
+    if self.mode != 'normal':
+      return
+    if action in ('up', 'down'):
+      in_details = self.mouse_details[0] <= y < self.mouse_details[1]
+      self.key(('[' if action == 'up' else ']') if in_details else
+               ('k' if action == 'up' else 'j'), page)
+    elif action == 'click' and y in self.mouse_rows:
+      self.selected, self.detail_offset = self.mouse_rows[y], 0
+
   def frame(self, width, height, now):
+    self.mouse_rows, self.mouse_details = {}, (0, 0)
     width, height = max(0, width - 1), max(1, height)
     ids = self.sync()
     if self.mode == 'help':
@@ -462,6 +474,7 @@ class LiveView:
     if self.full_details:
       detail = [part for line in self.detail(now) for part in wrap(line, width)]
       slots = max(0, height - 2)
+      self.mouse_details = (1, height - 1)
       self.detail_offset = min(self.detail_offset, max(0, len(detail) - slots))
       lines = [('DETAILS · full-screen · ' + str(self.selected or ''), 'bold')]
       lines += [(t, '') for t in detail[self.detail_offset:self.detail_offset + slots]]
@@ -489,12 +502,10 @@ class LiveView:
               timestamp(r['fields'].get('closed', '')) and
               timedelta(0) <= now - timestamp(r['fields']['closed']) <=
               timedelta(hours=1)]
-    estimated = sum('wall-seconds' in read_estimates(
-      r['fields'].get('estimates', '{}')).get(
-        r['fields'].get('execution-model'), {}) for r in live)
     created = sum(timedelta(0) <= now - timestamp(r['fields']['created']) <=
                   timedelta(hours=1) for r in rows)
-    lines = [(header, 'bold'), (status, 'bold' if self.state.error else ''),
+    title = status + ' · ' + header if self.state.error else header + ' · ' + status
+    lines = [(title, 'bold'),
       (f'{states["in-progress"]} working · {states["in-review"]} review · '
        f'{states["open"]} open · {states["blocked"]} blocked', ''),
       (f'{expired} expired claims · {holds} owner holds · {ready} next-eligible', ''),
@@ -502,9 +513,6 @@ class LiveView:
        f'+{self.state.counts["NEW"]} new / '
        f'{self.state.counts["DONE"]} done / '
        f'{self.state.counts["REOPENED"]} reopened', '')]
-    if height >= 20:
-      lines.append((f'{estimated}/{len(live)} selected-model time estimates '
-                    '· finish ETAs unknown', ''))
     detail = []
     if self.expanded:
       for line in self.detail(now):
@@ -591,11 +599,14 @@ class LiveView:
         tone = 'warning' if warning else f['status']
         style = tone + (' selected' if selected else ' bold' if changed and (
           now - changed < timedelta(seconds=10)) else '')
+        for y in range(len(lines), len(lines) + len(row_lines)):
+          self.mouse_rows[y] = ident
         lines.extend((line, style) for line in row_lines)
         used += len(row_lines)
     elif available:
       lines.append(('No matching tasks', ''))
     if detail_slots:
+      self.mouse_details = (len(lines), len(lines) + detail_slots)
       self.detail_offset = min(self.detail_offset,
                                max(0, len(detail) - detail_slots))
       lines.extend((line, '') for line in detail[

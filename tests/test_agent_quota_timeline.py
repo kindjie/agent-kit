@@ -520,6 +520,26 @@ class LiveTest(unittest.TestCase):
     self.assertIn("agent-quota --timeline --live · every 30s", output)
     self.assertIn("Timeline", output)
 
+  def test_live_uses_pane_dimensions_over_environment(self):
+    from types import SimpleNamespace
+    import os
+    with patch.dict(os.environ, COLUMNS='1000', LINES='1000'), \
+         patch.object(os, 'get_terminal_size',
+                      return_value=os.terminal_size((40, 10))) as size:
+      self.assertEqual(AGENT_QUOTA.live_terminal_size(
+        SimpleNamespace(fileno=lambda: 9)), (40, 10))
+      size.assert_called_once_with(9)
+
+  def test_live_line_clipping_prevents_wrap_over_spinner(self):
+    line = '\x1b[31m' + '界' * 30 + '\x1b[0m'
+    clipped = AGENT_QUOTA.clip_live_line(line, 20)
+    plain = __import__('re').sub(r'\x1b\[[0-9;]*m', '', clipped)
+    self.assertLessEqual(sum(2 if c == '界' else 1 for c in plain), 20)
+    self.assertIn('\x1b[31m', clipped)
+    self.assertTrue(clipped.endswith('\x1b[0m'))
+    output, _ = self.run_frames([self.document(False)])
+    self.assertIn('agent-quota --timeline --live', output)
+
   def test_spinner_ticks_slowly_between_frames(self):
     output, _ = self.run_frames([self.document(False)] * 2, interval=5)
     first, second = output.split("\033[H\033[2J")[1:]

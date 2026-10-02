@@ -150,6 +150,25 @@ class ActivityTest(unittest.TestCase):
     for width in (1, 25, 60, 120):
       self.assertTrue(all(cells(t) < width for t, _ in ui.frame(width, 15, 1001)))
 
+  def test_mouse_selection_group_folding_and_detail_scrolling(self):
+    ui = importlib.import_module('agent_activity_live').AgentView()
+    ui.update([agent('root'), agent('child', 'root', 'thinking')], 1001)
+    ui.frame(120, 15, 1001)
+    ui.mouse('click', 0, 1, 10)
+    self.assertEqual(len(ui.visible()), 2)
+    ui.frame(120, 15, 1001)
+    ui.mouse('click', 10, 2, 10)
+    self.assertEqual(ui.selected, 'codex:child')
+    ui.mouse('up', 10, 2, 10)
+    self.assertEqual(ui.selected, 'codex:root')
+    ui.key('\r', 10)
+    ui.frame(120, 15, 1001)
+    ui.mouse('down', 10, ui.mouse_details[0], 10)
+    self.assertEqual(ui.offset, 1)
+    ui.mode = 'filter'
+    ui.mouse('click', 0, 1, 10)
+    self.assertEqual(ui.selected, 'codex:root')
+
   def test_live_limit_preserves_families_and_other_parents(self):
     from types import SimpleNamespace
     rows = [agent('root')] + [agent(str(i), 'root', seen=1100+i)
@@ -173,11 +192,11 @@ class ActivityTest(unittest.TestCase):
     ui.update(rows, 1001)
     self.assertEqual(len(ui.visible()), 21)
     frame = str(ui.frame(120, 10, 1001))
-    self.assertIn('Rows 1-7/21', frame)
+    self.assertIn('Rows 1-8/21', frame)
     self.assertIn('21 groups', frame)
     self.assertIn('22 agents', frame)
     ui.key('G', 7)
-    self.assertIn('Rows 15-21/21', str(ui.frame(120, 10, 1001)))
+    self.assertIn('Rows 14-21/21', str(ui.frame(120, 10, 1001)))
 
   def test_collapsing_preserves_selection_and_explicit_choices(self):
     ui_mod = importlib.import_module('agent_activity_live')
@@ -414,14 +433,23 @@ run_agent_live(args, Path('/unused'), quota, loader)
               if select.select([master], [], [], .05)[0]:
                 output += os.read(master, 65536)
                 if text in output:
-                  return
+                  return output
               if proc.poll() is not None:
                 break
             self.fail(repr(output))
           try:
-            until(b'1 active')
-            os.write(master, b' ')
+            initial = until(b'1 active')
+            def mouse(button, x, y):
+              return (f'\x1b[<{button};{x+1};{y+1}M'.encode()
+                      if b'1006' in initial else
+                      b'\x1b[M' + bytes((button+32, x+33, y+33)))
+            os.write(master, mouse(0, 0, 1))
             until(b'THINKING')
+            os.write(master, mouse(65, 9, 2) + b'\r')
+            until(b'Reasoning event observed')
+            os.write(master, b'\x1b')
+            until(b'Rows')
+            os.write(master, mouse(64, 9, 1))
             time.sleep(.2)  # Collector is now slow; keys must still respond.
             os.write(master, b'?')
             until(b'tree controls')

@@ -193,6 +193,24 @@ class LiveModelTest(unittest.TestCase):
     self.assertLess(header.index('Est tokens'), header.index('Est time'))
     self.assertLess(row.index('0m'), row.index('[open]'))
 
+  def test_mouse_targets_rows_and_details_and_ignores_help(self):
+    self.state.update({f'T-{i:04d}': record(f'T-{i:04d}')
+                       for i in range(1, 5)}, NOW)
+    view = self.live.LiveView(self.state)
+    view.frame(120, 30, NOW)
+    y = next(y for y, ident in view.mouse_rows.items() if ident == 'T-0003')
+    view.mouse('click', 5, y, 20)
+    self.assertEqual(view.selected, 'T-0003')
+    view.mouse('up', 5, y, 20)
+    self.assertEqual(view.selected, 'T-0002')
+    view.key('f', 20)
+    view.frame(80, 8, NOW)
+    view.mouse('down', 5, 3, 20)
+    self.assertEqual(view.detail_offset, 1)
+    view.mode = 'help'
+    view.mouse('down', 5, 3, 20)
+    self.assertEqual(view.detail_offset, 1)
+
   def test_selection_follows_id_filter_and_vim_keys(self):
     rows = {f'T-{i:04d}': record(f'T-{i:04d}') for i in range(1, 31)}
     self.state.update(rows, NOW)
@@ -320,6 +338,8 @@ class LiveCommandTest(RecordsFixture):
     import fcntl
     import pty
     import termios
+    self.run_cmd('agent-task', '--agent', 'reader', 'new',
+                 '--title', 'Mouse second task')
     for exit_signal in (None, signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
       with self.subTest(exit_signal=exit_signal):
         master, slave = pty.openpty()
@@ -342,8 +362,16 @@ class LiveCommandTest(RecordsFixture):
                 break
             self.fail(repr(output))
           try:
-            until(b'TASKS')
-            os.write(master, b'\r')
+            initial = until(b'TASKS')
+            def mouse(button, x, y):
+              return (f'\x1b[<{button};{x+1};{y+1}M'.encode()
+                      if b'1006' in initial else
+                      b'\x1b[M' + bytes((button+32, x+33, y+33)))
+            os.write(master, mouse(65, 5, 4) + b'\r')
+            until(b'Progress')
+            os.write(master, b'\x1b')
+            until(b'2 tasks')
+            os.write(master, mouse(0, 5, 4) + b'\r')
             until(b'Progress')
             os.write(master, b'f')
             until(b'full-screen')
