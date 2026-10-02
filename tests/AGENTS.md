@@ -345,3 +345,17 @@ synthetic ledgers for provider accounting, copied history, cumulative resets,
 request-record precedence and visibly incomplete input. Also run the existing
 records suites when changing the `agent-task` parser, and the privacy suite
 for all public additions. No provider/model calls are made by these tests.
+
+### Agent activity and interactive hierarchy
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_activity
+```
+
+Covers conservative foreground wait recognition, cleared and stale waits,
+Codex/Claude transcript observations, fork versus spawn ancestry, incomplete
+and cyclic hierarchies, descendant summaries, stable selection/collapse,
+filter ancestors and cached task waits without writes. Real PTYs exercise
+help, collapse/expand, resize and terminal restoration on quit and signals
+while collection is slow. Run the quota, agents, timeline and task-live suites
+when changing their shared presentation or parsing.

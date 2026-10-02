@@ -2542,7 +2542,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.error("--color needs a text view (--brief, --verbose, --timeline, "
                  "--agents or --models --brief)")
   args.color_on = resolve_color(args.color or "auto", sys.stdout)
-  if args.live and sys.stdout.isatty():
+  if args.live and sys.stdout.isatty() and (
+      not args.agents or sys.stdin.isatty()):
     return run_live(args, Path(args.cache_file).expanduser()
                     if args.cache_file else default_cache_path())
   if args.agents:

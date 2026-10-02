@@ -103,6 +103,23 @@ class LiveModelTest(unittest.TestCase):
     self.state.update(rows, NOW + timedelta(hours=1))
     self.assertNotIn('T-0001', view.visible())
 
+  def test_observed_wait_tab_reports_condition_age_and_unknown_coverage(self):
+    from unittest.mock import patch
+    self.state.update({'T-0001': record('T-0001')}, NOW)
+    view = self.live.LiveView(self.state)
+    view.sync()
+    for _ in range(3):
+      view.key('\t', 20)
+    with patch('agent_activity.cached_task_waits', return_value=(
+        'Cached local observations; coverage not guaranteed',
+        [{'agent': 'codex:example', 'state': 'WAITING', 'condition': 'closed',
+          'at': NOW.timestamp() - 30}])):
+      detail = '\n'.join(view.detail(NOW))
+    self.assertIn('Observed waits', detail)
+    self.assertIn('coverage not guaranteed', detail)
+    self.assertIn('codex:example [WAITING] until closed', detail)
+    self.assertIn('observed 30s ago', detail)
+
   def test_selection_follows_id_filter_and_vim_keys(self):
     rows = {f'T-{i:04d}': record(f'T-{i:04d}') for i in range(1, 31)}
     self.state.update(rows, NOW)

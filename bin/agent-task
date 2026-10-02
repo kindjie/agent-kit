@@ -134,6 +134,8 @@ def parser():
                        help="read-only interactive task dashboard")
   listing.add_argument("--interval", type=float,
                        help="live refresh seconds (default 2, minimum 0.1)")
+  listing.add_argument("--agent-cache-file",
+                       help="existing agent cache for observed-wait details")
   next_cmd = add("next", "Read the highest-priority available task.",
                  "agent-task next")
   next_cmd.add_argument("--repo", action="append")
@@ -372,8 +374,8 @@ def main():
     raise RecordsError("git is required", 2)
   duration(args.wait, "wait")
   if args.command == "list":
-    if args.interval is not None and not args.live:
-      raise RecordsError("--interval requires --live", 2)
+    if (args.interval is not None or args.agent_cache_file) and not args.live:
+      raise RecordsError("--interval and --agent-cache-file require --live", 2)
     if args.live:
       if args.json or args.with_changes or args.unlocked:
         raise RecordsError("--live cannot use --json, --with-changes or "

@@ -76,30 +76,20 @@ without passing a flag. Ordinary quota queries never start summarization.
   event runs out before, else null), and for a reset read from history
   `detected`, `early` and `due_at` (the reset that was due). Events are in
   time order.
-- `--live` keeps `--timeline` or `--agents` on screen, redrawing every
-  `--interval` seconds (default 30, minimum 5) on the terminal's alternate
-  screen, and restores the terminal on exit. `q`, a lone Escape or Ctrl-C
-  quits; arrow and other key sequences do not. Between redraws a dim dot at
-  the start of the status line moves once a second, showing the loop is
-  alive. It re-reads caches each redraw but queries the services only when
-  the cached quota is over five minutes old, and never with `--cached`; in
-  agents mode it starts the background summary worker at most every five
-  minutes. A status line shows the interval and the quota data's age. Rows
-  that are new or changed since the previous redraw are shown reversed: a
-  timeline row by its moment, type, account and quota (relative times
-  ticking do not count), an agent row by its state (its current step changes
-  too often to mark). Agents mode adds a header per provider: the account
-  bucket every model draws on (the binding one, or the one with least left),
-  its run-out or reset, `<model> blocked` for each spent model bucket, and
-  the share of the last 15 minutes' tokens by the busiest agents. Each line
-  fits the width: the whole header switches to the table's compact IDs, then
-  lists fewer agents. When output is not a terminal, `--live` prints one
-  frame and exits. It requires `--timeline` or `--agents` and cannot be
-  combined with `--compact`, `--brief` or `--models`.
+- `--live` keeps `--timeline` or `--agents` on screen, refreshing every
+  `--interval` seconds (default 30, minimum 5). Both restore the terminal
+  on exit. Timeline controls are `q`, Escape and Ctrl-C. Agent controls
+  are documented below. Caches are reread each refresh; services are queried
+  only when quota data is over five minutes old, never with `--cached`.
+  Agent summaries are scheduled at most every five minutes. Provider
+  headers report account limits and recent token concentration. Redirected
+  output prints one snapshot; agent mode also requires terminal input.
+  Requires `--timeline` or `--agents`; incompatible with `--compact`,
+  `--brief` and `--models`.
 - `--notify` (with `--live`) rings the terminal bell and posts a desktop
   notification (`osascript` on macOS, `notify-send` on Linux) once per
   event: a quota reset passing, an early reset, an inactive account likely
-  available, a BURN within an hour, an agent turning stalled, or one agent using over
+  available, a BURN within an hour, or one agent using over
   70% of its provider's last 15 minutes of tokens (at most hourly).
 - `--color {auto,always,never}` colours the text views (`--brief`,
   `--verbose`, `--timeline`, `--agents`, `--models --brief`). `auto`, the
@@ -510,13 +500,15 @@ from current configuration.
 Each row also shows where the agent is, derived from its transcript without
 model calls:
 
-- **State**: `working` (mid-turn; with the turn's age), `stalled` (mid-turn
-  but no transcript activity for 20 minutes), `waiting` (its turn ended;
-  with time since), `idle` (waiting over an hour), `done` (a finished
-  subagent) or `aborted`. `(long)` marks a turn running over three times the
-  agent's median turn, and at least ten minutes. A turn starts at a user
-  prompt (Claude Code) or `task_started` (Codex) and ends at an end-turn
-  stop or `task_complete`.
+- **State**: `ACTIVE` means a turn is open but its current action is unknown;
+  `THINKING` requires a reasoning event; `TOOL` means an outstanding tool
+  call; `WAITING` requires a recognized outstanding foreground wait.
+  `IDLE` means the turn ended, not proof that the agent awaits new work.
+  `DONE` means a subagent turn ended, and `ABORTED` means a recorded abort.
+  Observations older than 20 minutes, future timestamps and waits past their
+  recorded deadlines become `UNKNOWN`. These are transcript observations,
+  never process-liveness claims. JSON retains its legacy `state` field for
+  compatibility and adds `observation` and `observed_activity`.
 - **Claimed tasks**: when agent-kit's `agent-task` is configured, Work leads
   with the tasks an agent holds (`T-0007 · …`, or `T-0007+2` for three) and
   `--compact` lists them as `tasks`. An agent is matched by the records ID
@@ -536,14 +528,38 @@ model calls:
   the agent keeps a Claude Code `TodoWrite` list or a Codex `update_plan`
   plan, otherwise its pending tool call (`Bash: make test`, or the tools a
   Codex script calls). Between tool calls it is the step just finished
-  (`after Bash: …`), or `thinking` at the start of a turn. Commands, paths
-  and URLs are clipped from the left of the detail (`Bash: …&& git push`),
+  (`after Bash: …`), or `activity unknown` without a recorded action.
+  Commands, paths and URLs are clipped from the left of the detail (`Bash: …&& git push`),
   since their end says most; multi-line commands show their first line.
 - **15m**: uncached tokens in the last 15 minutes. Rows are ordered busiest
   first, then by state and recency; children stay beneath their parents.
 
-The transcript cannot show a process that died mid-turn: it reads as
-`working` until it becomes `stalled`.
+A process can die without a transcript event. The view does not infer a stall
+or emit a stall alert from silence alone.
+
+`--agents --live` displays a collapsible tree with explicit branch connectors.
+Space toggles a group; Left collapses or selects its parent; Right expands
+or selects its first child. `j`/`k` or arrows select, `gg`/`G` jump, Ctrl-d/u
+move half a page, `/` filters while retaining ancestors, Enter toggles details,
+`[`/`]` scroll details, `?` opens help, and `q`/`ZZ`/Ctrl-C quit. Selection
+and collapse choices follow agent IDs across refreshes. Active groups start
+expanded. Collapsed rows summarize all observed descendants, distinguishing
+an idle parent with active children from no active subagents observed.
+Explicit waits name known targets; a target ending after the wait began can
+show `RESULT READY`. Unknown targets remain unknown. Fork ancestry alone is
+not a parent/subagent relationship. Missing parents, cycles and truncated
+inventory are marked as incomplete coverage.
+
+Wait detection accepts typed agent waits, foreground Claude delegate calls,
+and simple foreground `agent-task watch` or cursor-based `events` commands.
+It ignores background calls, prose, shell compounds and unrecognized wrappers.
+Details show wait conditions, targets and observation age. No watcher registry
+or watcher count is maintained. Task live details read only the existing agent
+cache, optionally selected with `--agent-cache-file`; they never scan sessions
+or start a collector. Missing or stale data is unavailable, not zero watchers.
+Refresh collection runs off the input loop so slow collection cannot block
+navigation or exit. Internal grouped rows represent their busiest member's
+observation, not proof that every member shares that state.
 
 Internal sessions, such as Codex's automatic reviewers (`guardian`), are
 many, short-lived and never summarized, so the table shows one row per
@@ -557,9 +573,9 @@ glyph with its meaning when wrapped.
 
 When a terminal width applies, the table compacts one step at a time, in
 this order. The first two steps apply whenever any Work label would not fit
-whole: fold Now into Work; show State as a glyph and compact age (`▸`
+whole: fold Now into Work; show legacy State as a glyph and compact age (`▸`
 working, `⬥` waiting, `∙` idle, `!` stalled, `✓` done, `✗` aborted, `+` for
-a long turn) with a generated legend. The rest apply only while Work would
+a long turn) with a generated legend. Observed states retain explicit labels. The rest apply only while Work would
 stay under 30 columns, stopping as soon as it fits: drop Cache; drop Seen
 (State's age covers it); shorten agent IDs to the shortest unique provider
 prefix and ID suffix (`cl:9cf6`, growing on collision); clip the middle of

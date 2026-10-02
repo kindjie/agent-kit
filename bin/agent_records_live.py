@@ -1,6 +1,6 @@
 """Read-only task snapshots, session changes and terminal-independent view."""
 from collections import Counter, deque
-from datetime import timedelta
+from datetime import datetime, timedelta
 import unicodedata
 
 from agent_records_core import RecordsError, comma, parse_time, record_locks
@@ -216,6 +216,7 @@ class LiveView:
     self.section = 0
     self.detail_offset = 0
     self.first = 0
+    self.wait_observations = None
     self.sync()
 
   def scoped(self, row):
@@ -328,7 +329,7 @@ class LiveView:
       self.detail_offset = 0
     elif key == '\t':
       self.expanded = True
-      self.section = (self.section + 1) % 3
+      self.section = (self.section + 1) % 4
       self.detail_offset = 0
     elif key in ('[', ']'):
       self.detail_offset = max(0, self.detail_offset +
@@ -347,7 +348,7 @@ class LiveView:
       return []
     row = self.state.rows[self.selected]
     f, body = row['fields'], row['body']
-    title = ('Progress', 'Dependencies', 'Evidence')[self.section]
+    title = ('Progress', 'Dependencies', 'Evidence', 'Observed waits')[self.section]
     lines = [title + ' · ' + self.selected + ' · Tab section, [/] scroll']
     if self.section == 0:
       lines += [f['title'], 'Owner: ' + f['owner'],
@@ -378,12 +379,28 @@ class LiveView:
       lines += ['Dependents:'] + ([describe(i) for i in dependents] or ['none'])
       lines += [f'{len(downstream(self.state.rows, self.selected))} live '
                 'downstream tasks (not all necessarily blocked)']
-    else:
+    elif self.section == 2:
       checks = checklist(body)[1]
       done = sum(line.startswith('- [x]') for line in checks)
       lines += [f'{done}/{len(checks)} completion checks recorded',
                 'Review: ' + f.get('review', 'n/a'),
                 'Links: ' + (f.get('links') or 'none')] + checks
+    else:
+      from agent_activity import cached_task_waits
+      cache_key = (self.selected, self.state.verified)
+      if not self.wait_observations or self.wait_observations[0] != cache_key:
+        self.wait_observations = (cache_key, cached_task_waits(
+          self.selected, now.timestamp(),
+          getattr(self.args, 'agent_cache_file', None)))
+      label, waits = self.wait_observations[1]
+      lines += [label]
+      for wait in waits:
+        lines.append(wait['agent'] + ' [' + wait['state'] + '] until ' +
+                     wait['condition'] + ' · observed ' +
+                     age(datetime.fromtimestamp(wait['at'], now.tzinfo), now)
+                     + ' ago')
+      if not waits:
+        lines += ['No current waits observed; this is not a watcher count.']
     return lines
 
   def frame(self, width, height, now):
@@ -396,7 +413,7 @@ class LiveView:
         'Ctrl-d/u: half page · /: filter',
         'Filter: Enter keeps; Esc clears; arrows/Home/End edit',
         'Ctrl-a/e: start/end; Ctrl-w: word; Ctrl-u: clear',
-        'Enter: details · Tab: progress/dependencies/evidence',
+        'Enter: details · Tab: progress/dependencies/evidence/waits',
         '[/]: scroll detail lines · Esc: close details',
         '? or Esc: close help · q/ZZ/Ctrl-C: quit',
         'Selection follows ID; selected titles wrap.',

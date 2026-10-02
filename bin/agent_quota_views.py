@@ -1291,6 +1291,11 @@ def run_live(args: argparse.Namespace, cache_path: Path,
   """Redraw --timeline or --agents until q, Escape or Ctrl-C.
 
   wait(seconds) sleeps and returns the keys typed meanwhile."""
+  if args.agents:
+    # The agent tree has navigation; the timeline retains its simple loop.
+    agents_module()  # Adds the resolved sibling-module directory.
+    from agent_activity_live import run_agent_live
+    return run_agent_live(args, cache_path, SimpleNamespace(**globals()))
   if wait is None:
     with keys_unbuffered():
       return run_live(args, cache_path, out, clock, key_wait)

@@ -287,11 +287,22 @@ Interactive mode uses Python's standard-library curses on macOS and Linux.
 | Ctrl-d / Ctrl-u | Move half a page |
 | `/` | Filter IDs, titles, repositories, owners and states without case |
 | Enter | Keep the filter, or expand/collapse task details |
-| Tab | Show progress, dependencies or completion evidence |
+| Tab | Show progress, dependencies, evidence or observed waits |
 | `[` / `]` | Scroll detail lines up / down |
 | `?` | Help; `?` or Esc closes it |
 | Esc | Clear an edited filter, cancel a key sequence, or close details |
 | `q` / `ZZ`, Ctrl-C | Quit |
+
+The Observed waits tab reads the existing local agent cache and shows wait
+conditions and observation age. Coverage is incomplete by nature; missing
+observations never mean zero watchers. Use `--agent-cache-file PATH` with
+`--live` to select another cache. No collector or session scan runs here.
+
+For collapsible parent/subagent groups, use `agent-quota --agents --live`.
+Space toggles a group, Left/Right navigate the hierarchy, and Enter shows
+observation details. Rows distinguish ended turns, explicit waits, reasoning
+and tool calls, with descendant activity visible even when collapsed.
+See [agent-quota](bin/agent-quota.md) for the evidence and freshness limits.
 
 Filter editing supports UTF-8, arrows, Home/End, Ctrl-a/e, Backspace,
 Ctrl-w to remove a word and Ctrl-u to clear. Selection follows the task ID

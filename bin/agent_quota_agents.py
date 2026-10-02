@@ -28,7 +28,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
-CACHE_VERSION = 6
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from agent_activity import Tracker, observe
+
+CACHE_VERSION = 7
 # Bumped when the label schema changes so cached entries refresh once.
 PROMPT_VERSION = 5
 WORK_LIMIT = 60
@@ -368,6 +371,7 @@ def parse_session(path, provider):
             "action": None, "action_tail": False, "progress": None,
             "last_done": None, "last_done_tail": False, "durations": []}
   pending, codex_events, activity = {}, [], []
+  tracker = Tracker()
 
   def did(text):
     if text and (not activity or activity[-1] != text):
@@ -409,7 +413,8 @@ def parse_session(path, provider):
       if isinstance(subagent, dict) and subagent.get("other"):
         agent["label"] = str(subagent["other"])
         agent["internal"] = True
-      agent["parent_id"] = agent["parent_id"] or payload.get("forked_from_id")
+      # A copied/forked conversation is lineage, not proof of delegation.
+      agent["forked_from_id"] = payload.get("forked_from_id")
       continue
     inherited = provider == "codex" and start and when and when < start
     if when and not inherited:
@@ -436,6 +441,7 @@ def parse_session(path, provider):
           previous = usage
       if inherited:
         continue
+      tracker.feed(row, provider, when)
       if when and kind in ("event_msg", "response_item"):
         status["last_event"] = max(status["last_event"], when)
       event = payload.get("type")
@@ -506,6 +512,7 @@ def parse_session(path, provider):
           continue
         if row.get("sessionId") not in (None, agent["id"]):
           continue  # Copied history belongs to the original session.
+      tracker.feed(row, provider, when)
       message = row.get("message") or {}
       content = message.get("content")
       items = content if isinstance(content, list) else []
@@ -587,6 +594,9 @@ def parse_session(path, provider):
   if child and status["state"] == "waiting":
     status["state"] = "done"
   agent["status"] = status
+  agent["observation"] = tracker.value()
+  if agent.get("parent_id") and agent["observation"]["phase"] == "ended":
+    agent["observation"]["phase"] = "done"
   agent["models"] = sorted(models)
   agent["efforts"] = sorted(efforts)
   # The table shows what the agent runs now; the lists keep the history.
@@ -1230,17 +1240,23 @@ def view_agents(cache, args, now):
         agent["now_tail"] = bool(status.get("last_done_tail"))
         agent["now_quiet"] = True
       else:
-        agent["now"] = "thinking"
+        agent["now"] = "activity unknown"
     else:
       agent["now"] = "—"
     agent["recent_tokens"] = recent_tokens(agent.get("token_events"), now)
     agent["tasks"] = claims.get(records_id(agent), [])
+    agent["observed_activity"] = observe(agent, now)
     agents.append(agent)
   agents.sort(key=lambda item: item["last_seen"], reverse=True)
   # An agent can occasionally be copied to another transcript location.
   unique = {agent["key"]: agent for agent in reversed(agents)}
   shown = sorted(unique.values(), key=lambda a: a["last_seen"],
                  reverse=True)[: args.agent_limit]
+  for agent in shown:
+    agent["coverage_incomplete"] = bool(
+      cache.get("scan_truncated") or cache.get("scan_errors") or
+      len(unique) > len(shown) or agent.get("warnings"))
+    agent["inventory_observed_at"] = cache.get("observed_at")
   return order_by_activity(shown)
 
 
@@ -1397,6 +1413,9 @@ def unique_suffix_length(ids, minimum=4):
 
 def state_text(agent, state, glyphs, quota):
   """`working 12m (long)`, or `● 12m+` when glyphs are needed."""
+  observed = agent.get("observed_activity")
+  if observed:
+    return observed["state"].lower()
   age = agent.get("turn_age")
   timed = age is not None and state not in ("done", "aborted")
   if glyphs and state in STATE_LEGEND:
@@ -1404,6 +1423,8 @@ def state_text(agent, state, glyphs, quota):
     if timed:
       text += " " + quota.format_duration(age).replace(" ", "")
     return text + ("+" if agent.get("long_turn") else "")
+  # Legacy state is kept in JSON for compatibility. Human labels use the
+  # evidence-based observation, so turn-ended never masquerades as a wait.
   text = state
   if timed:
     text += " " + quota.format_duration(age)
@@ -1643,7 +1664,10 @@ def render(agents, cache, quota, now, verbose=False, color=False,
                + ("; the current action follows when there is room."
                   if "fold_now" in steps else "."))
   notes.append("15m: uncached tokens, last 15 minutes.")
-  if "state_glyphs" in steps:
+  if any(a.get('observed_activity') for a in agents):
+    notes.append("State: observed activity, not liveness. Idle = turn ended; "
+                 "waiting = observed wait; unknown = missing or old evidence.")
+  elif "state_glyphs" in steps:
     notes.append("State: " + "  ".join(
       # A no-break space keeps each glyph with its meaning when wrapped.
       f"{glyph}\u00a0{meaning}" for glyph, meaning in STATE_LEGEND.values())
@@ -2118,8 +2142,9 @@ def agent_alerts(previous, agents, now, sent):
       agent.get("recent_tokens") or 0)
   for agent in agents:
     label = short_label(agent)
-    if agent.get("state") == "stalled" and previous.get(agent["key"]) not in (
-        None, "stalled"):
+    if (not agent.get("observed_activity") and
+        agent.get("state") == "stalled" and previous.get(agent["key"]) not in (
+        None, "stalled")):
       key = ("stalled", agent["key"], agent.get("status", {}).get(
         "turn_started"))
       if key not in sent:
