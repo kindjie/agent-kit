@@ -258,6 +258,16 @@ summary through a stubbed `agent-task` and `agent-changelog`.
 
 ## Agent Records
 
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
+  tests.test_agent_attention tests.test_agent_speak tests.test_agent_activity
+```
+
+Attention tests cover fixed reason codes, safe pane targeting, clearing,
+subagent/compact hook suppression, bell deduplication, dead-pane/dashboard
+exclusion, and real isolated tmux publication. Speech tests isolate mute and
+backend state; real tmux verifies bells despite captured stdout.
+
 Run the records suites from the repository root:
 
 ```bash

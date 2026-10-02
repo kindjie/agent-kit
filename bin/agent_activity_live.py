@@ -305,6 +305,10 @@ def run_agent_live(args, cache_path, quota, loader=None):
   import curses
   import termios
   from agent_records_live_terminal import enable_mouse, read_input, mouse_screen
+  from agent_attention import pane, tmux, summary, update_badge, clear_attention
+  target = pane()
+  dashboard = bool(target and tmux(['show-options', '-pqv', '-t', target,
+                                    '@agent_attention_dashboard']) == '1')
   module = quota.agents_module()
   interval = args.interval or quota.LIVE_INTERVAL
   if loader is None:
@@ -322,9 +326,10 @@ def run_agent_live(args, cache_path, quota, loader=None):
 
   def refresh():
     try:
-      results.put((loader(), None))
+      value = loader()
+      results.put((value, None, summary() if dashboard else None))
     except Exception as exc:
-      results.put((None, str(exc)))
+      results.put((None, str(exc), None))
 
   def stop(signum, frame):
     raise KeyboardInterrupt
@@ -354,7 +359,7 @@ def run_agent_live(args, cache_path, quota, loader=None):
     stdscr.timeout(100)
     pending, deadline, last_summaries = False, 0, 0
     previous_states, sent = {}, set()
-    previous, header = None, []
+    previous, header, attention_badge = None, [], None
     mapping = {curses.KEY_UP: 'UP', curses.KEY_DOWN: 'DOWN',
       curses.KEY_LEFT: 'LEFT', curses.KEY_RIGHT: 'RIGHT',
       curses.KEY_BACKSPACE: 'BACKSPACE', curses.KEY_ENTER: '\n'}
@@ -364,11 +369,12 @@ def run_agent_live(args, cache_path, quota, loader=None):
         threading.Thread(target=refresh, daemon=True).start()
         pending = True
       try:
-        value, error = results.get_nowait()
+        value, error, badge = results.get_nowait()
       except queue.Empty:
         pass
       else:
         pending, deadline = False, now + interval
+        attention_badge = update_badge(attention_badge, badge)
         if error:
           view.error = error
         else:
@@ -428,6 +434,8 @@ def run_agent_live(args, cache_path, quota, loader=None):
   except KeyboardInterrupt:
     return 0
   finally:
+    if dashboard:
+      clear_attention()
     termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, saved)
     for sig, handler in handlers.items():
       signal.signal(sig, handler)

@@ -16,6 +16,9 @@
 #                  agent-speak.sh --toggle-mute   flip the mute state
 #                  agent-speak.sh --status        print mute state; exits
 #                                                 0 unmuted, 1 muted
+#                  agent-speak.sh --bell --attention needs-you <message>
+#                  agent-speak.sh --attention blocked|work|check <message>
+#                  agent-speak.sh --clear         clear the pane badge
 #
 #                An unrecognised option is an error, never something to
 #                speak. An agent notify hook pointed here by mistake
@@ -125,15 +128,48 @@ speak() {
   trap - EXIT INT TERM
 }
 
+attention() {
+  # Resolve this script's symlink so both direct and installed paths work.
+  python3 -c 'import pathlib, runpy, sys
+p = pathlib.Path(sys.argv[1]).resolve().with_name("agent_attention.py")
+sys.argv = [str(p), *sys.argv[2:]]
+runpy.run_path(str(p), run_name="__main__")' "$0" "$@" 2>/dev/null || true
+}
+
+kind=needs-you
+bell=0
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --bell) bell=1; shift ;;
+    --attention)
+      case ${2:-} in
+        needs-you|blocked|work|check) kind=$2; shift 2 ;;
+        *) echo 'agent-speak: invalid attention state' >&2; exit 2 ;;
+      esac ;;
+    *) break ;;
+  esac
+done
+
+announce() {
+  [ -n "$*" ] || return 0
+  if [ "$bell" = 1 ] && ! muted; then
+    attention set "$kind" --bell
+  else
+    attention set "$kind"
+  fi
+  [ "$bell" = 1 ] || speak "$*"
+}
+
 case ${1:-} in
+  --clear) attention clear ;;
   --mute) mute_on ;;
   --unmute) mute_off ;;
   --toggle-mute) toggle_mute ;;
   --status) mute_status ;;
-  --) shift; speak "$*" ;;
+  --) shift; announce "$*" ;;
   --*)
     printf 'agent-speak: unknown option: %s\n' "$1" >&2
     exit 2
     ;;
-  *) speak "$*" ;;
+  *) announce "$*" ;;
 esac

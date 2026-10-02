@@ -20,6 +20,7 @@ Nothing here assumes that repository.
 | `claude-status.sh` | Claude Code `statusLine` entry point |
 | `claude-ctx.sh` | tmux status entry point |
 | `agent-speak.sh` | Spoken attention notification, with mute control |
+| `agent-attention` | Explicit tmux attention badges and prompt reset hook |
 | `md-preview` | Local GitHub-style Markdown preview served on loopback |
 | `agent-id` | Derives or mints agent IDs and manages repository keys |
 | `agent-task` | Creates, claims, hands off and closes task records |
@@ -60,6 +61,26 @@ Nothing here assumes that repository.
   It reports what it can observe and leaves the rest unknown.
 - Speech is optional: `say` on macOS, `spd-say` or `espeak-ng` on Linux.
   Without one, `agent-speak.sh` falls back to a terminal bell.
+
+`agent-speak.sh --bell --attention needs-you 'needs a decision'` uses a
+terminal bell instead of speech. Attention reasons are `needs-you` (YOU),
+`blocked` (BLOCKED), `work` (WORK: ready for work with no active delegates),
+and `check` (CHECK: concrete evidence warrants investigation). Ordinary
+messages default to `needs-you`. In tmux, a bell rings once when the reason
+changes, through the exact pane's terminal even when tool output is captured
+and the worker has no controlling terminal.
+Mute suppresses audio while retaining the badge. No transcript silence or
+turn completion is interpreted as a blocker or empty work queue.
+
+`agent-speak.sh --clear` clears the current pane's badge. Configure
+`agent-attention hook` on SessionStart and UserPromptSubmit to clear it when
+the main session resumes (compact and identified subagent events are ignored).
+The helper publishes `@agent_attention`, `@agent_attention_mark` and
+`@agent_attention_kind` pane options; it preserves pane titles/window names.
+Tmux formats can display these directly and loop over panes for window badges.
+Outside tmux no pane is guessed or registered. Missing tmux fails silently.
+Agents must clear resolved attention; a badge is a reported hand-off, not
+proof of a running process. Dead panes are excluded from dashboard totals.
 
 ## Install
 

@@ -38,6 +38,8 @@ class AgentSpeakCase(unittest.TestCase):
     env["XDG_CONFIG_HOME"] = str(self.root / "config")
     env["XDG_CACHE_HOME"] = str(self.root / "cache")
     env.pop("XDG_RUNTIME_DIR", None)
+    env.pop("TMUX", None)
+    env.pop("TMUX_PANE", None)
     env["TMPDIR"] = str(self.root)
     return subprocess.run(
       [str(SCRIPT), *args],
@@ -73,6 +75,16 @@ class AgentSpeakOptionTests(AgentSpeakCase):
     result = self.run_script("needs a decision")
     self.assertEqual(result.returncode, 0)
     self.assertIn("needs a decision", self.spoken_text())
+
+  def test_bell_only_and_clear_never_speak(self):
+    result = self.run_script('--bell', '--attention', 'blocked', 'needs help')
+    self.assertEqual(result.returncode, 0)
+    self.assertEqual(self.spoken_text(), '')
+    self.assertEqual(self.run_script('--clear').returncode, 0)
+
+  def test_invalid_attention_state_does_not_speak(self):
+    self.assertEqual(self.run_script('--attention', 'garbage', 'help').returncode, 2)
+    self.assertEqual(self.spoken_text(), '')
 
   def test_double_dash_allows_a_leading_dash_message(self):
     result = self.run_script("--", "--not an option")
