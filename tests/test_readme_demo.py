@@ -13,6 +13,20 @@ class DemoTest(unittest.TestCase):
     cls.demo = importlib.util.module_from_spec(SPEC)
     SPEC.loader.exec_module(cls.demo)
 
+  def test_dashboard_apps_have_full_width_labelled_boundaries(self):
+    text = self.demo.dashboard_capture([
+      ('Agents', 'agent body\n'),
+      ('Agent Tasks', 'task body\n'),
+      ('Timeline', 'timeline body\n')], 30)
+    lines = text.splitlines()
+    for title, index in [('Agents', 0), ('Agent Tasks', 2), ('Timeline', 4)]:
+      self.assertIn(title, lines[index])
+      plain = lines[index].replace('\x1b[1m', '').replace('\x1b[0m', '')
+      self.assertEqual(len(plain), 30)
+      self.assertTrue(plain.startswith('─'))
+      self.assertTrue(plain.endswith('─'))
+    self.assertEqual(lines[1::2], ['agent body', 'task body', 'timeline body'])
+
   def test_fixture_relationships_and_real_dependency_semantics(self):
     data = self.demo.fixture()
     self.assertEqual(len(data['tasks']), 7)

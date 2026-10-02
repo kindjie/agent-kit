@@ -1,4 +1,4 @@
-[1mAgents[0m
+[1m─ Agents ─────────────────────────────────────────────────────────────────────────────────────────────────────[0m
 [1mAgents · observed activity · refreshed 0s ago[0m
 Claude Code · weekly 15% left · resets in 2h 0m
 Codex · weekly 30% left · runs out ~20h 0m · 15m: co:wing 20%, co:imer 20%, co:ipes 20%
@@ -8,7 +8,7 @@ Codex · weekly 30% left · runs out ~20h 0m · 15m: co:wing 20%, co:imer 20%, c
     Fix hedgehog chair paths                                │ Chair paths · ACTIVE
 [32m    Profile busy tea-time                                   │ Profiling · THINKING[39m
 [2mRows 1-5/5 · 3 groups · 5 agents · ? help · q quit[0m
-[1mAgent Tasks[0m
+[1m─ Agent Tasks ────────────────────────────────────────────────────────────────────────────────────────────────[0m
 [1mAgent Tasks · 7 tasks · verified 12:00:00[0m
 3 working · 1 review · 2 open · 0 blocked · 0 expired · 0 holds
 [1m  Task    SP Est tokens Est time  Task / state                                                     Updated[0m
@@ -21,7 +21,7 @@ Codex · weekly 30% left · runs out ~20h 0m · 15m: co:wing 20%, co:imer 20%, c
 [32m  T-0005   2        90k      30m  [done] Add rain on the roof                                      10m ago[39m
 [1mDONE T-0005 · Add rain on the roof[0m
 [2m7 tasks · / filter · Enter details · ? help · q quit[0m
-[1mTimeline[0m
+[1m─ Timeline ───────────────────────────────────────────────────────────────────────────────────────────────────[0m
 [2m⠈[0;1m Timeline[0;2m (UTC; now Fri 02 Oct 12:00)[0m · every 5s · quota data 0m old · q to quit
   [1mToday[0m
     [1min 2h 0m[0m   14:00  [1m[32mRESET[0m  [1mClaude[0m  [36mwoodland-demo[39m  [2;3m15% left[0m

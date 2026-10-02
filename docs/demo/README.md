@@ -37,7 +37,8 @@ pane sizes using the same code as normal operation.
 Capture method: `tmux capture-pane -p -e` retains production output and ANSI
 status colours. Only unused trailing empty rows are omitted; all content and
 ANSI attributes are retained. For the overview, the actual stacked pane captures are joined
-in pane order with their pane titles. Freeze rasterizes that output on an
+in pane order with full-width, labelled separators representing tmux's pane
+borders. Freeze rasterizes that output on an
 opaque dark background; this is a terminal-output rendering, not a desktop
 screenshot. Freeze's ANSI rendering does not reproduce inverse selection
 backgrounds; the production `>` selection marker remains visible. The spinner

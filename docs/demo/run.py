@@ -225,6 +225,15 @@ def main():
         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def dashboard_capture(panes, width):
+  chunks = []
+  for title, text in panes:
+    label = '─ ' + title + ' '
+    border = label + '─' * max(0, width - len(label))
+    chunks.append('\x1b[1m' + border + '\x1b[0m\n' + text)
+  return ''.join(chunks).rstrip('\n') + '\n'
+
+
 def capture(run, output):
   output.mkdir(parents=True, exist_ok=True)
   panes = run('list-panes', '-t', 'demo:moss-and-mugs', '-F',
@@ -240,13 +249,14 @@ def capture(run, output):
     text = run('capture-pane', '-p', '-e', '-t', target).rstrip('\n') + '\n'
     (output / (name + '.ansi')).write_text(text)
     return text
-  # Capture production pane geometry and text; no independently drawn UI.
+  # Preserve pane text; labelled borders represent the tmux app boundaries.
+  width = int(run('display-message', '-p', '-t', agents, '#{pane_width}'))
   chunks = []
   for title in ('Agents', 'Agent Tasks', 'Timeline'):
-    chunks.append('\x1b[1m' + title + '\x1b[0m\n' +
+    chunks.append((title,
       save({'Agents':'agent-activity', 'Agent Tasks':'tasks',
-            'Timeline':'quota-timeline'}[title], mapping[title]))
-  (output / 'dashboard.ansi').write_text(''.join(chunks).rstrip('\n') + '\n')
+            'Timeline':'quota-timeline'}[title], mapping[title])))
+  (output / 'dashboard.ansi').write_text(dashboard_capture(chunks, width))
   # Real keys drive filtering, selection, and details.
   run('send-keys', '-t', tasks, '/', 'Save the shop overnight', 'Enter')
   time.sleep(.2)
