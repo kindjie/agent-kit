@@ -91,6 +91,20 @@ Crashes and uncertain cleanup retain a recovery hold. See the maintained
 [workflow and CLI reference](../bin/agent-scheduler.md) for manual-first adoption,
 shadow receipts, failure handling and the live cutover boundary.
 
+### Advisory release evidence
+
+`agent-release-check` checks a supplied manual-grant evidence packet without
+reading live reservations, running process checks, or writing task records.
+It separates workload outcome from recorded terminality, reaping, ended intent
+and a successful scoped observation. Optional coordinator decisions support
+shadow comparison. Consistent records do not prove their provenance or actual
+process quiescence, and the result grants no release or retry authority.
+See the [contract and examples](../bin/agent-release-check.md).
+
+Keep a [compact coordinator handoff](../bin/agent-scheduler.md#compact-coordinator-handoff)
+with authoritative references, unresolved holds and the next action, instead of
+copying implementation history into every scheduling turn.
+
 ### Offline usage report
 
 ```sh
@@ -134,6 +148,10 @@ worthwhile, and validate improvements against completed useful work.
 `coordination` reports supported completed shell attempts, explicit failures,
 empty event returns (bootstrap and timeout separately), and proven renewal-only
 wakeups. Exit 4 from a recognized event wait is a timeout, not a failure.
+Exact running-cell envelopes can be joined to same-thread wait results; pending
+work is not counted as completed. Unsupported result reasons distinguish
+missing status, mismatched envelopes and truncation. Plain stdout without a
+reliable exit status remains unknown, even when its text looks successful.
 These are partial observations, not counts of successful record mutations.
 Recognition is deliberately limited to literal shell calls and supported tool
 result envelopes; dynamic scripts and missing results remain unclassified.

@@ -364,6 +364,18 @@ actual pending-acceptance release receipt, and measures it without transcripts.
 Also run the privacy suite for all public additions and installation smoke
 checks when new commands or companion modules need links.
 
+The advisory release evidence checker uses offline synthetic packets:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_release_check
+```
+
+Cover exact manual grant identity, failed workloads with successful cleanup,
+failed or incomplete independent checks, missing fields, timestamp ordering,
+shadow disagreement and invalid JSON. Passing means supplied evidence is
+consistent, not independently verified process quiescence or release authority.
+No fixture may launch a workload or read live scheduler state.
+
 The read-only live dashboard has its own suite:
 
 ```sh
@@ -397,7 +409,9 @@ Resource tests run harmless child processes to check exclusion, timeout,
 interruption cleanup and exit propagation. Efficiency tests use independent
 synthetic ledgers for provider accounting, copied history, cumulative resets,
 request-record precedence and visibly incomplete input. Coordination fixtures
-cover supported call/result envelopes, bootstrap versus timeout empties,
+cover supported call/result envelopes, exact same-thread cell/session resumes,
+duplicate and ambiguous reused IDs, unknown/truncated status diagnostics,
+bootstrap versus timeout empties,
 explicit CLI failures, conservative renewal evidence, malformed inputs and
 per-thread compaction counts including unknown durations. Also run the existing
 records suites when changing the `agent-task` parser, and the privacy suite

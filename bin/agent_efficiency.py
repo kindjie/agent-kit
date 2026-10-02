@@ -39,8 +39,8 @@ def shell_specs(name, value):
       r'(exec_command|write_stdin)'
       r'\((\{.*\})\);\s*text\(\1\);?\s*', value, re.S)
     if one or assigned:
-      return shell_specs(one[1] if one else assigned[2],
-                         one[2] if one else assigned[3])
+      return [dict(spec, cell_wrapper=True) for spec in shell_specs(
+        one[1] if one else assigned[2], one[2] if one else assigned[3])]
     batch = re.fullmatch(
       r'\s*(?:const|let|var) (\w+)\s*=\s*await Promise\.allSettled'
       r'\(\[(.*)\]\);\s*\1\.forEach\(text\);?\s*', value, re.S)
@@ -67,8 +67,9 @@ def shell_specs(name, value):
         remaining = remaining[1:].strip()
       elif remaining:
         return []
-    return result
-  if short not in ('exec_command', 'shell_command', 'Bash', 'write_stdin'):
+    return [dict(spec, cell_wrapper=True) for spec in result]
+  if short not in ('exec_command', 'shell_command', 'Bash', 'write_stdin',
+                   'wait'):
     return []
   if isinstance(value, str):
     try:
@@ -76,6 +77,12 @@ def shell_specs(name, value):
     except ValueError:
       return []
   if not isinstance(value, dict):
+    return []
+  if short == 'wait':
+    cell = value.get('cell_id')
+    if (isinstance(cell, (str, int)) and not isinstance(cell, bool) and
+        re.fullmatch(r'\d+', str(cell))):
+      return [{'resume_cell': str(cell)}]
     return []
   if short == 'write_stdin':
     session = value.get('session_id')
@@ -162,6 +169,17 @@ def result_objects(value, depth=0):
         value, re.S)
       if match:
         return [{'exit_code': int(match[1]), 'output': match[2]}]
+      match = re.fullmatch(
+        r'Chunk ID: [^\n]+\nWall time: [^\n]+\n'
+        r'Process running with session ID (\d+)\nFinal output:\n(.*)',
+        value, re.S)
+      if match:
+        return [{'session_id': int(match[1]), 'output': match[2]}]
+      match = re.fullmatch(
+        r'Script running with cell ID (\d+)\n'
+        r'Wall time \d+(?:\.\d+)? seconds\nOutput:\n?', value)
+      if match:
+        return [{'_running_cell': match[1]}]
       return []
   if isinstance(value, list):
     return [obj for item in value
@@ -181,10 +199,28 @@ def result_objects(value, depth=0):
   return []
 
 
+def truncated_result(value, depth=0):
+  """Recognize only the tool's truncation header, not output prose."""
+  if depth > 8:
+    return False
+  if isinstance(value, str):
+    return re.match(r'^Warning: truncated output '
+      r'\(original token count: \d+\)\nTotal output lines: \d+\n',
+      value) is not None
+  if isinstance(value, list):
+    return any(truncated_result(v, depth + 1) for v in value)
+  if isinstance(value, dict):
+    if value.get('type') in ('text', 'input_text'):
+      return truncated_result(value.get('text'), depth + 1)
+    return truncated_result(value.get('content'), depth + 1)
+  return False
+
+
 class Coordination:
   """Counters are observed results, never proof of successful mutations."""
   def __init__(self):
     self.calls, self.results = {}, {}
+    self.truncated = set()
 
   def feed(self, event, provider, thread, at):
     payload = event.get('payload', {})
@@ -203,6 +239,8 @@ class Coordination:
       elif kind in ('function_call_output', 'custom_tool_call_output'):
         self.results.setdefault(key, (at, thread,
           result_objects(payload.get('output'))))
+        if truncated_result(payload.get('output')):
+          self.truncated.add(key)
     elif provider == 'claude':
       message = event.get('message') or {}
       if not isinstance(message, dict):
@@ -227,6 +265,8 @@ class Coordination:
           if not objects and block.get('is_error') is True:
             objects = [{'explicit_error': True}]
           self.results.setdefault(key, (at, thread, objects))
+          if truncated_result(block.get('content')):
+            self.truncated.add(key)
 
   def report(self, since, until):
     counters = Counter({key: 0 for key in (
@@ -234,14 +274,20 @@ class Coordination:
       'empty_events_returns', 'empty_events_bootstrap_returns',
       'empty_events_timeout_returns', 'renewal_only_wakeups',
       'unsupported_cli_results', 'recognized_cli_calls',
-      'cli_calls_without_results', 'unmatched_cli_resumptions')})
+      'cli_calls_without_results', 'unmatched_cli_resumptions',
+      'unmatched_exec_cell_resumptions', 'running_cli_cell_returns')})
+    reasons = Counter()
+    def unsupported(key, reason):
+      counters['unsupported_cli_results'] += 1
+      reasons['truncated_output' if key in self.truncated else reason] += 1
     for key, (at, specs) in self.calls.items():
       if since <= at < until:
-        original = sum('resume_session' not in s for s in specs)
+        original = sum('resume_session' not in s and 'resume_cell' not in s
+                       for s in specs)
         counters['recognized_cli_calls'] += original
         if key not in self.results:
           counters['cli_calls_without_results'] += original
-    fields, sessions, finished = {}, {}, set()
+    fields, sessions, cells, finished = {}, {}, {}, set()
     for key, (at, thread, objects) in sorted(self.results.items(),
                                            key=lambda item: item[1][0]):
       call = self.calls.get(key)
@@ -249,12 +295,31 @@ class Coordination:
         continue
       specs = call[1]
       in_window = since <= at < until
+      origins = [(key, i) for i in range(len(specs))]
+      if len(specs) == 1 and 'resume_cell' in specs[0]:
+        resumed = cells.get((key[0], thread, specs[0]['resume_cell']))
+        if resumed is None:
+          if in_window:
+            counters['unmatched_exec_cell_resumptions'] += 1
+          continue
+        origins, specs = resumed
+      if (len(objects) == 1 and '_running_cell' in objects[0] and
+          all(s.get('cell_wrapper') for s in specs)):
+        cell = (key[0], thread, objects[0]['_running_cell'])
+        if cell not in cells:
+          cells[cell] = (origins, specs)
+        elif cells[cell] != (origins, specs):
+          cells[cell] = None  # Reused cell identifiers are ambiguous.
+        if in_window:
+          counters['running_cli_cell_returns'] += 1
+        continue
       if len(objects) != len(specs):
         if in_window:
-          counters['unsupported_cli_results'] += 1
+          unsupported(key, 'missing_or_unrecognized_status' if not objects
+                      else 'result_count_mismatch')
         continue
       for index, (spec, obj) in enumerate(zip(specs, objects)):
-        origin = (key, index)
+        origin = origins[index]
         if 'resume_session' in spec:
           resumed = sessions.get((key[0], thread, spec['resume_session']))
           if resumed is None:
@@ -269,12 +334,16 @@ class Coordination:
         explicit_error = obj.get('explicit_error') is True
         if (code is None and isinstance(session, (int, str)) and
             not isinstance(session, bool)):
-          sessions[(key[0], thread, session)] = (origin, spec)
+          session_key = (key[0], thread, session)
+          if session_key not in sessions:
+            sessions[session_key] = (origin, spec)
+          elif sessions[session_key] != (origin, spec):
+            sessions[session_key] = None
           continue
         if not explicit_error and (isinstance(code, bool) or
                                    not isinstance(code, int)):
           if in_window:
-            counters['unsupported_cli_results'] += 1
+            unsupported(key, 'invalid_exit_status')
           continue
         finished.add(origin)
         if in_window:
@@ -338,7 +407,8 @@ class Coordination:
           renewals.append(renewal)
         if renewals and all(renewals) and in_window and not spec['bootstrap']:
           counters['renewal_only_wakeups'] += 1
-    return dict(counters, release_to_confirmation_seconds=None,
+    return dict(counters, unsupported_result_reasons=dict(reasons),
+      release_to_confirmation_seconds=None,
       release_to_confirmation_status='unavailable: no structured receipts',
       coverage='recognized literal shell calls and supported result envelopes')
 

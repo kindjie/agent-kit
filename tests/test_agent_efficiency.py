@@ -290,6 +290,117 @@ class EfficiencyTest(unittest.TestCase):
     self.assertEqual(self.coordination(events)['coordination'][
       'renewal_only_wakeups'], 0)
 
+  def cell_wait(self, ident, cell, output):
+    events = self.codex_tool(ident, 'unused', output)
+    events[0]['payload'].update(name='wait',
+      arguments=json.dumps({'cell_id': cell}))
+    return events
+
+  def running_cell(self, cell):
+    return f'Script running with cell ID {cell}\nWall time 31.0 seconds\nOutput:\n'
+
+  def test_exec_cells_resume_batch_attempts_once(self):
+    events = self.codex_tool('cell-start', 'unused', self.running_cell('7'),
+                             wrapper=True)
+    events[0]['payload']['arguments'] = (
+      'const results = await Promise.allSettled(['
+      'tools.exec_command({cmd: "true"}), '
+      'tools.exec_command({cmd: "false"})]); results.forEach(text);')
+    events += self.cell_wait('cell-poll', '7', self.running_cell('7'))
+    result = [{'type': 'input_text', 'text':
+               'Script completed\nWall time 0.2 seconds\nOutput:\n'},
+              {'type': 'input_text', 'text': json.dumps([
+                {'status': 'fulfilled', 'value': {'exit_code': 0}},
+                {'status': 'fulfilled', 'value': {'exit_code': 2}}])}]
+    events += self.cell_wait('cell-done', '7', result)
+    events += self.cell_wait('cell-copy', '7', result)
+    counters = self.coordination(events + events)['coordination']
+    self.assertEqual(counters['recognized_cli_calls'], 2)
+    self.assertEqual(counters['completed_cli_attempts'], 2)
+    self.assertEqual(counters['failed_cli_attempts'], 1)
+    self.assertEqual(counters['unsupported_cli_results'], 0)
+
+  def test_pending_cell_never_implies_completion(self):
+    events = self.codex_tool('cell-start', 'true', self.running_cell('8'),
+                             wrapper=True)
+    counters = self.coordination(events)['coordination']
+    self.assertEqual(counters['recognized_cli_calls'], 1)
+    self.assertEqual(counters['completed_cli_attempts'], 0)
+    self.assertEqual(counters['unsupported_cli_results'], 0)
+    self.assertEqual(counters['running_cli_cell_returns'], 1)
+
+  def test_cell_completion_without_status_stays_unknown(self):
+    events = self.codex_tool('cell-start', 'true', self.running_cell('8'),
+                             wrapper=True)
+    result = [{'type': 'input_text', 'text':
+               'Script completed\nWall time 0.2 seconds\nOutput:\n'},
+              {'type': 'input_text', 'text': 'command printed ok'}]
+    events += self.cell_wait('cell-done', '8', result)
+    counters = self.coordination(events)['coordination']
+    self.assertEqual(counters['completed_cli_attempts'], 0)
+    self.assertEqual(counters['unsupported_cli_results'], 1)
+    self.assertEqual(counters['running_cli_cell_returns'], 1)
+
+  def test_wrong_thread_cell_and_reused_cell_are_not_correlated(self):
+    c = self.mod.Coordination()
+    for event in self.codex_tool('start', 'true', self.running_cell('8'),
+                                wrapper=True):
+      c.feed(event, 'codex', 'first', 1)
+    for ident, cell, thread in [('wrong-thread', '8', 'second'),
+                                ('wrong-cell', '9', 'first')]:
+      for event in self.cell_wait(ident, cell, {'exit_code': 0}):
+        c.feed(event, 'codex', thread, 2)
+    for event in self.codex_tool('reuse', 'false', self.running_cell('8'),
+                                wrapper=True):
+      c.feed(event, 'codex', 'first', 3)
+    for event in self.cell_wait('ambiguous', '8', {'exit_code': 0}):
+      c.feed(event, 'codex', 'first', 4)
+    counters = c.report(0, 10)
+    self.assertEqual(counters['completed_cli_attempts'], 0)
+    self.assertEqual(counters['unmatched_exec_cell_resumptions'], 3)
+
+  def test_running_envelopes_are_exact_and_native_sessions_resume(self):
+    prefix = ('Chunk ID: example\nWall time: 0.1 seconds\n'
+              'Process running with session ID 12\nFinal output:\n')
+    events = self.codex_tool('native-start', 'true', prefix)
+    resume = self.codex_tool('native-done', 'unused', {'exit_code': 0})
+    resume[0]['payload'].update(name='write_stdin',
+      arguments=json.dumps({'session_id': 12}))
+    events += resume
+    events += self.codex_tool('prose', 'true', 'Reported:\n' + prefix)
+    events += self.codex_tool('partial-cell', 'true',
+                             self.running_cell('8') + 'partial output',
+                             wrapper=True)
+    counters = self.coordination(events)['coordination']
+    self.assertEqual(counters['completed_cli_attempts'], 1)
+    self.assertEqual(counters['unsupported_cli_results'], 2)
+
+  def test_native_session_reuse_and_wrong_thread_stay_unmatched(self):
+    c = self.mod.Coordination()
+    for ident in ('first-start', 'second-start'):
+      for event in self.codex_tool(ident, 'true', {'session_id': 12}):
+        c.feed(event, 'codex', 'first', 1)
+    for ident, thread in [('wrong-thread', 'second'), ('reused', 'first')]:
+      resume = self.codex_tool(ident, 'unused', {'exit_code': 0})
+      resume[0]['payload'].update(name='write_stdin',
+        arguments=json.dumps({'session_id': 12}))
+      for event in resume:
+        c.feed(event, 'codex', thread, 2)
+    counters = c.report(0, 10)
+    self.assertEqual(counters['completed_cli_attempts'], 0)
+    self.assertEqual(counters['unmatched_cli_resumptions'], 2)
+
+  def test_unsupported_results_explain_unknown_and_truncated_coverage(self):
+    events = self.codex_tool('unknown', 'true', 'ok')
+    events += self.codex_tool('truncated', 'true', [
+      {'type': 'input_text', 'text':
+        'Warning: truncated output (original token count: 999)\n'
+        'Total output lines: 100\n\n{"exit_code":'}])
+    counters = self.coordination(events)['coordination']
+    self.assertEqual(counters['unsupported_cli_results'], 2)
+    self.assertEqual(counters['unsupported_result_reasons'], {
+      'missing_or_unrecognized_status': 1, 'truncated_output': 1})
+
   def test_renewal_classification_requires_structured_proof(self):
     cursor = {'T-0001': {'log': '0:' + 'a' * 16, 'header': 'a' * 64}}
     base = {'schema_version': 1, 'cursor': cursor, 'rewritten': []}

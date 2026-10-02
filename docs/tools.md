@@ -20,6 +20,7 @@
 | `agent-task` | Creates, claims, hands off and closes task records |
 | `agent-resource` | Serializes cooperating foreground jobs with scoped resource locks |
 | `agent-scheduler` | Records explicit one-use grants and independent operational release receipts |
+| `agent-release-check` | Checks supplied release evidence and shadow decisions without changing reservations |
 | `agent-efficiency` | Reads local usage and coordination observations without provider/model calls |
 | `agent-changelog` | Tracks persistent machine and repository state |
 | `agent-kit-rules` | Installs or updates the always-loaded rules in agent instructions |

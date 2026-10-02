@@ -186,3 +186,28 @@ wrong identities, interrupted writes, launch/release races and notification
 replay with independent processes. The key acceptance case is operational
 release while the model coordinator is unavailable and semantic review remains
 pending, with no ungranted next job starting.
+
+## Compact coordinator handoff
+
+Keep one current snapshot on the governing task, with its observation time and
+cursor. Reference immutable receipts instead of copying their contents:
+
+```text
+Observed UTC / task cursor:
+Coordinator / authority source:
+Held reservations: lane, exact grant/run, executor, actual handle or not started
+Ready queue: request reference, executor, dependency/blocker, next action
+Compatibility: exact active exceptions and their governing references
+Pending release: terminal/check receipt references; unknowns or failed checks
+Decisions pending: acceptance, owner action, source review (separate from release)
+Next wake: completion, addressed message, or bounded recovery check
+```
+
+Refresh at a material transition or before handing off. A snapshot is an index
+into authoritative records, not a new grant. The successor must read changes
+since its cursor and reconcile active handles and holds before making decisions.
+Do not copy elapsed deadlines into availability claims or infer release from a
+silent conversation. A model-capacity or compaction failure requires recovery of
+the coordinator's decision context; it does not transfer authority to a worker.
+Prepare a fully bound invocation before requesting a short startup window so
+model/tool round trips do not consume the booking before launch.
