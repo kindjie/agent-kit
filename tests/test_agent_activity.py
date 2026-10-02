@@ -154,7 +154,9 @@ class ActivityTest(unittest.TestCase):
     ui = importlib.import_module('agent_activity_live').AgentView()
     ui.update([agent('root'), agent('child', 'root', 'thinking')], 1001)
     ui.frame(120, 15, 1001)
-    ui.mouse('click', 0, 1, 10)
+    self.assertTrue(ui.frame(120, 15, 1001)[0][0].startswith('Agents ·'))
+    self.assertTrue(ui.frame(120, 15, 1001)[1][0].startswith('> ▸ '))
+    ui.mouse('click', 2, 1, 10)
     self.assertEqual(len(ui.visible()), 2)
     ui.frame(120, 15, 1001)
     ui.mouse('click', 10, 2, 10)
@@ -411,7 +413,7 @@ def loader():
     for name,parent,phase in [('root',None,'ended'),
                               ('child','root','thinking')]]
   return dict(agents=agents,cache={},command=None), {}
-module = NS(group_internal=lambda a:a, live_header=lambda *a:[])
+module = NS(group_internal=lambda a:a, live_header=lambda *a:['Provider quota'])
 quota = NS(agents_module=lambda:module, LIVE_INTERVAL=.1)
 args = NS(interval=.1, notify=False, verbose=False, color_on=False)
 run_agent_live(args, Path('/unused'), quota, loader)
@@ -439,17 +441,18 @@ run_agent_live(args, Path('/unused'), quota, loader)
             self.fail(repr(output))
           try:
             initial = until(b'1 active')
+            self.assertLess(initial.index(b'Agents'), initial.index(b'Provider quota'))
             def mouse(button, x, y):
               return (f'\x1b[<{button};{x+1};{y+1}M'.encode()
                       if b'1006' in initial else
                       b'\x1b[M' + bytes((button+32, x+33, y+33)))
-            os.write(master, mouse(0, 0, 1))
+            os.write(master, mouse(0, 2, 2))
             until(b'THINKING')
-            os.write(master, mouse(65, 9, 2) + b'\r')
+            os.write(master, mouse(65, 9, 3) + b'\r')
             until(b'Reasoning event observed')
             os.write(master, b'\x1b')
             until(b'Rows')
-            os.write(master, mouse(64, 9, 1))
+            os.write(master, mouse(64, 9, 2))
             time.sleep(.2)  # Collector is now slow; keys must still respond.
             os.write(master, b'?')
             until(b'tree controls')

@@ -1378,13 +1378,16 @@ def run_live(args: argparse.Namespace, cache_path: Path,
         age = format_duration(now - cache_path.stat().st_mtime)
       except OSError:
         age = "UNKNOWN"
+      body_lines = body.splitlines()
+      heading = (body_lines.pop(0) if body_lines else 'Timeline') if (
+        view == 'timeline') else f'agent-quota --{view} --live'
       status = paint(
-        f"{SPINNER[tick % len(SPINNER)]} agent-quota --{view} --live · every "
+        f"{SPINNER[tick % len(SPINNER)]} {heading} · every "
         f"{f'{interval:g}s' if interval < 60 else format_duration(interval)} "
-        f"· quota data {age} old · q to quit", ("dim",), args.color_on)
+        f"· quota data {age} old · q to quit", ("bold",), args.color_on)
       size = live_terminal_size(out)
       lines = fit_screen([clip_live_line(line, size.columns - 1)
-                          for line in [status, "", *body.splitlines()]],
+                          for line in [status, *body_lines]],
                          size.lines - 1)
       out.write("\033[H\033[2J" + "\n".join(lines) + "\n")
       out.flush()

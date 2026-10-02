@@ -306,6 +306,9 @@ start collapsed. Rows lead with recorded session titles when available;
 IDs, activity and descendant summaries occupy a separate column.
 Click selects an agent row; click its fold marker to toggle its group.
 Wheel over the list moves selection; wheel over details scrolls those details.
+Interactive views share a neutral inverse selection and a `>` gutter;
+`▸`/`▾` mark collapsed/expanded agent groups. View headings come first,
+with compact information below and subdued control hints in the footer.
 Space toggles a group, Left/Right navigate the hierarchy, and Enter shows
 observation details. Rows distinguish ended turns, explicit waits, reasoning
 and tool calls, with descendant activity visible even when collapsed.

@@ -160,7 +160,7 @@ def run_live(root, changes, args):
           attr = curses.A_NORMAL
           for token in style.split():
             attr |= {'selected': curses.A_REVERSE, 'bold': curses.A_BOLD,
-                     'cancelled': curses.A_DIM}.get(token, 0)
+                     'dim': curses.A_DIM, 'cancelled': curses.A_DIM}.get(token, 0)
             attr |= colors.get(token, 0)
           try:
             stdscr.addstr(y, 0, text, attr)

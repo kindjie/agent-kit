@@ -134,7 +134,7 @@ class LiveModelTest(unittest.TestCase):
     self.assertTrue(any('open' in style for _, style in frame))
     view.selected = 'T-0011'
     frame = view.frame(120, 17, NOW)
-    self.assertTrue(any('blocked' in style for _, style in frame))
+    self.assertTrue(any(style == 'selected' for _, style in frame))
     rows['T-0011']['fields']['title'] = 'Long title ' * 30
     self.state.update(rows, NOW)
     selected = [text for text, style in view.frame(55, 20, NOW)
@@ -198,6 +198,10 @@ class LiveModelTest(unittest.TestCase):
                        for i in range(1, 5)}, NOW)
     view = self.live.LiveView(self.state)
     view.frame(120, 30, NOW)
+    frame = view.frame(120, 30, NOW)
+    self.assertTrue(frame[0][0].startswith('Agent Tasks ·'))
+    self.assertTrue(any(text.startswith('> ') and style == 'selected'
+                        for text, style in frame))
     y = next(y for y, ident in view.mouse_rows.items() if ident == 'T-0003')
     view.mouse('click', 5, y, 20)
     self.assertEqual(view.selected, 'T-0003')
@@ -362,7 +366,7 @@ class LiveCommandTest(RecordsFixture):
                 break
             self.fail(repr(output))
           try:
-            initial = until(b'TASKS')
+            initial = until(b'Agent Tasks')
             def mouse(button, x, y):
               return (f'\x1b[<{button};{x+1};{y+1}M'.encode()
                       if b'1006' in initial else
@@ -377,11 +381,11 @@ class LiveCommandTest(RecordsFixture):
             until(b'full-screen')
             os.write(master, b'\n\x0b')
             os.write(master, b'\x1b')
-            until(b'TASKS')
+            until(b'Agent Tasks')
             os.write(master, b'?')
             until(b'read-only controls')
             os.write(master, b'\x1b')
-            until(b'TASKS')
+            until(b'Agent Tasks')
             fcntl.ioctl(slave, termios.TIOCSWINSZ,
                         struct.pack('HHHH', 12, 40, 0, 0))
             proc.send_signal(signal.SIGWINCH)

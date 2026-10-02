@@ -492,7 +492,7 @@ class LiveView:
     ready = sum(not unmet(self.state.rows, r['fields']['id']) and
                 task_available(fields, r['fields']) for r in live)
     scope = ','.join(self.args.repo or []) if self.args else ''
-    header = f'TASKS · {scope or "all repositories"} · read-only'
+    header = f'Agent Tasks · {scope or "all repositories"} · read-only'
     status = ('STALE · last verified ' + (
       self.state.verified.astimezone().strftime('%H:%M:%S')
       if self.state.verified else 'never') + ' · ' + self.state.error
@@ -597,7 +597,7 @@ class LiveView:
             updated_label(last_update(self.state.rows[ident]), now)
         changed = self.state.highlight.get(ident)
         tone = 'warning' if warning else f['status']
-        style = tone + (' selected' if selected else ' bold' if changed and (
+        style = 'selected' if selected else tone + (' bold' if changed and (
           now - changed < timedelta(seconds=10)) else '')
         for y in range(len(lines), len(lines) + len(row_lines)):
           self.mouse_rows[y] = ident
@@ -613,7 +613,7 @@ class LiveView:
         self.detail_offset:self.detail_offset + detail_slots])
     lines.extend((line, 'bold') for line in recent_lines[-recent_slots:]
                  if recent_slots)
-    footer = f'{len(ids)} tasks · j/k move / filter Enter details f full ? help q quit'
+    footer = f'{len(ids)} tasks · / filter · Enter details · ? help · q quit'
     if self.mode == 'filter':
       footer = '/' + self.editor[:self.cursor] + '│' + self.editor[self.cursor:]
     elif self.filter:
@@ -623,5 +623,6 @@ class LiveView:
       lines = [(status, 'bold')]
       if height == 1:
         return [(clip(status, width), 'bold')]
-    lines = lines[:max(0, height - 1)] + [(footer, '')]
+    lines = lines[:max(0, height - 1)] + [
+      (footer, 'dim' if self.mode == 'normal' else '')]
     return [(clip(text, width), style) for text, style in lines]

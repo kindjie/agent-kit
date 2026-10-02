@@ -224,7 +224,7 @@ class AgentView:
       return [(clip(t, width), '') for t in lines[:height]]
     title = ('STALE · last refresh ' + elapsed(self.refreshed, now) +
              ' ago · ' + self.error if self.error else
-             'AGENTS · observed activity · refreshed ' +
+             'Agents · observed activity · refreshed ' +
              elapsed(self.refreshed, now) + ' ago')
     title += ' · partial list' if self.tree.incomplete else ''
     lines = [(title, 'bold')]
@@ -259,7 +259,8 @@ class AgentView:
         summary = self.tree.summary(key) if group else ''
         session_title = str(a.get('session_title') or a.get('work') or
                             self.labels[key])
-        label = prefix + icon + ' ' + session_title
+        gutter = '> ' if key == self.selected else '  '
+        label = gutter + prefix + icon + ' ' + session_title
         metadata = self.labels[key] + ' · ' + state
         if summary:
           metadata += ' · ' + summary
@@ -277,7 +278,7 @@ class AgentView:
           'waiting' if state.startswith('WAIT') else
           'working' if state in ('TOOL', 'THINKING') else
           'bold' if group else '')
-        self.mouse_rows[len(lines)] = (key, cells(prefix))
+        self.mouse_rows[len(lines)] = (key, 2 + cells(prefix))
         lines.append((text, style))
     elif slots:
       lines.append(('No matching agents observed', ''))
@@ -289,7 +290,7 @@ class AgentView:
     end = min(len(shown), self.first + slots) if start else 0
     groups = len(self.tree.rows) - len(self.tree.parents)
     footer = (f'Rows {start}-{end}/{len(shown)} · {groups} groups · '
-              f'{len(self.tree.rows)} agents · Space fold ←/→ tree ? help')
+              f'{len(self.tree.rows)} agents · ? help · q quit')
     if self.mode == 'filter':
       footer = '/' + self.editor + ' · Enter keep, Esc clear'
     elif self.filter:
@@ -297,7 +298,7 @@ class AgentView:
     if height == 1 and self.error:
       return [(clip(title, width), 'bold')]
     return [(clip(t, width), s) for t, s in
-            lines[:height - 1] + [(footer, '')]]
+            lines[:height - 1] + [(footer, 'dim' if self.mode == 'normal' else '')]]
 
 
 def run_agent_live(args, cache_path, quota, loader=None):
@@ -388,8 +389,10 @@ def run_agent_live(args, cache_path, quota, loader=None):
       height, width = stdscr.getmaxyx()
       # Keep the provider header short enough to leave navigation usable.
       top = header[:min(2, max(0, height - 8))]
-      lines = [(clip(t, max(0, width - 1)), '') for t in top]
-      lines += view.frame(width, max(1, height - len(top)), now)
+      frame_lines = view.frame(width, max(1, height - len(top)), now)
+      lines = frame_lines[:1]
+      lines += [(clip(t, max(0, width - 1)), '') for t in top]
+      lines += frame_lines[1:]
       if (lines, height, width) != previous:
         stdscr.erase()
         for y, (text, style) in enumerate(lines):
@@ -409,7 +412,9 @@ def run_agent_live(args, cache_path, quota, loader=None):
         continue
       if event:
         action, x, y = event
-        view.mouse(action, x, y - len(top), max(1, height - len(top) - 3))
+        local_y = y - len(top) if y > len(top) else 0 if y == 0 else -1
+        if local_y >= 0:
+          view.mouse(action, x, local_y, max(1, height - len(top) - 3))
       if key is None:
         continue
       key = mapping.get(key, '') if isinstance(key, int) else key

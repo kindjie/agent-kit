@@ -366,3 +366,5 @@ while collection is slow. PTY mouse reports exercise clicks and both wheel
 directions; timeline clipping covers ANSI colours and wide Unicode.
 Run the quota, agents, timeline and task-live suites
 when changing their shared presentation or parsing.
+Presentation checks cover title-case headings, separate selection/fold
+markers, neutral selection and compact footers without spacer rows.

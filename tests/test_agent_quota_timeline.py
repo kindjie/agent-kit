@@ -517,8 +517,11 @@ class LiveTest(unittest.TestCase):
     output, _ = self.run_frames([self.document(False)])
     self.assertTrue(output.startswith(AGENT_QUOTA.ENTER_SCREEN))
     self.assertTrue(output.endswith(AGENT_QUOTA.LEAVE_SCREEN))
-    self.assertIn("agent-quota --timeline --live · every 30s", output)
+    self.assertIn("every 30s", output)
     self.assertIn("Timeline", output)
+    frame = output.split("\033[H\033[2J", 1)[1]
+    self.assertNotEqual(frame.splitlines()[1], '')
+    self.assertEqual(frame.count('Timeline'), 1)
 
   def test_live_uses_pane_dimensions_over_environment(self):
     from types import SimpleNamespace
@@ -538,17 +541,17 @@ class LiveTest(unittest.TestCase):
     self.assertIn('\x1b[31m', clipped)
     self.assertTrue(clipped.endswith('\x1b[0m'))
     output, _ = self.run_frames([self.document(False)])
-    self.assertIn('agent-quota --timeline --live', output)
+    self.assertIn('Timeline', output)
 
   def test_spinner_ticks_slowly_between_frames(self):
     output, _ = self.run_frames([self.document(False)] * 2, interval=5)
     first, second = output.split("\033[H\033[2J")[1:]
     spinner = AGENT_QUOTA.SPINNER
-    self.assertIn(spinner[0] + " agent-quota --timeline --live", first)
+    self.assertIn(spinner[0] + " Timeline", first)
     # One repaint of the spinner cell per second, and nothing else.
     ticks = first.split("\033[1;1H")[1:]
     self.assertEqual(ticks, list(spinner[1:6]))
-    self.assertIn(spinner[5] + " agent-quota --timeline --live", second)
+    self.assertIn(spinner[5] + " Timeline", second)
     self.assertEqual(AGENT_QUOTA.SPINNER_STEP, 1.0)
 
   def test_q_and_escape_quit_but_arrow_keys_do_not(self):
