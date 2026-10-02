@@ -596,16 +596,133 @@ def audit(paths, since, until):
             'Events timeout exit 4 is a timeout, not a failed CLI attempt.',
             'Renewal-only requires a continuous cursor, expiry-only increase '
             'and no logs.',
-            'Release-to-confirmation latency needs structured receipts; '
-            'unavailable.',
-            'Complete certifies supported usage coverage, '
-            'not coordination coverage.',
+            'Transcript release-to-confirmation latency is unavailable; '
+            'exported lifecycle timings are reported separately.',
+            'Complete covers supported usage and requested receipt validation, '
+            'not full coordination coverage.',
             'Dynamic wrappers and shell commands can be absent from CLI counters.',
             'Resumed CLI results require observed same-thread session IDs.',
             'Missing files and unsupported record types cannot prove zero usage.',
             'Cumulative fallback omits the first counter without a baseline.',
             'Request records override cumulative counters for the whole thread.',
             'Unknown models remain unattributed; duplicate origins can be ambiguous.']}
+
+
+def scheduler_metrics(paths, since, until):
+  """Measure exported lifecycle receipts, never inspect or repair live state."""
+  diagnostics = Counter()
+  runs, conflicts, invalid = {}, set(), set()
+  time_keys = ('granted_at', 'started_at', 'terminal_at', 'quiescent_at',
+               'released_at', 'semantic_at')
+
+  def opaque(value):
+    if not isinstance(value, str) or not value.strip():
+      raise ValueError('missing identity')
+    return value
+
+  def ordered(times):
+    known = [times[k] for k in time_keys[:-1] if times[k] is not None]
+    if known != sorted(known):
+      raise ValueError('invalid lifecycle order')
+    if (times['semantic_at'] is not None and times['granted_at'] is not None and
+        times['semantic_at'] < times['granted_at']):
+      raise ValueError('semantic decision precedes grant')
+
+  def utc(value):
+    if value is None:
+      return None
+    at = timestamp(value)
+    parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if parsed.utcoffset().total_seconds() != 0:
+      raise ValueError('receipt timestamp must be UTC')
+    return at
+
+  def pairs(items):
+    result = {}
+    for key, value in items:
+      if key in result:
+        raise ValueError('duplicate receipt JSON key')
+      result[key] = value
+    return result
+
+  def invalid_constant(value):
+    raise ValueError('nonfinite receipt JSON number')
+
+  for path in paths:
+    try:
+      doc = json.loads(path.read_text(encoding='utf-8'), object_pairs_hook=pairs,
+                       parse_constant=invalid_constant)
+      if (not isinstance(doc, dict) or type(doc.get('schema_version')) is not int
+          or doc['schema_version'] != 1 or
+          doc.get('kind') != 'agent-scheduler-receipts' or
+          not isinstance(doc.get('runs'), list)):
+        raise ValueError('unsupported receipt schema')
+      scheduler = opaque(doc.get('scheduler_id'))
+    except (OSError, ValueError, UnicodeError):
+      diagnostics['unreadable_or_invalid_exports'] += 1
+      continue
+    for row in doc['runs']:
+      key = None
+      try:
+        if not isinstance(row, dict):
+          raise ValueError('invalid run')
+        key = (scheduler, opaque(row.get('run_id')))
+        opaque(row.get('operational'))
+        opaque(row.get('semantic'))
+        identity = (opaque(row.get('epoch')), opaque(row.get('lane')),
+                    row.get('generation'))
+        if type(identity[2]) is not int or identity[2] < 1:
+          raise ValueError('invalid generation')
+        raw = row.get('timestamps')
+        if not isinstance(raw, dict) or set(raw) != set(time_keys):
+          raise ValueError('missing lifecycle fields')
+        times = {k: utc(raw[k]) for k in time_keys}
+        ordered(times)
+      except (ValueError, TypeError, OverflowError):
+        diagnostics['invalid_run_records'] += 1
+        if key is not None:
+          invalid.add(key)
+        continue
+      old = runs.get(key)
+      if old:
+        if (identity != old[0] or any(
+            times[k] is not None and old[1][k] is not None and
+            times[k] != old[1][k] for k in time_keys)):
+          conflicts.add(key)
+          continue
+        times = {k: times[k] if times[k] is not None else old[1][k]
+                 for k in time_keys}
+        try:
+          ordered(times)
+        except ValueError:
+          conflicts.add(key)
+          continue
+      runs[key] = (identity, times)
+  if conflicts:
+    diagnostics['conflicting_runs'] = len(conflicts)
+  selected = [times for key, (_, times) in runs.items()
+              if key not in conflicts | invalid and times['released_at'] is not None
+              and since <= times['released_at'] < until]
+
+  def delay(begin):
+    samples = [times['released_at'] - times[begin] for times in selected
+               if times[begin] is not None]
+    return {'sample_count': len(samples),
+            'unknown_count': len(selected) - len(samples),
+            'total_seconds': sum(samples) if samples else None,
+            'max_seconds': max(samples) if samples else None}
+
+  return {'schema_version': 1, 'complete': not diagnostics,
+          'files_scanned': len(paths), 'diagnostics': dict(diagnostics),
+          'released_runs': len(selected),
+          'quiescence_to_release': delay('quiescent_at'),
+          'terminal_to_release': delay('terminal_at'),
+          'limitations': [
+            'Exported receipts, not independent proof of process quiescence.',
+            'Runs selected by release timestamp in the half-open window.',
+            'Missing timestamps are unknown, never zero-duration samples.',
+            'Wall-clock adjustments can invalidate timestamp ordering.',
+            'Summed delays across runs may overlap; no causal waste claim.']}
 
 
 def main():
@@ -619,19 +736,31 @@ def main():
                       default=Path.home() / '.claude' / 'projects')
   parser.add_argument('--provider', choices=('codex', 'claude', 'both'),
                       default='both')
+  parser.add_argument('--scheduler-receipts', type=Path, action='append',
+                      default=[], help='private scheduler export JSON; repeatable')
+  parser.add_argument('--receipts-only', action='store_true',
+                      help='measure scheduler exports without scanning transcripts')
   args = parser.parse_args()
   if args.since >= args.until:
     parser.error('--since must precede --until')
+  if args.receipts_only and not args.scheduler_receipts:
+    parser.error('--receipts-only requires --scheduler-receipts')
   paths, missing = [], 0
   for provider, root in (('codex', args.codex_dir), ('claude', args.claude_dir)):
-    if args.provider not in (provider, 'both'):
+    if args.receipts_only or args.provider not in (provider, 'both'):
       continue
     if not root.is_dir():
       missing += 1
     paths.extend((provider, p) for p in sorted(root.rglob('*.jsonl')))
-  report = audit(paths, args.since, args.until)
+  report = ({'schema_version': 1, 'since': args.since, 'until': args.until,
+             'complete': True, 'mode': 'receipts-only'} if args.receipts_only
+            else audit(paths, args.since, args.until))
   if missing:
     report['diagnostics']['missing_source_roots'] = missing
     report['complete'] = False
+  if args.scheduler_receipts:
+    report['scheduler_lifecycle'] = scheduler_metrics(
+      args.scheduler_receipts, args.since, args.until)
+    report['complete'] &= report['scheduler_lifecycle']['complete']
   print(json.dumps(report, indent=2, sort_keys=True))
   return 0 if report['complete'] else 1

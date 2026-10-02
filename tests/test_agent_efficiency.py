@@ -1,9 +1,12 @@
 """Independent synthetic ledger expectations across duplicate transcripts."""
 import importlib.util
+import contextlib
+import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 PATH = Path(__file__).resolve().parents[1] / 'bin/agent_efficiency.py'
 
@@ -38,6 +41,120 @@ class EfficiencyTest(unittest.TestCase):
   def coordination(self, events):
     path = self.write('coordination.jsonl', events)
     return self.mod.audit([('codex', path)], 0, 9999999999)
+
+  def receipt(self, name='receipts.json', **changes):
+    row = dict(epoch='epoch-a', generation=1, run_id='run-a', lane='test',
+      operational='released', semantic='pending', timestamps={
+        'granted_at': '2026-01-01T12:00:00Z',
+        'started_at': '2026-01-01T12:00:01Z',
+        'terminal_at': '2026-01-01T12:00:03Z',
+        'quiescent_at': '2026-01-01T12:00:05Z',
+        'released_at': '2026-01-01T12:00:08Z', 'semantic_at': None})
+    row.update(changes)
+    path = self.base / name
+    path.write_text(json.dumps(dict(schema_version=1,
+      kind='agent-scheduler-receipts', scheduler_id='scheduler-a', runs=[row])))
+    return path
+
+  def test_scheduler_receipts_dedup_and_half_open_release_window(self):
+    path = self.receipt()
+    start = self.mod.timestamp('2026-01-01T12:00:00Z')
+    end = self.mod.timestamp('2026-01-01T12:00:09Z')
+    report = self.mod.scheduler_metrics([path, path], start, end)
+    self.assertTrue(report['complete'])
+    self.assertEqual(report['released_runs'], 1)
+    self.assertEqual(report['quiescence_to_release']['sample_count'], 1)
+    self.assertEqual(report['quiescence_to_release']['total_seconds'], 3)
+    self.assertEqual(report['terminal_to_release']['total_seconds'], 5)
+    excluded = self.mod.scheduler_metrics([path], start, end - 1)
+    self.assertEqual(excluded['released_runs'], 0)
+
+  def test_scheduler_missing_times_are_unknown_and_never_zero_samples(self):
+    path = self.receipt(timestamps={
+      'granted_at': '2026-01-01T12:00:00Z',
+      'started_at': None, 'terminal_at': None, 'quiescent_at': None,
+      'released_at': '2026-01-01T12:00:08Z', 'semantic_at': None})
+    report = self.mod.scheduler_metrics([path], 0, 9999999999)
+    self.assertEqual(report['released_runs'], 1)
+    self.assertEqual(report['quiescence_to_release']['sample_count'], 0)
+    self.assertIsNone(report['quiescence_to_release']['total_seconds'])
+    self.assertEqual(report['quiescence_to_release']['unknown_count'], 1)
+
+  def test_scheduler_conflicts_and_bad_time_are_excluded(self):
+    first = self.receipt('first.json')
+    second = self.receipt('second.json', lane='other')
+    report = self.mod.scheduler_metrics([first, second], 0, 9999999999)
+    self.assertFalse(report['complete'])
+    self.assertEqual(report['released_runs'], 0)
+    self.assertEqual(report['diagnostics']['conflicting_runs'], 1)
+    bad = self.receipt('bad.json')
+    doc = json.loads(bad.read_text())
+    doc['runs'][0]['timestamps']['quiescent_at'] = '2026-01-01T13:00:00Z'
+    bad.write_text(json.dumps(doc))
+    report = self.mod.scheduler_metrics([bad], 0, 9999999999)
+    self.assertFalse(report['complete'])
+    self.assertEqual(report['released_runs'], 0)
+    self.assertNotIn('scheduler-a', json.dumps(report))
+    for paths in ([first, bad], [bad, first]):
+      report = self.mod.scheduler_metrics(paths, 0, 9999999999)
+      self.assertFalse(report['complete'])
+      self.assertEqual(report['released_runs'], 0)
+
+  def test_scheduler_requires_status_fields_and_utc_but_grant_can_be_unknown(self):
+    path = self.receipt()
+    doc = json.loads(path.read_text())
+    doc['runs'][0]['timestamps']['granted_at'] = None
+    path.write_text(json.dumps(doc))
+    report = self.mod.scheduler_metrics([path], 0, 9999999999)
+    self.assertTrue(report['complete'])
+    self.assertEqual(report['quiescence_to_release']['total_seconds'], 3)
+    for field in ('operational', 'semantic'):
+      broken = json.loads(json.dumps(doc))
+      del broken['runs'][0][field]
+      path.write_text(json.dumps(broken))
+      self.assertFalse(self.mod.scheduler_metrics(
+        [path], 0, 9999999999)['complete'])
+    doc['runs'][0]['timestamps']['started_at'] = '2026-01-01T13:00:01+01:00'
+    path.write_text(json.dumps(doc))
+    self.assertFalse(self.mod.scheduler_metrics(
+      [path], 0, 9999999999)['complete'])
+
+  def test_scheduler_compatible_partial_exports_merge_and_failures_visible(self):
+    first = self.receipt('first.json')
+    partial = self.receipt('partial.json')
+    doc = json.loads(partial.read_text())
+    doc['runs'][0]['timestamps']['released_at'] = None
+    doc['runs'][0]['operational'] = 'quiescent'
+    partial.write_text(json.dumps(doc))
+    report = self.mod.scheduler_metrics([partial, first], 0, 9999999999)
+    self.assertTrue(report['complete'])
+    self.assertEqual(report['released_runs'], 1)
+    report = self.mod.scheduler_metrics([self.base / 'missing'], 0, 9999999999)
+    self.assertFalse(report['complete'])
+    self.assertEqual(report['diagnostics']['unreadable_or_invalid_exports'], 1)
+    self.assertNotIn(str(self.base), json.dumps(report))
+
+  def test_receipts_only_cli_never_scans_transcripts(self):
+    path = self.receipt()
+    output = io.StringIO()
+    with patch.object(self.mod.sys, 'argv', [
+        'agent-efficiency', '--receipts-only', '--scheduler-receipts', str(path),
+        '--since', '2026-01-01T00:00:00Z', '--until', '2026-01-02T00:00:00Z']), \
+        patch.object(Path, 'rglob', side_effect=AssertionError('transcript scan')), \
+        contextlib.redirect_stdout(output):
+      self.assertEqual(self.mod.main(), 0)
+    report = json.loads(output.getvalue())
+    self.assertEqual(report['scheduler_lifecycle']['released_runs'], 1)
+    self.assertEqual(report['mode'], 'receipts-only')
+
+  def test_scheduler_duplicate_json_fields_are_invalid(self):
+    path = self.receipt()
+    text = path.read_text().replace('"scheduler_id": "scheduler-a"',
+      '"scheduler_id": "other", "scheduler_id": "scheduler-a"')
+    path.write_text(text)
+    report = self.mod.scheduler_metrics([path], 0, 9999999999)
+    self.assertFalse(report['complete'])
+    self.assertEqual(report['released_runs'], 0)
 
   def test_empty_events_and_failed_attempts_are_result_based(self):
     empty = {'schema_version': 1, 'cursor': {}, 'events': [],

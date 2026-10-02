@@ -70,6 +70,15 @@ quiescence/release handling responsive during result review; changing release
 authority still requires an explicitly agreed workflow and verified safety
 checks.
 
+For a centrally reserved run, send one operational release request with its
+exact grant/run reference, terminal session status, scoped process-quiescence
+evidence, and explicit end-of-run intent. Label the result and remaining review
+separately. The coordinator checks operational release first, records it, then
+continues semantic review. A failed test need not retain a reservation after
+independently verified cleanup; uncertain process scope does. Release grants
+no permission to retry or resume. Existing grant requirements and compatibility
+exceptions still apply.
+
 For requested ongoing monitoring, establish wake conditions, a fallback cadence
 and a bounded scope per pass. Prefer a watcher or scheduler to a continuously
 active model where available. Unchanged state needs no new work or report; a

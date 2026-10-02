@@ -657,6 +657,16 @@ locks. Idle files may remain indefinitely and cost no running process. The
 wrapper does not write task records or claim resource ownership for other
 agents. It runs only the explicitly supplied command.
 
+### Structured scheduler pilot
+
+`agent-scheduler` records exact one-use grants and separates operational release
+from result acceptance. It requires an explicit private `--state` directory and
+coordinator; it does not replace existing live grants or overlap policy.
+Automatic release is opt-in for cooperative, trusted foreground process groups.
+Crashes and uncertain cleanup retain a recovery hold. See the maintained
+[workflow and CLI reference](bin/agent-scheduler.md) for manual-first adoption,
+shadow receipts, failure handling and the live cutover boundary.
+
 ### Offline usage report
 
 ```sh
@@ -712,6 +722,13 @@ executed, and no command or message text is included in the report.
 
 `compaction_count`, `compactions_by_thread` and
 `compaction_unknown_duration_count` distinguish completed compactions with
-known timing from those without it. Release-to-confirmation latency remains
-explicitly unavailable until structured lifecycle receipts exist; free-form
-task prose is not treated as a timing contract.
+known timing from those without it. Transcript-derived release-to-confirmation
+latency remains unavailable; free-form task prose is not a timing contract.
+Use structured lifecycle receipts for the separate measurements below.
+
+For the scheduler's structured lifecycle evidence, use
+`--scheduler-receipts FILE` (repeatable). Add `--receipts-only` to skip transcript
+scanning. The separate `scheduler_lifecycle` section reports terminal-to-release
+and quiescence-to-release delays, preserving missing timestamps as unknown and
+rejecting conflicting exports. `complete` also becomes false when a requested
+receipt export is invalid. See the [receipt contract](bin/agent-scheduler.md).

@@ -328,6 +328,26 @@ PYTHONDONTWRITEBYTECODE=1 python3 tests/run_agent_records_parallel.py
 
 ## Coordination and efficiency tools
 
+The structured scheduler pilot has isolated state and real-process tests:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
+  tests.test_agent_scheduler tests.test_agent_resource \
+  tests.test_agent_efficiency tests.test_scheduler_receipts
+```
+
+Scheduler cases must verify admission with independent contenders, release
+separate from acceptance, one-use exact grants, stale identities, surviving
+children, supervisor loss, recovery holds and launch/release serialization.
+Use temporary private state and harmless foreground commands, never live grants.
+Receipt metrics fixtures cover independent duration expectations, compatible
+snapshot deduplication, conflicting identities/times, missing timing, half-open
+release windows and a receipts-only CLI that never scans transcripts.
+The producer/consumer CLI check runs a harmless failing command, exports its
+actual pending-acceptance release receipt, and measures it without transcripts.
+Also run the privacy suite for all public additions and installation smoke
+checks when new commands or companion modules need links.
+
 The read-only live dashboard has its own suite:
 
 ```sh
