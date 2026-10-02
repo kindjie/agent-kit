@@ -141,6 +141,26 @@ def downstream(rows, ident):
   return found
 
 
+def estimate_cells(fields):
+  selected = read_estimates(fields.get('estimates', '{}')).get(
+    fields.get('execution-model'), {})
+  tokens, seconds = selected.get('tokens'), selected.get('wall-seconds')
+  token_text = '—' if tokens is None else str(tokens)
+  if tokens is not None and tokens >= 1000:
+    divisor, suffix = (1000000, 'M') if tokens >= 1000000 else (1000, 'k')
+    token_text = f'{tokens / divisor:.3g}' + suffix
+  return (fields.get('storypoints') or '—', token_text,
+          estimate_duration(seconds) if seconds is not None else '—')
+
+
+def estimate_duration(seconds):
+  minutes = round(seconds / 60)
+  if 0 < seconds < 60:
+    return '<1m'
+  return (f'{minutes}m' if minutes < 60 else
+          f'{minutes // 60}h' + (f'{minutes % 60}m' if minutes % 60 else ''))
+
+
 def estimate_label(fields):
   if fields.get('blocked-on-owner', '').startswith('yes'):
     return 'owner hold · ETA unknown'
@@ -148,11 +168,7 @@ def estimate_label(fields):
   selected = estimates.get(fields.get('execution-model'), {})
   seconds = selected.get('wall-seconds')
   if seconds is not None:
-    minutes = round(seconds / 60)
-    duration = (f'{minutes}m' if minutes < 60 else
-                f'{minutes // 60}h' + (f'{minutes % 60}m' if minutes % 60 else ''))
-    if 0 < seconds < 60:
-      duration = '<1m'
+    duration = estimate_duration(seconds)
     return f'est. {duration} · ETA unknown'
   return 'ETA unknown'
 
@@ -508,7 +524,8 @@ class LiveView:
     column = width >= 100
     row_width = width - 12 if column else width
     if column:
-      lines.append(('Task'.ljust(row_width + 2) + 'Updated', 'bold'))
+      heading = f'  {"Task":7} {"SP":>2} {"Est tokens":>10} {"Est time":>8}  Task / state'
+      lines.append((heading.ljust(row_width + 2) + 'Updated', 'bold'))
     available = max(0, height - len(lines) - detail_slots - recent_slots - 1)
     def describe(ident):
       row = self.state.rows[ident]
@@ -529,7 +546,11 @@ class LiveView:
       if deps:
         flags.append('WAIT')
       flags = (' ' + '/'.join(flags)) if flags else ''
-      text = f'{ident} {marker}[{f["status"]}{flags}] {f["title"]}'
+      prefix = ident
+      if column:
+        points, tokens, duration = estimate_cells(f)
+        prefix = f'{ident:7} {points:>2} {tokens:>10} {duration:>8} '
+      text = f'{prefix} {marker}[{f["status"]}{flags}] {f["title"]}'
       return text, info, f, bool(flags)
 
     if ids and available:
@@ -561,7 +582,7 @@ class LiveView:
               age(updated, now) + ' ago · ' + (f.get('repos') or 'no repo') +
               ' · ' + f.get('priority', 'unset') + ' · ' + f['owner'], width))
         else:
-          row_lines = [clip(text, row_width)]
+          row_lines = [clip(('  ' if column else '') + text, row_width)]
         if column:
           label = clip(row_lines[0], row_width)
           row_lines[0] = label + ' ' * (row_width + 2 - cells(label)) + \

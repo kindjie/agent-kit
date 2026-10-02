@@ -327,7 +327,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_records_live
 It covers collection discovery and archive transitions, dependencies,
 non-predictive estimates, new/done/reopened/removed events, rewritten logs,
 selection and filter controls, full selected-block scrolling, update times,
-semantic row styles, local-day update columns, full-screen details and
+semantic row styles, selected-model estimate columns, local-day update
+columns, full-screen details and
 Ctrl-j/k scrolling with Enter preserved, Unicode width and terminal sanitization,
 stale snapshots, lock contention and unchanged record bytes. Real PTYs test
 help, resize, quit and terminal mode restoration after SIGINT, SIGTERM and
@@ -357,7 +358,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_activity
 Covers conservative foreground wait recognition, cleared and stale waits,
 Codex/Claude transcript observations, fork versus spawn ancestry, incomplete
 and cyclic hierarchies, descendant summaries, stable selection/collapse,
-filter ancestors, family-preserving live limits, title metadata, explicit
+filter ancestors, family-preserving live limits, title metadata, title-first Unicode-aligned columns, explicit
 on-screen ranges and cached task waits without writes. Real PTYs exercise
 help, collapse/expand, resize and terminal restoration on quit and signals
 while collection is slow. Run the quota, agents, timeline and task-live suites

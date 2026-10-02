@@ -550,8 +550,9 @@ collapsed to show the overview; Space reveals their children. The footer
 reports the on-screen row range, rows exposed by expansion/filtering, and
 total loaded groups and agents. Collapsed rows summarize all observed descendants, distinguishing
 an idle parent with active children from no active subagents observed.
-Rows show recorded session titles with short IDs, falling back to the work
-label. Codex titles come from its local session index; Claude titles come
+Rows lead with recorded session titles, falling back to the work label.
+Tree connectors stay with the title; IDs, states and descendant summaries
+occupy a separate column when the terminal is wide enough. Codex titles come from its local session index; Claude titles come
 from title events, with custom titles taking precedence. Enter reveals the
 full title; filtering includes titles. No model call generates these titles.
 Explicit waits name known targets; a target ending after the wait began can

@@ -175,6 +175,24 @@ class LiveModelTest(unittest.TestCase):
     self.assertFalse(view.full_details)
     self.assertFalse(view.expanded)
 
+  def test_estimate_columns_use_selected_model_and_preserve_zero(self):
+    fields = {'storypoints': '3', 'execution-model': 'chosen',
+      'estimates': '{"chosen":{"tokens":120000,"wall-seconds":4800},'
+                   '"other":{"tokens":999999,"wall-seconds":1}}'}
+    self.assertEqual(self.live.estimate_cells(fields), ('3', '120k', '1h20m'))
+    fields['execution-model'] = 'missing'
+    self.assertEqual(self.live.estimate_cells(fields), ('3', '—', '—'))
+    fields['estimates'] = '{"missing":{"tokens":0,"wall-seconds":0}}'
+    self.assertEqual(self.live.estimate_cells(fields), ('3', '0', '0m'))
+    self.state.update({'T-0001': record('T-0001', **fields)}, NOW)
+    view = self.live.LiveView(self.state)
+    frame = view.frame(140, 24, NOW)
+    header = next(t for t, _ in frame if 'Est tokens' in t)
+    row = next(t for t, _ in frame if t.startswith('> T-0001'))
+    self.assertLess(header.index('SP'), header.index('Est tokens'))
+    self.assertLess(header.index('Est tokens'), header.index('Est time'))
+    self.assertLess(row.index('0m'), row.index('[open]'))
+
   def test_selection_follows_id_filter_and_vim_keys(self):
     rows = {f'T-{i:04d}': record(f'T-{i:04d}') for i in range(1, 31)}
     self.state.update(rows, NOW)

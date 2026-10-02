@@ -129,6 +129,27 @@ class ActivityTest(unittest.TestCase):
     self.assertIn('co:root', text)
     self.assertIn('1 active', text)
 
+  def test_title_first_columns_keep_tree_and_unicode_alignment(self):
+    ui = importlib.import_module('agent_activity_live').AgentView()
+    root = agent('root')
+    root['session_title'] = '猫 Build overview'
+    child = agent('child', 'root', 'thinking')
+    child['session_title'] = 'Review work'
+    ui.update([root, child], 1001)
+    ui.key('RIGHT', 10)
+    rows = [t for t, _ in ui.frame(120, 15, 1001) if ' │ ' in t]
+    self.assertEqual(len(rows), 2)
+    from agent_records_live import cells
+    self.assertEqual(cells(rows[0].split(' │ ')[0]),
+                     cells(rows[1].split(' │ ')[0]))
+    self.assertIn('猫 Build overview', rows[0].split(' │ ')[0])
+    self.assertIn('co:root', rows[0].split(' │ ')[1])
+    self.assertIn('IDLE', rows[0].split(' │ ')[1])
+    self.assertIn('1 active', rows[0].split(' │ ')[1])
+    self.assertIn('└─', rows[1].split(' │ ')[0])
+    for width in (1, 25, 60, 120):
+      self.assertTrue(all(cells(t) < width for t, _ in ui.frame(width, 15, 1001)))
+
   def test_live_limit_preserves_families_and_other_parents(self):
     from types import SimpleNamespace
     rows = [agent('root')] + [agent(str(i), 'root', seen=1100+i)

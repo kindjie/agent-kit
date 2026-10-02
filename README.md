@@ -301,7 +301,8 @@ observations never mean zero watchers. Use `--agent-cache-file PATH` with
 
 For collapsible parent/subagent groups, use `agent-quota --agents --live`.
 The live default is 100 parent groups with their observed subagents; groups
-start collapsed. Rows include recorded session titles when available.
+start collapsed. Rows lead with recorded session titles when available;
+IDs, activity and descendant summaries occupy a separate column.
 Space toggles a group, Left/Right navigate the hierarchy, and Enter shows
 observation details. Rows distinguish ended turns, explicit waits, reasoning
 and tool calls, with descendant activity visible even when collapsed.
@@ -312,7 +313,9 @@ Ctrl-w to remove a word and Ctrl-u to clear. Selection follows the task ID
 across updates; selected titles wrap, with an ellipsis when space runs out.
 Scrolling reserves the whole selected block, including wrapped titles and
 its last recorded update time. At 101 columns or wider, an Updated column
-shows local `HH:MM` for today and `YYYY-MM-DD` for earlier dates. Details
+shows local `HH:MM` for today and `YYYY-MM-DD` for earlier dates.
+The wide layout places SP, Est tokens and Est time immediately after the ID;
+these use the selected model only. Missing estimates show `—`, never zero. Details
 retain the full timestamp and timezone. That timestamp comes from the task log (or
 creation when no log exists), separately from snapshot verification. Colour
 distinguishes states and warning flags; `NO_COLOR` disables it.

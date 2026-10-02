@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from agent_activity import AgentTree
-from agent_records_live import clip, wrap
+from agent_records_live import cells, clip, wrap
 
 
 def elapsed(at, now):
@@ -237,7 +237,6 @@ class AgentView:
         group = bool(self.tree.children[key])
         icon = ('▸' if self.collapsed.get(key) and not self.filter else '▾'
                 ) if group else ' '
-        label = prefix + icon + ' ' + self.labels[key]
         state = obs['state']
         if state == 'WAITING' and obs['waits']:
           wait = obs['waits'][0]
@@ -245,16 +244,19 @@ class AgentView:
                              else 'agent' if wait['targets'] else 'agent?')
         counts = self.tree.totals(key)
         summary = self.tree.summary(key) if group else ''
-        title = str(a.get('session_title') or a.get('work') or '')
-        context = (summary + ' · ' + title) if group else title
-        if width >= 70:
-          name_width = min(32, max(20, width // 4))
-          text = (clip(label, name_width).ljust(name_width) + ' ' +
-                  clip(state, 12).ljust(12) + ' ' +
-                  context)
+        session_title = str(a.get('session_title') or a.get('work') or
+                            self.labels[key])
+        label = prefix + icon + ' ' + session_title
+        metadata = self.labels[key] + ' · ' + state
+        if summary:
+          metadata += ' · ' + summary
+        if width >= 40:
+          title_width = max(18, width * 55 // 100)
+          title_cell = clip(label, title_width)
+          text = (title_cell + ' ' * (title_width - cells(title_cell)) +
+                  ' │ ' + metadata)
         else:
-          text = label + ' · ' + state
-          text += ' · ' + context
+          text = label + ' · ' + metadata
         style = 'selected' if key == self.selected else (
           'attention' if state == 'IDLE' and counts['active'] else
           'dim' if state in ('IDLE', 'DONE') else
