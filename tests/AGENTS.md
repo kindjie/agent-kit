@@ -11,7 +11,8 @@ Dashboard tests cover default three-pane and optional personal layouts,
 summary opt-in, checkout and symlink paths with spaces, stale server PATH,
 narrow separate windows, unconfigured records and scoped failure cleanup.
 Integration cases use an isolated real tmux server, never provider calls.
-Demo checks cover labelled app separators, fixture coherence, isolation and
+Demo checks cover labelled app separators and spacing, fixture coherence,
+isolation and
 production renderer inputs; see [the capture recipe](../docs/demo/README.md)
 for real key-driven capture reproduction and its rendering limitations.
 

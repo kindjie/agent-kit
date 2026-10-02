@@ -19,13 +19,16 @@ class DemoTest(unittest.TestCase):
       ('Agent Tasks', 'task body\n'),
       ('Timeline', 'timeline body\n')], 30)
     lines = text.splitlines()
-    for title, index in [('Agents', 0), ('Agent Tasks', 2), ('Timeline', 4)]:
+    for title, index in [('Agents', 0), ('Agent Tasks', 3), ('Timeline', 6)]:
       self.assertIn(title, lines[index])
       plain = lines[index].replace('\x1b[1m', '').replace('\x1b[0m', '')
       self.assertEqual(len(plain), 30)
       self.assertTrue(plain.startswith('─'))
       self.assertTrue(plain.endswith('─'))
-    self.assertEqual(lines[1::2], ['agent body', 'task body', 'timeline body'])
+    self.assertEqual([lines[i] for i in (1, 4, 7)],
+                     ['agent body', 'task body', 'timeline body'])
+    self.assertEqual(lines[2], '')
+    self.assertEqual(lines[5], '')
 
   def test_fixture_relationships_and_real_dependency_semantics(self):
     data = self.demo.fixture()

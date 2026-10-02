@@ -1,9 +1,36 @@
-# Moss & Mugs capture inputs
+# Try the Moss & Mugs demo
 
-These are fictional records for a cozy woodland tea-shop game. They are
-written for this example, not anonymized copies of anyone's work. Completion
-checks demonstrate recorded evidence; they do not claim real tests or CI ran.
-The profiling task is an investigation, with no invented bottleneck or result.
+Explore the dashboard through a fictional woodland tea-shop game. You can
+see how a parent agent works with helpers, inspect shared tasks, and read a
+quota timeline without loading your own projects or accounts.
+
+## Ask your agent to help
+
+```text
+Help me try agent-kit's Moss & Mugs demo. Read docs/demo/README.md and
+check the needed tools. Use the supplied runner and fictional inputs,
+keeping real accounts, transcripts and task stores out of the demo.
+Help me launch it in a terminal, or give me the command if you cannot
+open an interactive terminal. Explain the three views and how to exit.
+Do not query providers or enable model summaries.
+```
+
+## What to look for
+
+- **Agents:** a brewing parent waiting on two active helpers, alongside
+  other work. Expand or fold the group to see the relationship.
+- **Agent Tasks:** dependencies, completed work and an overnight-save task
+  with its review still outstanding. Open details to inspect the evidence.
+- **Timeline:** an upcoming quota reset and projected run-out. These are
+  fictional observations, not your account's allowance.
+
+All records are authored for this example, not anonymized copies of real
+work. Completion checks illustrate recorded evidence; they do not claim
+real tests or CI ran. The profiling task has no invented bottleneck or result.
+
+## Technical reference for agents and manual use
+
+The commands and capture details below support the setup prompt above.
 
 From the repository root, with Python 3, Git and tmux installed:
 
@@ -38,7 +65,7 @@ Capture method: `tmux capture-pane -p -e` retains production output and ANSI
 status colours. Only unused trailing empty rows are omitted; all content and
 ANSI attributes are retained. For the overview, the actual stacked pane captures are joined
 in pane order with full-width, labelled separators representing tmux's pane
-borders. Freeze rasterizes that output on an
+borders and one empty row between apps. Freeze rasterizes that output on an
 opaque dark background; this is a terminal-output rendering, not a desktop
 screenshot. Freeze's ANSI rendering does not reproduce inverse selection
 backgrounds; the production `>` selection marker remains visible. The spinner

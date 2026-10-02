@@ -2,6 +2,11 @@
 
 [Back to the introduction](../README.md).
 
+This is an agent-facing reference for event waits, resource admission and
+usage reports. For the human overview and setup prompt, start with the
+introduction. These mechanisms support chosen workflows; installing the kit
+does not start a scheduler or grant permission to run new work.
+
 ## Coordination and efficiency
 
 Three local tools reduce model-driven polling and repeated audit scripts.

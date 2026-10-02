@@ -2,6 +2,25 @@
 
 [Back to the introduction](../README.md).
 
+Shared records give concurrent agents one place to claim work, exchange
+messages and preserve what happened. `agent-task` holds the work queue;
+`agent-changelog` keeps lasting events and machine changes. You can follow
+the queue through the read-only dashboard.
+
+## Ask your agent to help with setup
+
+```text
+Help me set up agent-kit's shared tasks and event logs. Read
+docs/records.md first. Check existing configuration and ask where I
+want the two dedicated Git record stores. Preserve existing data and
+configure only the stores I choose. Verify their access and signing,
+then show me how to view the queue. Do not enable automatic pushing
+or add global rules and hooks unless I choose those integrations.
+```
+
+The rest of this page is the technical reference for agents performing
+setup and coordination, and for people who prefer manual configuration.
+
 ## Agent records
 
 Tasks and changelog entries live in separate, dedicated git repositories.

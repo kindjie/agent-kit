@@ -9,16 +9,27 @@
 
 # agent-kit
 
-**A practical toolkit for working with coding agents.**
+**Help coding agents manage their work, and see what they're doing.**
 
-Follow Claude Code and Codex sessions, monitor quota, and coordinate shared
-work. Give your agents reusable skills for profiling, planning, testing,
-review, and handoffs. Start with the pieces you need.
+agent-kit gives Claude Code and Codex tools and skills to:
 
-[Quick start](#quick-start) · [Profiling](#investigate-performance-with-evidence) ·
-[Activity and quota](#follow-activity-and-quota) ·
+- **Plan around quota across multiple accounts:** track remaining capacity,
+  resets and usage pace so agents can manage consumption and delegation.
+  You remain in control of account switching.
+- **Coordinate concurrent work:** share tasks, claims, dependencies and
+  messages so agents can work together across sessions.
+- **Keep lasting logs:** record milestones, important events, machine
+  changes and recovery information.
+
+A live dashboard gives you an overview of agents, tasks and quota timing.
+Reusable skills also cover profiling, planning, testing, review and handoffs.
+Adopt individual pieces or combine them into your workflow.
+
+[Quick start](#quick-start) · [Requirements](#requirements) ·
+[Profiling](#investigate-performance-with-evidence) ·
+[Agents](#follow-agents) · [Timeline](#read-the-quota-timeline) ·
 [Shared tasks](#coordinate-work) · [Skills](#build-your-own-toolkit) ·
-[Install](#install) · [Privacy](#privacy-and-limits)
+[Install](#install) · [Privacy](#privacy)
 
 Want just the performance guidance? The [profiling skill works on its own](
 #profiling-only-installation), without the dashboard or task records.
@@ -31,55 +42,81 @@ shared tasks, and quota timing shown with synthetic demo data.*
 
 ## Quick start
 
-The commands need a POSIX shell and **Python 3.9+**. Live quota also needs
-an authenticated Claude Code or Codex CLI; install only the provider you use.
-Quota commands contact provider services and maintain a local cache.
-No account is needed to read help or run the [isolated demo](docs/demo/README.md).
+You can start with just a skill, a quota check, or the dashboard. Shared task
+records and global agent rules are optional.
 
-Clone the public repository, then try a command directly:
+### Let your agent help with setup
 
-```sh
-git clone git@github.com:kindjie/agent-kit.git
-cd agent-kit
-./bin/agent-quota --help
+Paste this into your coding agent, such as Claude Code or Codex:
+
+```text
+Help me set up agent-kit: https://github.com/kindjie/agent-kit.
+Read README.md and the setup reference in docs/install.md first.
+Ask which coding agent I use and which parts I want: skills, quota and
+dashboard views, shared tasks and event logs, or a combination.
+Check what is installed, then install and link only the pieces I choose,
+including their required companion files.
+Preserve existing settings and skill entries; explain any conflicts.
+Keep model summaries off. Do not add global rules or hooks, or create
+shared task stores, unless I choose those integrations.
+Verify the setup and show me one command or prompt to get started.
 ```
 
-The SSH example assumes GitHub SSH access. You can also
-[download a ZIP](https://github.com/kindjie/agent-kit/archive/refs/heads/main.zip)
-and work from the extracted directory.
+### Try it yourself
 
-With a provider CLI signed in, see quota, resets, credits, and recent pace:
+1. [Download the ZIP](https://github.com/kindjie/agent-kit/archive/refs/heads/main.zip),
+   extract it, and open a terminal in that folder. If you already use Git
+   with GitHub SSH access, you can clone it instead:
 
-```sh
-./bin/agent-quota --brief
-```
+   ```sh
+   git clone git@github.com:kindjie/agent-kit.git
+   cd agent-kit
+   ```
 
-Missing or unavailable observations remain unknown. To follow local agent
-sessions without generating model summaries:
+2. Check that the command runs. This prints help and needs no account:
 
-```sh
-./bin/agent-quota --agents --live --no-summaries
-```
+   ```sh
+   ./bin/agent-quota --help
+   ```
 
-This reads local transcripts and can still query quota services.
-`--no-summaries` suppresses model calls; it does not mean offline.
+3. If your Claude Code or Codex CLI is already signed in, try a quota check:
 
-For the combined view, add **tmux** and run:
+   ```sh
+   ./bin/agent-quota --brief
+   ```
+
+   You'll see quota, resets, and recent usage pace. Missing observations
+   stay unknown. Quota checks contact your provider and keep a local cache.
+
+For the combined dashboard, run this when tmux is installed:
 
 ```sh
 ./bin/agent-dash
 ```
 
-It opens Agents, Agent Tasks, and Timeline. Without configured records,
-the task pane explains setup; launching never initializes records for you.
-The dashboard defaults to no model summaries. Add `--summaries` only when
-comfortable with the [summary data flow](docs/privacy.md).
-[Taskglance](https://github.com/kindjie/taskglance) is optional:
-`./bin/agent-dash --personal` adds your own task list.
+It opens Agents, Agent Tasks, and Timeline. Press `q` to quit a live view.
+The task pane explains setup if you have not configured shared records.
+The dashboard keeps model summaries off by default.
 
-**Just the skills?** Skip these command dependencies and
-[install one skill](#profiling-only-installation), or pick from the
-[catalogue](docs/tools.md#skills).
+If a command cannot run, check the requirements below or use the setup
+prompt. Want to explore without a signed-in account? Try the
+[fictional demo](docs/demo/README.md).
+
+## Requirements
+
+You only need the requirements for the pieces you choose.
+
+| Piece | What you need |
+| --- | --- |
+| Skills only | A coding agent that supports local skills |
+| Commands | Python 3.9+ and a POSIX shell, on macOS or Linux |
+| Live quota | A signed-in Claude Code or Codex CLI; either provider is enough |
+| Combined dashboard | tmux, in addition to the command requirements |
+| Shared task records | Git and task stores you explicitly configure |
+
+The [setup reference](docs/install.md) covers installation and optional
+integrations in detail. It's written for agents doing setup and people who
+prefer manual configuration.
 
 ## Investigate performance with evidence
 
@@ -125,40 +162,38 @@ Moss & Mugs is a demonstration scenario; no performance result is claimed.
 
 ### Profiling-only installation
 
-From the checkout, link the **whole directory** into one agent's skill folder.
-Its `references/` must stay with it. This needs neither tmux nor records,
-and installing guidance does not install profiling tools.
+Use the setup prompt above and ask for **only the profiling skill**. You
+need neither the dashboard nor shared task records. Installing the skill
+provides guidance; it does not install profiling tools.
 
-For Codex:
+For manual setup, follow the [whole-directory installation instructions](
+docs/install.md#profiling-only-installation). Ask your agent to **use the
+profiling skill** when you want an investigation.
 
-```sh
-mkdir -p "$HOME/.agents/skills"
-destination="$HOME/.agents/skills/profiling"
-[ ! -e "$destination" ] && [ ! -L "$destination" ] && \
-  ln -s "$PWD/skills/profiling" "$destination"
-```
+## Follow agents
 
-For Claude Code, use `$HOME/.claude/skills` for the destination instead.
-These commands refuse an existing entry; inspect it before deciding whether
-to replace it. Keep the checkout where the link points.
-
-Ask your agent to **use the profiling skill**. Skill selection depends on the
-agent and request; installation does not guarantee automatic invocation.
-The supported local discovery paths and symlink behavior are documented by
-[Codex](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills)
-and [Claude Code](https://code.claude.com/docs/en/skills#choose-where-skills-load).
-
-## Follow activity and quota
+<a id="follow-activity-and-quota"></a>
 
 The agent tree groups parent sessions and delegated agents. Collapse groups
 to see the overview, or open details to inspect the observed state and waits.
 It distinguishes ended turns, reasoning, tool calls, and explicit waits while
-keeping observation freshness visible. See the
-[activity close-up](docs/activity.md) and
-[quota/activity contract](bin/agent-quota.md).
+keeping observation freshness visible.
 
 ```sh
 ./bin/agent-quota --agents --live --no-summaries
+```
+
+See the [activity close-up](docs/activity.md) for controls and what each
+observed state means. For attention handoffs, `agent-speak.sh` can ring or
+speak and publish a tmux badge. Agents report and clear these reasons;
+silence alone does not establish a stall.
+[Attention setup](docs/install.md#requirements) covers the integration.
+
+## Read the quota timeline
+
+See when quota resets and whether recent usage would exhaust it first:
+
+```sh
 ./bin/agent-quota --timeline --live
 ```
 
@@ -170,9 +205,8 @@ follow recent usage, not a guaranteed schedule.*
 
 Subscription quota and purchased credits are reported separately. Forecasts
 need adequate recent observations; missing evidence stays unknown.
-For attention handoffs, `agent-speak.sh` can ring or speak and publish a tmux
-badge. Agents explicitly report and clear these reasons; silence is not a
-stall detector. [Attention and status setup](docs/install.md#requirements).
+See the [quota reference](bin/agent-quota.md) for accounting, forecast limits,
+and command options.
 
 ## Coordinate work
 
@@ -235,26 +269,23 @@ optional rules, status lines, attention badges, and records hooks.
 Always-loaded rules are a separate opt-in: read them before installing them.
 No setup command in this introduction rewrites your global agent settings.
 
-## Privacy and limits
+## Privacy
 
+<a id="privacy-and-limits"></a>
 <a id="what-it-reads-and-what-leaves-the-machine"></a>
 
 Activity scanning reads local transcripts; the scan itself uploads nothing.
-Quota reporting contacts provider services. Model-generated thread summaries
-send bounded excerpts to a provider and may use the other provider by default.
-`--no-summaries` disables those model calls; `--cached` skips new transcript
-scans. The dashboard's default is no summaries. Review the
-[privacy reference](docs/privacy.md) before enabling additional data flow.
+Quota checks contact provider services. Enabling model-generated summaries
+sends bounded excerpts to a provider, which may differ from the thread's
+original provider. The dashboard keeps summaries off by default.
+The [privacy reference](docs/privacy.md) explains these flows and controls.
 
-Observed activity is not proven productivity. Claim expiry does not prove
-work stopped, a recorded check does not re-run CI, and quota forecasts are
-not guarantees. The screenshots use only isolated synthetic records and
-accounts; they contain no private projects or measured profiling results.
+The screenshots use isolated fictional records and accounts. They contain
+no private projects or measured profiling results.
 
 ## Documentation
 
 <a id="what-is-in-it"></a>
-<a id="requirements"></a>
 <a id="always-loaded-rules"></a>
 <a id="records-hooks"></a>
 <a id="status-lines"></a>

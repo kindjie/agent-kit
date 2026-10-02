@@ -231,7 +231,7 @@ def dashboard_capture(panes, width):
     label = '─ ' + title + ' '
     border = label + '─' * max(0, width - len(label))
     chunks.append('\x1b[1m' + border + '\x1b[0m\n' + text)
-  return ''.join(chunks).rstrip('\n') + '\n'
+  return '\n'.join(chunks).rstrip('\n') + '\n'
 
 
 def capture(run, output):

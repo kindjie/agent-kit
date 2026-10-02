@@ -2,6 +2,14 @@
 
 [Back to the introduction](../README.md).
 
+This is the setup reference for coding agents and manual configuration.
+Before changing anything, establish which tools, skills and integrations
+the user wants. Inspect the environment, preserve existing entries, and
+explain conflicts rather than replacing them. Requirements below apply only
+to the selected pieces; rules, hooks, summaries and shared records need their
+own explicit choice. Finish by verifying the selected setup and giving the
+user a first command or skill prompt.
+
 ## Requirements
 
 - A POSIX shell. Developed on macOS; the shell scripts and Python target
@@ -105,12 +113,39 @@ for name in profiling commit; do
 done
 ```
 
+### Profiling-only installation
+
+Link the whole skill directory so its references remain available. This
+needs neither tmux nor records, and it does not install profiling tools.
+From the checkout, for Codex:
+
+```sh
+mkdir -p "$HOME/.agents/skills"
+destination="$HOME/.agents/skills/profiling"
+[ ! -e "$destination" ] && [ ! -L "$destination" ] && \
+  ln -s "$PWD/skills/profiling" "$destination"
+```
+
+For Claude Code, use `$HOME/.claude/skills` for the destination instead.
+The guard refuses an existing entry, including a dangling link. Inspect
+it before deciding whether to replace it; keep the checkout in place.
+Skill selection depends on the agent and request, so installation does not
+guarantee automatic invocation. See the supported paths and symlink behavior
+in [Codex's documentation](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills)
+and [Claude Code's documentation](https://code.claude.com/docs/en/skills#choose-where-skills-load).
+
+### Verify the selected setup
+
 **Check command discovery.** Help needs no account or model call:
 
 ```sh
 agent-quota --help
 agent-dash --help
 ```
+
+**Check selected skills.** Confirm each destination resolves to its checkout
+directory and that `SKILL.md` and any supplied references are readable.
+Give the user a starter prompt that names their chosen skill.
 
 Markdown preview is optional and needs `uv`; it starts a loopback server:
 `md-preview README.md --no-open`. See the preview skill for asset-serving limits.
