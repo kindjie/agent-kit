@@ -1,0 +1,232 @@
+#!/bin/sh
+# Compose the shipped live views without requiring personal configuration.
+set -eu
+
+usage() {
+  cat <<'EOF'
+Usage: agent-dash [--personal] [--summaries|--no-summaries] [window-name]
+
+Open Agents, Agent Tasks and Timeline in tmux (default name: agents).
+Small terminals put views in separate windows instead of squeezing panes.
+--personal      Add taskglance's personal list when available.
+--summaries     Allow agent-quota's model summaries (explicit opt-in).
+--no-summaries  Suppress summaries (default); quota requests still occur.
+Records must be configured separately; launching never initializes them.
+EOF
+}
+personal=0
+summaries=--no-summaries
+name=agents
+named=0
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --personal) personal=1 ;;
+    --summaries) summaries= ;;
+    --no-summaries) summaries=--no-summaries ;;
+    -h|--help) usage; exit 0 ;;
+    --*) usage >&2; exit 2 ;;
+    *) if [ "$named" -eq 1 ] || [ -z "$1" ]; then
+         usage >&2; exit 2
+       fi
+       name=$1; named=1 ;;
+  esac
+  shift
+done
+
+# Resolve individual symlinks too: sibling modules live in the kit's bin,
+# not necessarily beside the link used to invoke this launcher.
+source=$0
+case $source in /*) ;; *) source=$PWD/$source ;; esac
+while [ -L "$source" ]; do
+  directory=$(CDPATH='' cd -P -- "$(dirname -- "$source")" && pwd)
+  link=$(readlink "$source")
+  case $link in /*) source=$link ;; *) source=$directory/$link ;; esac
+done
+directory=$(CDPATH='' cd -P -- "$(dirname -- "$source")" && pwd)
+resolve() {
+  if [ -x "$directory/$1" ]; then
+    printf '%s\n' "$directory/$1"
+  else
+    command -v "$1" 2>/dev/null || return 1
+  fi
+}
+need() {
+  resolve "$1" || {
+    printf 'agent-dash: %s not found; install it or add it to PATH\n' "$1" >&2
+    exit 1
+  }
+}
+mux=$(need tmux)
+quota=$(need agent-quota)
+work=$(need agent-task)
+case $("$work" list --help) in
+  *--live*) ;;
+  *) echo 'agent-dash: install agent-kit with agent-task list --live support' >&2
+     exit 1 ;;
+esac
+records=1
+if ! "$work" list --json >/dev/null 2>&1; then
+  records=0
+fi
+tasks=
+if [ "$personal" -eq 1 ]; then
+  tasks=$(resolve taskglance || true)
+  if [ -z "$tasks" ]; then
+    echo 'agent-dash: taskglance unavailable; opening the core views' >&2
+    personal=0
+  fi
+fi
+
+# Only resources created here belong to failure cleanup. In an existing
+# session retain every other window, even when a split or launch fails.
+created_session=
+created_windows=
+complete=0
+cleanup() {
+  [ "$complete" -eq 0 ] || return 0
+  if [ -n "$created_session" ]; then
+    "$mux" kill-session -t "=$created_session" 2>/dev/null || true
+  else
+    for window in $created_windows; do
+      "$mux" kill-window -t "$window" 2>/dev/null || true
+    done
+  fi
+}
+trap cleanup 0
+trap 'exit 130' INT
+trap 'exit 143' TERM
+placeholder='sleep 86400'
+if [ -n "${TMUX:-}" ]; then
+  top=$("$mux" new-window -P -F '#{pane_id}' -n "$name" "$placeholder")
+  attach=
+else
+  session=$name
+  if "$mux" has-session -t "=$session" 2>/dev/null; then
+    session=$name-$$
+  fi
+  cols=$(tput cols 2>/dev/null || echo 120)
+  lines=$(tput lines 2>/dev/null || echo 40)
+  top=$("$mux" new-session -d -P -F '#{pane_id}' -s "$session" \
+    -x "$cols" -y "$lines" "$placeholder")
+  created_session=$session
+  attach=$session
+fi
+# A pane ID is also a valid tmux window target if the next lookup fails.
+created_windows=$top
+# Record the new window before attempting any layout changes.
+window=$("$mux" display-message -p -t "$top" '#{window_id}')
+created_windows=$window
+target_session=$("$mux" display-message -p -t "$top" '#{session_id}')
+width=$("$mux" display-message -p -t "$top" '#{window_width}')
+height=$("$mux" display-message -p -t "$top" '#{window_height}')
+
+new_view_window() {
+  pane=$("$mux" new-window -d -P -F '#{pane_id}' \
+    -t "$target_session:" -n "$name-$1" "$placeholder")
+  created_windows="$created_windows $pane"
+  window=$("$mux" display-message -p -t "$pane" '#{window_id}')
+}
+# Refresh the pane environment, not the server/session environment. Old
+# tmux servers may have obsolete PATH and records/transcript locations.
+launch() {
+  destination=$1
+  shift
+  environment_keys='PATH HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME
+XDG_CACHE_HOME AGENT_TASKS_DIR AGENT_CHANGELOG_DIR CODEX_HOME CLAUDE_CONFIG_DIR
+CODEX_MODELS_FILE AGENT_QUOTA_CACHE_FILE CLAUDE_STATE_FILE CLAUDE_BIN CODEX_BIN'
+  for key in $environment_keys; do
+    if value=$(printenv "$key"); then
+      set -- "$key=$value" "$@"
+    fi
+  done
+  for key in $environment_keys; do
+    if ! printenv "$key" >/dev/null; then
+      set -- -u "$key" "$@"
+    fi
+  done
+  "$mux" respawn-pane -k -t "$destination" /usr/bin/env "$@"
+}
+launch_work() {
+  if [ "$records" -eq 1 ]; then
+    launch "$work_pane" "$work" list --live
+  else
+    # Expansion belongs to the new pane shell.
+    # shellcheck disable=SC2016
+    launch "$work_pane" /bin/sh -c \
+      'printf "%s\n" "$1"; while :; do sleep 3600; done' agent-dash \
+      'Agent Tasks unavailable. If unconfigured, see agent-task init --help,
+then set AGENT_TASKS_DIR to your dedicated records repository.
+Run agent-task list in your shell for diagnostics. No setup was changed.'
+  fi
+  "$mux" select-pane -t "$work_pane" -T 'Agent Tasks'
+}
+launch_quota() {
+  # Summary controls belong to agent observations; timeline accepts none.
+  if [ "$2" = --agents ]; then
+    launch "$1" "$quota" "$2" --live ${summaries:+"$summaries"}
+  else
+    launch "$1" "$quota" "$2" --live
+  fi
+  "$mux" select-pane -t "$1" -T "$3"
+}
+work_pane=
+timeline_pane=
+if [ "$width" -lt 82 ] || [ "$height" -lt 38 ]; then
+  new_view_window tasks
+  work_pane=$pane
+  launch_work
+fi
+if [ "$width" -lt 82 ] || [ "$height" -lt 22 ]; then
+  new_view_window timeline
+  timeline_pane=$pane
+  launch_quota "$timeline_pane" --timeline Timeline
+  if [ "$personal" -eq 1 ]; then
+    new_view_window personal
+    launch "$pane" "$tasks" watch -i --all
+    "$mux" select-pane -t "$pane" -T 'My Tasks'
+  fi
+else
+  timeline=$(COLUMNS=$width "$quota" --timeline --cached 2>/dev/null || true)
+  rows=$(printf '%s\n' "$timeline" | wc -l)
+  cols=$(printf '%s\n' "$timeline" | awk \
+    '{ if (length > n) n = length } END { print n + 0 }')
+  clamp() {
+    v=$1
+    [ "$v" -lt "$2" ] && v=$2
+    [ "$v" -gt "$3" ] && v=$3
+    echo "$v"
+  }
+  bottom=$(clamp $((rows + 3)) 10 $((height / 2)))
+  if [ -z "$work_pane" ]; then
+    bottom=$(clamp $((rows + 3)) 10 $((height / 3)))
+  fi
+  timeline_pane=$("$mux" split-window -v -P -F '#{pane_id}' -t "$top" \
+    -l "$bottom" "$placeholder")
+  if [ "$personal" -eq 1 ]; then
+    left=$(clamp $((cols + 2)) 40 $((width * 65 / 100)))
+    [ $((width - left - 1)) -lt 40 ] && left=$((width - 41))
+    tasks_pane=$("$mux" split-window -h -P -F '#{pane_id}' \
+      -t "$timeline_pane" -l $((width - left - 1)) "$placeholder")
+    launch "$tasks_pane" "$tasks" watch -i --all
+    "$mux" select-pane -t "$tasks_pane" -T 'My Tasks'
+  fi
+  if [ -z "$work_pane" ]; then
+    work_height=$(clamp $(((height - bottom - 2) / 2)) 14 \
+      $((height - bottom - 12)))
+    work_pane=$("$mux" split-window -v -P -F '#{pane_id}' -t "$top" \
+      -l "$work_height" "$placeholder")
+    launch_work
+  fi
+  launch_quota "$timeline_pane" --timeline Timeline
+fi
+"$mux" set-option -p -t "$top" @agent_attention_dashboard 1
+launch_quota "$top" --agents Agents
+if [ "$width" -ge 82 ] && [ "$height" -ge 38 ]; then
+  "$mux" select-pane -t "$work_pane"
+else
+  "$mux" select-pane -t "$top"
+fi
+complete=1
+if [ -n "$attach" ]; then
+  "$mux" attach-session -t "=$attach"
+fi

@@ -120,16 +120,62 @@ class LiveModelTest(unittest.TestCase):
     self.assertIn('codex:example [WAITING] until closed', detail)
     self.assertIn('observed 30s ago', detail)
 
+  def test_header_uses_two_rows_and_moves_secondary_health_to_help(self):
+    self.state.update({'T-0001': record('T-0001')}, NOW)
+    view = self.live.LiveView(self.state)
+    frame = view.frame(160, 20, NOW)
+    self.assertTrue(frame[0][0].startswith('Agent Tasks · 1 tasks ·'))
+    self.assertIn('verified ', frame[0][0])
+    self.assertIn('0 working · 0 review · 1 open · 0 blocked', frame[1][0])
+    self.assertIn('0 expired · 0 holds', frame[1][0])
+    self.assertIn('Est tokens', frame[2][0])
+    self.assertTrue(frame[3][0].startswith('> T-0001'))
+    self.assertFalse(any('read-only' in t or 'session(all)' in t
+                         or 'next-eligible' in t for t, _ in frame))
+    view.key('?', 30)
+    help_text = '\n'.join(t for t, _ in view.frame(160, 60, NOW))
+    self.assertIn('Read-only', help_text)
+    self.assertIn('next-eligible', help_text)
+    self.assertIn('session(all)', help_text)
+    self.assertIn('1 next-eligible', '\n'.join(view.detail(NOW)))
+
+  def test_help_groups_wraps_and_scrolls_without_moving_selection(self):
+    from agent_activity_live import AgentView
+    self.state.update({'T-0001': record('T-0001')}, NOW)
+    for view, now in ((self.live.LiveView(self.state), NOW), (AgentView(), 1000)):
+      view.key('?', 10)
+      selected = view.selected
+      frame = view.frame(50, 10, now)
+      self.assertIn('Help', frame[0][0])
+      self.assertTrue(any(t == 'Navigation' and s == 'bold' for t, s in frame))
+      self.assertIn('scroll', frame[-1][0])
+      for _ in range(80):
+        view.key('j', 10)
+      end = view.frame(50, 10, now)
+      self.assertNotEqual(frame, end)
+      self.assertEqual(view.selected, selected)
+      self.assertTrue(all(self.live.cells(t) <= 49 for t, _ in end))
+      view.key('g', 10)
+      view.key('g', 10)
+      self.assertEqual(view.frame(50, 10, now), frame)
+      for width, height in ((20, 6), (3, 3), (1, 1)):
+        narrow = view.frame(width, height, now)
+        self.assertLessEqual(len(narrow), height)
+        self.assertTrue(all(self.live.cells(t) <= width - 1
+                            for t, _ in narrow))
+      view.key('?', 10)
+      self.assertEqual(view.mode, 'normal')
+
   def test_selected_block_scrolls_into_view_with_update_and_colours(self):
     rows = {f'T-{i:04d}': record(f'T-{i:04d}') for i in range(1, 31)}
     rows['T-0011']['fields']['status'] = 'blocked'
     self.state.update(rows, NOW)
     view = self.live.LiveView(self.state)
-    view.selected = view.visible()[10]
+    view.selected = view.visible()[20]
     frame = view.frame(120, 17, NOW)
     selected = [text for text, style in frame if 'selected' in style]
-    self.assertEqual(len(selected), 3)
-    self.assertIn('Updated 2026-01-01 11:00', selected[-1])
+    self.assertEqual(len(selected), 1)
+    self.assertFalse(any('ETA' in line for line, _ in frame))
     self.assertIn('1h ago', selected[-1])
     self.assertTrue(any('open' in style for _, style in frame))
     view.selected = 'T-0011'
@@ -139,16 +185,18 @@ class LiveModelTest(unittest.TestCase):
     self.state.update(rows, NOW)
     selected = [text for text, style in view.frame(55, 20, NOW)
                 if 'selected' in style]
-    self.assertEqual(len(selected), 5)
-    self.assertIn('Updated', selected[-1])
+    self.assertEqual(len(selected), 3)
+    self.assertNotIn('Updated', selected[-1])
 
-  def test_updated_column_uses_local_day_and_fullscreen_details(self):
-    local_now = NOW.astimezone()
-    self.assertEqual(self.live.updated_label(NOW, NOW),
-                     local_now.strftime('%H:%M'))
+  def test_updated_column_uses_age_and_fullscreen_details(self):
+    self.assertEqual(self.live.updated_label(NOW, NOW), '0s ago')
+    self.assertEqual(self.live.updated_label(NOW - timedelta(minutes=5), NOW),
+                     '5m ago')
+    self.assertEqual(self.live.updated_label(NOW - timedelta(hours=13), NOW),
+                     '13h ago')
     yesterday = NOW - timedelta(days=1)
     self.assertEqual(self.live.updated_label(yesterday, NOW),
-                     yesterday.astimezone().strftime('%Y-%m-%d'))
+                     '1d ago')
     self.assertEqual(self.live.updated_label(None, NOW), 'unknown')
     self.state.update({'T-0001': record('T-0001')}, NOW)
     view = self.live.LiveView(self.state)
@@ -165,6 +213,7 @@ class LiveModelTest(unittest.TestCase):
     self.assertIn('full-screen', frame[0][0])
     self.assertIn('Updated:', '\n'.join(t for t, _ in frame))
     self.assertNotIn('tasks ·', frame[-1][0])
+    self.assertIn('2026-01-01', '\n'.join(t for t, _ in frame))
     view.key('\n', 20)
     self.assertEqual(view.detail_offset, 1)
     view.key('\x0b', 20)
@@ -297,7 +346,7 @@ class LiveCommandTest(RecordsFixture):
               for p in root.rglob('*') if p.is_file()}
     text = self.run_cmd('agent-task', 'list', '--live')
     self.assertIn('T-0001', text)
-    self.assertIn('ETA unknown', text)
+    self.assertNotIn('ETA unknown', text)
     self.assertNotIn('\x1b', text)
     after = {str(p): p.read_bytes() for root in (self.tasks, self.changes)
              for p in root.rglob('*') if p.is_file()}
@@ -383,9 +432,9 @@ class LiveCommandTest(RecordsFixture):
             os.write(master, b'\x1b')
             until(b'Agent Tasks')
             os.write(master, b'?')
-            until(b'read-only controls')
+            until(b'Navigation')
             os.write(master, b'\x1b')
-            until(b'Agent Tasks')
+            until(b'verified')
             fcntl.ioctl(slave, termios.TIOCSWINSZ,
                         struct.pack('HHHH', 12, 40, 0, 0))
             proc.send_signal(signal.SIGWINCH)

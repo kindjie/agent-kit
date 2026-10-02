@@ -34,7 +34,7 @@ class PrivacyTest(unittest.TestCase):
         if marker in content:
           private.append(str(path.relative_to(ROOT)) + ": home path")
       for match in address.finditer(content):
-        if (path == ROOT / "README.md" and
+        if (path in (ROOT / "README.md", ROOT / "docs/install.md") and
             match.group() == "git" + "@" + "github.com"):
           continue
         if match.group().split("@", 1)[1] not in (

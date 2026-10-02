@@ -81,9 +81,46 @@ def age(when, now):
 def updated_label(when, now):
   if when is None:
     return 'unknown'
-  local = when.astimezone()
-  return local.strftime('%H:%M' if local.date() == now.astimezone().date()
-                        else '%Y-%m-%d')
+  return age(when, now) + ' ago'
+
+
+def help_scroll(key, sequence, offset, page):
+  if sequence == 'gg' or key == 'HOME':
+    return 0
+  if key in ('G', 'END'):
+    return 10 ** 9
+  step = max(1, page // 2) if key in ('\x04', '\x15') else 1
+  if key in ('j', 'DOWN', '\x04'):
+    return offset + step
+  if key in ('k', 'UP', '\x15'):
+    return max(0, offset - step)
+  return offset
+
+
+def help_frame(title, sections, width, height, offset):
+  body = []
+  key_width = 18
+  for heading, entries in sections:
+    if body:
+      body.append(('', ''))
+    body.append((heading, 'bold'))
+    for key, description in entries:
+      if width >= key_width + 18:
+        parts = wrap(description, width - key_width - 2)
+        body.append(('  ' + key.ljust(key_width) + parts[0], ''))
+        body.extend((' ' * (key_width + 2) + part, '') for part in parts[1:])
+      else:
+        body.extend((part, '') for part in wrap(
+          '  ' + (key + ': ' if key else '') + description, width))
+  slots = max(0, height - 2)
+  offset = min(offset, max(0, len(body) - slots))
+  footer = 'j/k scroll · ?/Esc close · q quit'
+  if height == 1:
+    return [(clip(footer, width), 'dim')], offset
+  lines = [(title + ' · Help', 'bold')]
+  lines += body[offset:offset + slots]
+  lines += [(footer, 'dim')]
+  return [(clip(t, width), style) for t, style in lines], offset
 
 
 def last_update(row):
@@ -240,6 +277,7 @@ class LiveView:
     self.full_details = False
     self.section = 0
     self.detail_offset = 0
+    self.help_offset = 0
     self.first = 0
     self.wait_observations = None
     self.mouse_rows, self.mouse_details = {}, (0, 0)
@@ -330,8 +368,10 @@ class LiveView:
     if self.mode == 'help':
       if key in ('?', '\x1b'):
         self.mode = 'normal'
-      elif key == 'Z':
-        self.pending = key
+      else:
+        self.help_offset = help_scroll(key, seq, self.help_offset, page)
+        if key in ('g', 'Z'):
+          self.pending = key
       return False
     ids = self.sync()
     index = ids.index(self.selected) if self.selected else 0
@@ -375,6 +415,24 @@ class LiveView:
       self.selected = selected
     return False
 
+  def health_details(self, now):
+    rows = [r for r in self.state.rows.values() if self.scoped(r)]
+    fields = {i: r['fields'] for i, r in self.state.rows.items()}
+    ready = sum(not unmet(self.state.rows, r['fields']['id']) and
+                task_available(fields, r['fields']) for r in rows
+                if r['fields']['status'] in LIVE)
+    created = sum(timedelta(0) <= now - timestamp(r['fields']['created']) <=
+                  timedelta(hours=1) for r in rows)
+    closed = sum(r['fields']['status'] == 'done' and
+                 bool(timestamp(r['fields'].get('closed', ''))) and
+                 timedelta(0) <= now - timestamp(r['fields']['closed']) <=
+                 timedelta(hours=1) for r in rows)
+    return [f'{ready} next-eligible',
+            f'1h: +{created} new / {closed} done · session(all) '
+            f'+{self.state.counts["NEW"]} new / '
+            f'{self.state.counts["DONE"]} done / '
+            f'{self.state.counts["REOPENED"]} reopened']
+
   def detail(self, now):
     if not self.selected:
       return []
@@ -400,6 +458,7 @@ class LiveView:
         f.get('execution-model'), {})
       if selected.get('wall-seconds-unknown'):
         lines.append('Time unknown: ' + selected['wall-seconds-unknown'])
+      lines += self.health_details(now)
       logs = log_lines(body)
       lines += ['Last record: ' + (logs[-1][2:] if logs else 'none')]
     elif self.section == 1:
@@ -454,23 +513,30 @@ class LiveView:
     width, height = max(0, width - 1), max(1, height)
     ids = self.sync()
     if self.mode == 'help':
-      help_lines = [
-        'TASKS · read-only controls',
-        'j/k or arrows: select · gg/G: first/last',
-        'Ctrl-d/u: half page · /: filter',
-        'Filter: Enter keeps; Esc clears; arrows/Home/End edit',
-        'Ctrl-a/e: start/end; Ctrl-w: word; Ctrl-u: clear',
-        'Enter: details · Tab: progress/dependencies/evidence/waits',
-        'f: full-screen details · [/], Ctrl-j/k: scroll · Esc: close',
-        '? or Esc: close help · q/ZZ/Ctrl-C: quit',
-        'Selection follows ID; selected titles wrap.',
-        'Bold: changed in 10s · NEW badge: 5m · recent closed: 1h',
-        'Expired claim is not proof of stopped work.',
-        'Estimates are per model; ETA remains unknown.',
-        'Counts follow CLI scope; / only filters the list.',
-        'No editing, recovery, syncing or model calls.',
+      sections = [
+        ('Navigation', [('j/k, Up/Down', 'Select task'),
+          ('gg / G', 'First / last task'),
+          ('Ctrl-d / Ctrl-u', 'Move half a page'),
+          ('Wheel / click', 'Scroll / select task')]),
+        ('Details', [('Enter', 'Open or close details'),
+          ('Tab', 'Progress, dependencies, evidence, observed waits'),
+          ('f', 'Toggle full-screen details'),
+          ('[/], Ctrl-j/k', 'Scroll details'), ('Esc', 'Close details')]),
+        ('Filter', [('/', 'Find tasks'), ('Enter / Esc', 'Keep / clear filter'),
+          ('Arrows, Home/End', 'Move text cursor'),
+          ('Ctrl-a / Ctrl-e', 'Start / end of text'),
+          ('Ctrl-w / Ctrl-u', 'Delete word / clear text')]),
+        ('Reading the view', [('Bold / NEW', 'Changed in 10s / created in 5m'),
+          ('Updated', 'Age of last task record; exact time in details'),
+          ('Estimates', 'Selected model duration, not a completion ETA'),
+          ('Expired', 'Claim expired; does not prove work stopped'),
+          ('Scope', 'Counts follow CLI scope; filter only changes list'),
+          ('Read-only', 'No edits, recovery, Git sync or model calls')]),
+        ('Work health', [('', line) for line in self.health_details(now)]),
       ]
-      return [(clip(line, width), '') for line in help_lines[:height]]
+      frame, self.help_offset = help_frame(
+        'Agent Tasks', sections, width, height, self.help_offset)
+      return frame
     if self.full_details:
       detail = [part for line in self.detail(now) for part in wrap(line, width)]
       slots = max(0, height - 2)
@@ -483,36 +549,29 @@ class LiveView:
     rows = [row for row in self.state.rows.values() if self.scoped(row)]
     live = [r for r in rows if r['fields']['status'] in LIVE]
     states = Counter(r['fields']['status'] for r in live)
-    fields = {i: r['fields'] for i, r in self.state.rows.items()}
     expired = sum(r['fields'].get('owner', 'none') != 'none' and
                   bool(r['fields'].get('expires')) and
                   timestamp(r['fields']['expires']) <= now for r in live)
     holds = sum(r['fields'].get('blocked-on-owner', '').startswith('yes')
                 for r in live)
-    ready = sum(not unmet(self.state.rows, r['fields']['id']) and
-                task_available(fields, r['fields']) for r in live)
     scope = ','.join(self.args.repo or []) if self.args else ''
-    header = f'Agent Tasks · {scope or "all repositories"} · read-only'
+    header = f'Agent Tasks · {len(ids)} tasks'
+    if scope:
+      header += ' · ' + scope
     status = ('STALE · last verified ' + (
       self.state.verified.astimezone().strftime('%H:%M:%S')
       if self.state.verified else 'never') + ' · ' + self.state.error
-      if self.state.error else 'Verified ' +
+      if self.state.error else 'verified ' +
       self.state.verified.astimezone().strftime('%H:%M:%S'))
     recent = [r for r in rows if r['fields']['status'] == 'done' and
               timestamp(r['fields'].get('closed', '')) and
               timedelta(0) <= now - timestamp(r['fields']['closed']) <=
               timedelta(hours=1)]
-    created = sum(timedelta(0) <= now - timestamp(r['fields']['created']) <=
-                  timedelta(hours=1) for r in rows)
     title = status + ' · ' + header if self.state.error else header + ' · ' + status
     lines = [(title, 'bold'),
       (f'{states["in-progress"]} working · {states["in-review"]} review · '
-       f'{states["open"]} open · {states["blocked"]} blocked', ''),
-      (f'{expired} expired claims · {holds} owner holds · {ready} next-eligible', ''),
-      (f'1h: +{created} new / {len(recent)} done · session(all) '
-       f'+{self.state.counts["NEW"]} new / '
-       f'{self.state.counts["DONE"]} done / '
-       f'{self.state.counts["REOPENED"]} reopened', '')]
+       f'{states["open"]} open · {states["blocked"]} blocked · '
+       f'{expired} expired · {holds} holds', '')]
     detail = []
     if self.expanded:
       for line in self.detail(now):
@@ -542,9 +601,6 @@ class LiveView:
       marker = badge[1] + ' ' if badge and (
         now - badge[0] < timedelta(minutes=5)) else ''
       deps = unmet(self.state.rows, ident)
-      info = 'needs ' + ','.join(deps) if deps else estimate_label(f)
-      if f['status'] in CLOSED:
-        info = 'closed ' + age(timestamp(f.get('closed')), now) + ' ago'
       flags = []
       if f.get('owner', 'none') != 'none' and f.get('expires') and (
           timestamp(f['expires']) <= now):
@@ -559,20 +615,20 @@ class LiveView:
         points, tokens, duration = estimate_cells(f)
         prefix = f'{ident:7} {points:>2} {tokens:>10} {duration:>8} '
       text = f'{prefix} {marker}[{f["status"]}{flags}] {f["title"]}'
-      return text, info, f, bool(flags)
+      return text, f, bool(flags)
 
     if ids and available:
       index = ids.index(self.selected)
       self.first = min(self.first, index)
       selected_text = describe(self.selected)[0]
       selected_height = min(available, min(3, len(wrap(
-        selected_text, max(1, row_width - 2)))) + 2)
+        selected_text, max(1, row_width - 2)))))
       self.first = max(self.first, index - available + selected_height)
       used = 0
       for ident in ids[self.first:]:
         if used >= available:
           break
-        text, info, f, warning = describe(ident)
+        text, f, warning = describe(ident)
         selected = ident == self.selected
         if selected:
           wrapped = wrap(text, max(1, row_width - 2))
@@ -581,14 +637,6 @@ class LiveView:
                          :max(1, min(3, available - used))])]
           if len(wrapped) > len(row_lines):
             row_lines[-1] = clip(row_lines[-1] + '…', width)
-          if used + len(row_lines) < available:
-            row_lines.append(clip('  ' + info, width))
-          if used + len(row_lines) < available:
-            updated = last_update(self.state.rows[ident])
-            stamp = updated.strftime('%Y-%m-%d %H:%M %Z') if updated else 'unknown'
-            row_lines.append(clip('  Updated ' + stamp + ' · ' +
-              age(updated, now) + ' ago · ' + (f.get('repos') or 'no repo') +
-              ' · ' + f.get('priority', 'unset') + ' · ' + f['owner'], width))
         else:
           row_lines = [clip(('  ' if column else '') + text, row_width)]
         if column:

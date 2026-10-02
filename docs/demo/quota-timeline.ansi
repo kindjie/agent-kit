@@ -1,0 +1,12 @@
+[2m⠈[0;1m Timeline[0;2m (UTC; now Fri 02 Oct 12:00)[0m · every 5s · quota data 0m old · q to quit
+  [1mToday[0m
+    [1min 2h 0m[0m   14:00  [1m[32mRESET[0m  [1mClaude[0m  [36mwoodland-demo[39m  [2;3m15% left[0m
+  [1mTomorrow[0m
+    [1min 20h 0m[0m  08:00  [1m[31mBURN[0m   [1mCodex[0m   [36mwoodland-demo[39m  [2;3m30% left, 1.5%/h, out 1d 4h before reset[0m
+  [1mSun 04 Oct[0m
+    in 2d 0h   12:00  [1m[32mRESET[0m  [1mCodex[0m   [36mwoodland-demo[39m  [2;3m30% left[0m
+
+[2;3mBURN extrapolates the last 3h of use and is listed only when a quota[0m
+[2;3mwould run out before it resets. As width allows, it adds how long[0m
+[2;3mbefore the reset it runs out, the hourly rate that would last until[0m
+[2;3mthen, and the busiest agents' shares of the last 15 minutes.[0m

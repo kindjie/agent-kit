@@ -455,10 +455,12 @@ run_agent_live(args, Path('/unused'), quota, loader)
             os.write(master, mouse(64, 9, 2))
             time.sleep(.2)  # Collector is now slow; keys must still respond.
             os.write(master, b'?')
-            until(b'tree controls')
+            until(b'Agent tree')
             os.write(master, b'\x1b')
             until(b'THINKING')
-            os.write(master, b' ')
+            # Select the root explicitly after mouse/help activity; folding
+            # must not depend on a wheel report's timing in the full suite.
+            os.write(master, b'gg ')
             until(b'Rows 1-1/1')
             os.write(master, b'\x1bOC')
             until(b'THINKING')

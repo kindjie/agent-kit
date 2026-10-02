@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from agent_activity import AgentTree
-from agent_records_live import cells, clip, wrap
+from agent_records_live import cells, clip, wrap, help_frame, help_scroll
 
 
 def elapsed(at, now):
@@ -32,6 +32,7 @@ class AgentView:
     self.first = 0
     self.details = False
     self.offset = 0
+    self.help_offset = 0
     self.mode, self.filter, self.editor, self.pending = 'normal', '', '', ''
     self.error = ''
     self.refreshed = None
@@ -117,8 +118,10 @@ class AgentView:
     if self.mode == 'help':
       if key in ('?', '\x1b'):
         self.mode = 'normal'
-      elif key == 'Z':
-        self.pending = key
+      else:
+        self.help_offset = help_scroll(key, seq, self.help_offset, page)
+        if key in ('g', 'Z'):
+          self.pending = key
       return False
     shown = self.sync()
     index = shown.index(self.selected) if self.selected else 0
@@ -208,20 +211,28 @@ class AgentView:
     self.tree.refresh(now)
     shown = self.sync()
     if self.mode == 'help':
-      lines = ['AGENTS · tree controls',
-        'j/k or arrows: select · gg/G: first/last · Ctrl-d/u: half page',
-        'Space: collapse/expand · Left/h: collapse or parent',
-        'Right/l: expand or first child · /: filter (keeps ancestors)',
-        'Enter: details · [/]: scroll details · Esc: close/cancel',
-        '? or Esc: close help · q/ZZ/Ctrl-C: quit',
-        'Collapse choices and selection survive refreshes.',
-        'IDLE = turn ended; not proof the agent is waiting for work.',
-        'WAITING = outstanding observed wait; target may be unknown.',
-        'THINKING = reasoning observed; TOOL = outstanding call.',
-        'UNKNOWN = missing, old or incomplete execution evidence.',
-        'Subagent summaries include descendants, even while collapsed.',
-        'No watchers are counted. Observations are local and incomplete.']
-      return [(clip(t, width), '') for t in lines[:height]]
+      sections = [
+        ('Navigation', [('j/k, Up/Down', 'Select agent'),
+          ('gg / G', 'First / last agent'),
+          ('Ctrl-d / Ctrl-u', 'Move half a page'),
+          ('Wheel / click', 'Scroll / select agent')]),
+        ('Agent tree', [('Space', 'Collapse or expand group'),
+          ('Left / h', 'Collapse group or select parent'),
+          ('Right / l', 'Expand group or select first child'),
+          ('/', 'Filter; matching ancestors stay visible')]),
+        ('Details', [('Enter', 'Open or close details'),
+          ('[/]', 'Scroll details'), ('Esc', 'Close details or cancel filter')]),
+        ('Observed states', [('IDLE', 'Turn ended; may not be awaiting work'),
+          ('WAITING', 'Outstanding observed wait; target may be unknown'),
+          ('THINKING / TOOL', 'Reasoning observed / outstanding tool call'),
+          ('UNKNOWN', 'Missing, old or incomplete execution evidence')]),
+        ('Reading the view', [('Groups', 'Summaries include collapsed descendants'),
+          ('Refresh', 'Selection and collapse choices survive updates'),
+          ('Coverage', 'Local, incomplete observations; no watcher counts')]),
+      ]
+      frame, self.help_offset = help_frame(
+        'Agents', sections, width, height, self.help_offset)
+      return frame
     title = ('STALE · last refresh ' + elapsed(self.refreshed, now) +
              ' ago · ' + self.error if self.error else
              'Agents · observed activity · refreshed ' +
