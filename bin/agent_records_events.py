@@ -5,15 +5,23 @@ import re
 import time
 
 from agent_records_core import RecordsError, duration, record_locks
-from agent_records_tasks import addressed, cursor, log_lines, read_task, task_path
+from agent_records_tasks import (
+  addressed, cursor, live_owner, log_lines, read_task, task_path,
+)
 
 
-def snapshot(root, tasks):
+def snapshot(root, tasks, actionable=False):
   result = {}
   for ident in tasks:
     fields, _, body = read_task(task_path(root, ident))
     lines = log_lines(body)
-    header = hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
+    observed = fields
+    if actionable:
+      observed = {key: value for key, value in fields.items() if key != 'expires'}
+      # Derive liveness on every poll, including when the file never changes.
+      # Reuse ownership semantics rather than inventing a second lease clock.
+      observed = [observed, live_owner(fields)]
+    header = hashlib.sha256(json.dumps(observed, sort_keys=True).encode()).hexdigest()
     result[ident] = (lines, fields, {'log': cursor(lines), 'header': header})
   return result
 
@@ -45,7 +53,8 @@ def events(root, changes, args):
   while True:
     batch, rewritten, current = [], [], {}
     with record_locks(root, changes, wait=args.wait):
-      for ident, (lines, fields, mark) in snapshot(root, tasks).items():
+      for ident, (lines, fields, mark) in snapshot(
+          root, tasks, args.actionable).items():
         current[ident] = mark
         if previous is None:
           continue

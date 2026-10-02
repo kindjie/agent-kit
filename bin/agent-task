@@ -71,10 +71,13 @@ def parser():
   sub = p.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
   def add(name, description, example):
-    return sub.add_parser(name, description=textwrap.fill(
+    command = sub.add_parser(name, description=textwrap.fill(
                             description + " " + EXIT_TEXT),
                           epilog=textwrap.fill("Example: " + example),
                           formatter_class=argparse.RawDescriptionHelpFormatter)
+    command.add_argument('--agent', default=argparse.SUPPRESS,
+                         help='explicit actor ID; also accepted before command')
+    return command
 
   init = add("init", "Create or adopt a dedicated git records repository; "
              "writes marker, README and initial commit.",
@@ -264,6 +267,8 @@ def parser():
   events.add_argument("tasks", nargs="+")
   events.add_argument("--after", help="JSON cursor from the preceding batch")
   events.add_argument("--for", dest="for_id")
+  events.add_argument("--actionable", action="store_true",
+                      help="ignore lease renewals; retain observed expiry")
   events.add_argument("--timeout", default="540")
   events.add_argument("--interval", default="5")
   watch = add("watch", "Poll task changes; writes nothing.",

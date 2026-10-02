@@ -607,6 +607,22 @@ records and `--unlocked` is refused. The version-1 JSON contains `events`,
 header hash. Store cursors privately, outside source control. Do not confuse
 an empty batch with completed work.
 
+Use `--actionable` to suppress ordinary lease-renewal timestamp changes.
+It still emits addressed messages and all other header changes, and detects
+an active claim becoming expired on a later poll even without a file write.
+It observes current state, not every transition between polls; it never
+releases a claim or a resource. Full fields remain in emitted header events.
+Keep the mode consistent when resuming: switching modes causes a fresh header
+event. A shorter active renewal does not wake this mode until observed expiry;
+use the default feed when exact lease deadlines matter.
+
+The watcher lifetime is independent of a host tool's blocking/yield limit.
+With background completion notifications, let the command keep waiting across
+tool yields instead of starting a fresh model turn every minute. Host-required
+updates still apply. `--agent ID` is accepted before or after an `agent-task`
+subcommand; if both are given, the later value wins. Use `--` to protect
+literal message arguments beginning with an option name.
+
 ### Cooperative resource admission
 
 ```sh
@@ -680,3 +696,22 @@ Diagnostics describe all scanned files, including historical baseline material.
 Assistant activity without any recognized usage is explicitly incomplete.
 Use repeated comparable windows to decide where deeper trace inspection is
 worthwhile, and validate improvements against completed useful work.
+
+`coordination` reports supported completed shell attempts, explicit failures,
+empty event returns (bootstrap and timeout separately), and proven renewal-only
+wakeups. Exit 4 from a recognized event wait is a timeout, not a failure.
+These are partial observations, not counts of successful record mutations.
+Recognition is deliberately limited to literal shell calls and supported tool
+result envelopes; dynamic scripts and missing results remain unclassified.
+The existing `complete` flag describes detected usage-ledger coverage issues;
+it does not certify complete coordination-event coverage.
+Renewal-only evidence requires a continuous observed feed with a prior full
+header, only an increasing expiry timestamp, and no delivered log messages.
+Unknown baselines cannot establish renewal overhead. No transcript code is
+executed, and no command or message text is included in the report.
+
+`compaction_count`, `compactions_by_thread` and
+`compaction_unknown_duration_count` distinguish completed compactions with
+known timing from those without it. Release-to-confirmation latency remains
+explicitly unavailable until structured lifecycle receipts exist; free-form
+task prose is not treated as a timing contract.

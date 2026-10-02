@@ -67,6 +67,10 @@ so without its own ID it writes as you.
   its JSON cursor via `--after`. It returns one batch per wake; `--for ID`
   filters messages while preserving state changes. Exit 4 is a timeout,
   not completion; retain the returned cursor. Exit 5 requires inspection.
+  Add `--actionable` to ignore routine lease renewals while retaining observed
+  expiry, ownership and other header changes. Keep that mode consistent across
+  cursors; changing modes produces a fresh header event. Watcher lifetime and
+  the tool's blocking/yield interval are separate (see `delegation`).
 - **Finish:** tick the completion checks (`check T-NNNN merged --evidence
   ...`, or `--na 'reason'`), then `close T-NNNN done --reason ...`. The
   review check wants a real review.

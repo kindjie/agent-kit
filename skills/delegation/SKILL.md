@@ -54,6 +54,22 @@ wake the model to ask whether anything changed. Respect higher-priority update
 and tool-wait limits. A waiting worker is not stalled merely because it has no
 new transcript activity; inspect its current operation before interrupting it.
 
+A tool call's blocking/yield limit is separate from a watcher's lifetime.
+When background completion notifications are supported, let the watcher remain
+alive across short tool yields; do not turn every yield limit into a watcher
+timeout and a fresh model turn. Retain its cursor when rearming after an event
+or timeout. If the runtime requires periodic updates, keep those wakes small;
+a longer watcher cannot waive that requirement. For task batches, prefer
+`agent-task events --actionable` to suppress routine lease-renewal wakes while
+retaining observed expiry and other state changes.
+
+Store a full handoff or verification receipt once on its owning task. Send
+affected peers the task ID and log reference plus the decision or action they
+need, rather than copying the entire receipt onto each task. Keep resource
+quiescence/release handling responsive during result review; changing release
+authority still requires an explicitly agreed workflow and verified safety
+checks.
+
 For requested ongoing monitoring, establish wake conditions, a fallback cadence
 and a bounded scope per pass. Prefer a watcher or scheduler to a continuously
 active model where available. Unchanged state needs no new work or report; a
