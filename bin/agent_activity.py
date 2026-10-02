@@ -209,7 +209,7 @@ def cached_task_waits(task, now, path=None):
     if path.stat().st_size > 32 * 1024 * 1024:
       return 'Agent cache too large; observations unavailable', []
     cache = json.loads(path.read_text())
-    if not isinstance(cache, dict) or cache.get('version') != 7:
+    if not isinstance(cache, dict) or cache.get('version') != 8:
       return 'Agent cache format unavailable; refresh the agent view', []
     at = cache.get('observed_at')
     if not isinstance(at, (int, float)) or not 0 <= now - at <= FRESH_FOR:

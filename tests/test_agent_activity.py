@@ -92,11 +92,79 @@ class ActivityTest(unittest.TestCase):
     rows[0]['parent_id'] = 'b'
     self.assertEqual(len(self.mod.AgentTree(rows, 1001).order), 4)
 
+  def test_live_default_limit_is_100_and_explicit_limit_wins(self):
+    from unittest.mock import patch
+    quota = fixtures.AGENT_QUOTA
+    for extra, expected in (([], 100), (['--agent-limit', '3'], 3)):
+      with patch.object(quota.sys.stdout, 'isatty', return_value=True), \
+           patch.object(quota.sys.stdin, 'isatty', return_value=True), \
+           patch.object(quota, 'run_live', return_value=0) as run:
+        self.assertEqual(quota.main(['--agents', '--live'] + extra), 0)
+        self.assertEqual(run.call_args.args[0].agent_limit, expected)
+
+  def test_session_titles_are_recorded_and_shown_with_ids(self):
+    with tempfile.TemporaryDirectory() as directory:
+      root = Path(directory)
+      index = root / 'session_index.jsonl'
+      index.write_text('{"id":"root","thread_name":"Old"}\n'
+                       'invalid\n'
+                       '{"id":"root","thread_name":"Build overview"}\n')
+      self.assertEqual(AGENTS.session_titles(root / 'sessions'),
+                       {'root': 'Build overview'})
+      path = root / 'example.jsonl'
+      path.write_text(json.dumps({'type': 'custom-title',
+        'sessionId': 'example', 'customTitle': 'Review overview'}) + '\n' +
+        json.dumps({'type': 'ai-title', 'sessionId': 'example',
+                    'aiTitle': 'Lower priority title'}) + '\n' +
+        json.dumps({'type': 'custom-title', 'sessionId': 'other',
+                    'customTitle': 'Unrelated title'}) + '\n')
+      parsed = AGENTS.parse_session(path, 'claude')
+      self.assertEqual(parsed['session_title'], 'Review overview')
+    row = agent('root')
+    row['session_title'] = 'Build overview'
+    ui = importlib.import_module('agent_activity_live').AgentView()
+    ui.update([row, agent('child', 'root', 'thinking')], 1001)
+    text = str(ui.frame(120, 15, 1001))
+    self.assertIn('Build overview', text)
+    self.assertIn('co:root', text)
+    self.assertIn('1 active', text)
+
+  def test_live_limit_preserves_families_and_other_parents(self):
+    from types import SimpleNamespace
+    rows = [agent('root')] + [agent(str(i), 'root', seen=1100+i)
+                             for i in range(25)] + [agent('other', seen=900)]
+    for row in rows:
+      row['messages'] = []
+    cache = {'sessions': {r['key']: {'agent': r} for r in rows},
+             'summaries': {}}
+    args = SimpleNamespace(cached=True, provider='all', agent_days=1,
+                           agent_limit=2, live=True)
+    shown = AGENTS.view_agents(cache, args, 1200)
+    self.assertEqual(len(shown), 27)
+    self.assertIn('codex:other', [a['key'] for a in shown])
+    args.live = False
+    self.assertEqual(len(AGENTS.view_agents(cache, args, 1200)), 2)
+
+  def test_overview_starts_folded_and_footer_distinguishes_screen(self):
+    ui = importlib.import_module('agent_activity_live').AgentView()
+    rows = [agent('root'), agent('child', 'root', 'thinking')]
+    rows += [agent('root' + str(i)) for i in range(20)]
+    ui.update(rows, 1001)
+    self.assertEqual(len(ui.visible()), 21)
+    frame = str(ui.frame(120, 10, 1001))
+    self.assertIn('Rows 1-7/21', frame)
+    self.assertIn('21 groups', frame)
+    self.assertIn('22 agents', frame)
+    ui.key('G', 7)
+    self.assertIn('Rows 15-21/21', str(ui.frame(120, 10, 1001)))
+
   def test_collapsing_preserves_selection_and_explicit_choices(self):
     ui_mod = importlib.import_module('agent_activity_live')
     ui = ui_mod.AgentView()
     rows = [agent('root'), agent('a', 'root', 'thinking'), agent('b', 'root')]
     ui.update(rows, 1001)
+    self.assertEqual(len(ui.visible()), 1)
+    ui.key(' ', 10)
     self.assertEqual(len(ui.visible()), 3)
     ui.key(' ', 10)
     self.assertEqual(ui.visible(), ['codex:root'])
@@ -117,6 +185,7 @@ class ActivityTest(unittest.TestCase):
     ui = ui_mod.AgentView()
     ui.update([agent('root'), agent('a', 'root', 'thinking'),
                agent('b', 'root', 'tool')], 1001)
+    ui.key('RIGHT', 10)
     text = '\n'.join(t for t, _ in ui.frame(100, 24, 1001))
     self.assertIn('├─', text)
     self.assertIn('└─', text)
@@ -136,7 +205,7 @@ class ActivityTest(unittest.TestCase):
       {'id': 'c', 'at': 1000, 'tool': 'exec_command', 'wait': wait}])
     with tempfile.TemporaryDirectory() as directory:
       path = Path(directory) / 'agents.json'
-      cache = {'version': 7, 'observed_at': 1000,
+      cache = {'version': 8, 'observed_at': 1000,
                'sessions': {'one': {'agent': row}}}
       path.write_text(json.dumps(cache))
       before = path.read_bytes(), path.stat().st_mtime_ns
@@ -232,7 +301,7 @@ class TerminalTest(unittest.TestCase):
         path.write_text(''.join(json.dumps(r) + '\n' for r in rows))
         records[str(path)] = {'agent': AGENTS.parse_session(path, 'codex')}
       cache = root / 'agents.json'
-      cache.write_text(json.dumps({'version': 7, 'sessions': records,
+      cache.write_text(json.dumps({'version': 8, 'sessions': records,
         'summaries': {}, 'observed_at': now}))
       cmd = [str(Path(__file__).parents[1] / 'bin/agent-quota'),
         '--agents', '--live', '--cached', '--no-summaries',
@@ -329,6 +398,8 @@ run_agent_live(args, Path('/unused'), quota, loader)
                 break
             self.fail(repr(output))
           try:
+            until(b'1 active')
+            os.write(master, b' ')
             until(b'THINKING')
             time.sleep(.2)  # Collector is now slow; keys must still respond.
             os.write(master, b'?')
@@ -336,7 +407,7 @@ run_agent_live(args, Path('/unused'), quota, loader)
             os.write(master, b'\x1b')
             until(b'THINKING')
             os.write(master, b' ')
-            until(b'1 shown')
+            until(b'Rows 1-1/1')
             os.write(master, b'\x1bOC')
             until(b'THINKING')
             fcntl.ioctl(slave, termios.TIOCSWINSZ,

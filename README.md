@@ -299,6 +299,8 @@ observations never mean zero watchers. Use `--agent-cache-file PATH` with
 `--live` to select another cache. No collector or session scan runs here.
 
 For collapsible parent/subagent groups, use `agent-quota --agents --live`.
+The live default is 100 parent groups with their observed subagents; groups
+start collapsed. Rows include recorded session titles when available.
 Space toggles a group, Left/Right navigate the hierarchy, and Enter shows
 observation details. Rows distinguish ended turns, explicit waits, reasoning
 and tool calls, with descendant activity visible even when collapsed.

@@ -2440,8 +2440,8 @@ def main(argv: list[str] | None = None) -> int:
     help="agent activity window in days, 0–30 (default: 1)",
   )
   parser.add_argument(
-    "--agent-limit", type=int, default=20,
-    help="maximum agents to display, 1–100 (default: 20)",
+    "--agent-limit", type=int, default=None,
+    help="limit 1–100: agents (default 20), live parent groups (default 100)",
   )
   parser.add_argument(
     "--no-summaries", action="store_true",
@@ -2524,6 +2524,8 @@ def main(argv: list[str] | None = None) -> int:
     version=f"%(prog)s {VERSION}",
   )
   args = parser.parse_args(argv)
+  if args.agent_limit is None:
+    args.agent_limit = 100 if args.live else 20
   if args.verbose and (args.compact or args.models or args.timeline):
     parser.error(
       "--verbose cannot be used with --compact, --models or --timeline")

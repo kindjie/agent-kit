@@ -480,8 +480,11 @@ tool's lineup was readable.
 
 `agent-quota --agents` displays recent local Codex and Claude Code sessions
 in a separate table. `--agent-days N` selects the activity window (default
-one day, maximum 30); `--agent-limit N` limits the rows (default 20, maximum
-100). Children are grouped beneath displayed parents. The view reports
+one day, maximum 30). In live mode, `--agent-limit N` selects up to N parent
+groups (default 100, maximum 100) and retains their observed descendants.
+Non-live output limits individual agents (default 20, maximum 100). The
+collector still scans at most 100 transcripts per refresh and flags incomplete
+coverage. Children are grouped beneath displayed parents. The view reports
 observed token totals, cached-input share, model, effort, last transcript
 activity, and a short Work label. Width comes from `COLUMNS`, then the
 terminal when output is a terminal. Redirected or piped output is
@@ -542,9 +545,15 @@ Space toggles a group; Left collapses or selects its parent; Right expands
 or selects its first child. `j`/`k` or arrows select, `gg`/`G` jump, Ctrl-d/u
 move half a page, `/` filters while retaining ancestors, Enter toggles details,
 `[`/`]` scroll details, `?` opens help, and `q`/`ZZ`/Ctrl-C quit. Selection
-and collapse choices follow agent IDs across refreshes. Active groups start
-expanded. Collapsed rows summarize all observed descendants, distinguishing
+and collapse choices follow agent IDs across refreshes. Groups start
+collapsed to show the overview; Space reveals their children. The footer
+reports the on-screen row range, rows exposed by expansion/filtering, and
+total loaded groups and agents. Collapsed rows summarize all observed descendants, distinguishing
 an idle parent with active children from no active subagents observed.
+Rows show recorded session titles with short IDs, falling back to the work
+label. Codex titles come from its local session index; Claude titles come
+from title events, with custom titles taking precedence. Enter reveals the
+full title; filtering includes titles. No model call generates these titles.
 Explicit waits name known targets; a target ending after the wait began can
 show `RESULT READY`. Unknown targets remain unknown. Fork ancestry alone is
 not a parent/subagent relationship. Missing parents, cycles and truncated

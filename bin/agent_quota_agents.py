@@ -29,9 +29,9 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from agent_activity import Tracker, observe
+from agent_activity import AgentTree, Tracker, observe
 
-CACHE_VERSION = 7
+CACHE_VERSION = 8
 # Bumped when the label schema changes so cached entries refresh once.
 PROMPT_VERSION = 5
 WORK_LIMIT = 60
@@ -394,6 +394,14 @@ def parse_session(path, provider):
     pending.clear()
   for row in records(path, warnings):
     kind = row.get("type")
+    if provider == 'claude' and kind in ('custom-title', 'ai-title'):
+      if row.get('sessionId') in (None, agent['id']):
+        title = row.get('customTitle' if kind == 'custom-title' else 'aiTitle')
+        if isinstance(title, str) and (kind == 'custom-title' or
+                                      not agent.get('session_title_custom')):
+          agent['session_title'] = clean(title, 200)
+          agent['session_title_custom'] = kind == 'custom-title'
+      continue
     payload = row.get("payload") or {}
     when = stamp(row.get("timestamp"))
     # Where the session started names its project or worktree; later rows
@@ -1144,6 +1152,27 @@ def local_claude_usage(cache, now):
   return usage
 
 
+def session_titles(codex_root):
+  """Read local display metadata, never infer titles from conversation text."""
+  titles = {}
+  path = codex_root.parent / 'session_index.jsonl'
+  try:
+    if path.stat().st_size > 16 * 1024 * 1024:
+      return titles
+    with path.open() as stream:
+      for line in stream:
+        try:
+          row = json.loads(line)
+        except ValueError:
+          continue
+        if isinstance(row, dict) and isinstance(row.get('id'), str) and (
+            isinstance(row.get('thread_name'), str)):
+          titles[row['id']] = clean(row['thread_name'], 200)
+  except (OSError, UnicodeError):
+    pass
+  return titles
+
+
 def collect(cache, codex_root, claude_root, now, days):
   result = copy.deepcopy(cache)
   sessions = result["sessions"]
@@ -1183,6 +1212,11 @@ def collect(cache, codex_root, claude_root, now, days):
       continue
     result.get("scan_errors", {}).pop(source, None)
     sessions[source] = {"signature": signature, "agent": agent}
+  titles = session_titles(codex_root)
+  for record in sessions.values():
+    agent = record['agent']
+    if agent['provider'] == 'codex':
+      agent['session_title'] = titles.get(agent['id'])
   keys = {record["agent"]["key"] for record in sessions.values()}
   result["summaries"] = {
     key: value for key, value in result["summaries"].items() if key in keys
@@ -1250,8 +1284,18 @@ def view_agents(cache, args, now):
   agents.sort(key=lambda item: item["last_seen"], reverse=True)
   # An agent can occasionally be copied to another transcript location.
   unique = {agent["key"]: agent for agent in reversed(agents)}
-  shown = sorted(unique.values(), key=lambda a: a["last_seen"],
-                 reverse=True)[: args.agent_limit]
+  ordered = order_by_activity(list(unique.values()))
+  if getattr(args, "live", False):
+    tree = AgentTree(ordered, now)
+    roots = [key for key in tree.order if key not in tree.parents]
+    keep = set()
+    for key in roots[:args.agent_limit]:
+      keep.add(key)
+      keep.update(tree.descendants(key))
+    shown = [row for row in ordered if row['key'] in keep]
+  else:
+    shown = sorted(unique.values(), key=lambda a: a["last_seen"],
+                   reverse=True)[:args.agent_limit]
   for agent in shown:
     agent["coverage_incomplete"] = bool(
       cache.get("scan_truncated") or cache.get("scan_errors") or

@@ -55,8 +55,7 @@ class AgentView:
       self.labels[key] = name
     for key in self.tree.rows:
       if key not in self.collapsed:
-        counts = self.tree.totals(key)
-        self.collapsed[key] = not (counts['active'] or counts['waiting'])
+        self.collapsed[key] = True
     if self.selected not in self.tree.rows:
       self.selected = old.parents.get(self.selected)
     self.sync()
@@ -68,7 +67,7 @@ class AgentView:
       keep = set()
       for key, a in self.tree.rows.items():
         text = ' '.join(str(a.get(k) or '') for k in
-                        ('id', 'label', 'work', 'cwd', 'model'))
+                        ('id', 'label', 'session_title', 'work', 'cwd', 'model'))
         if query in text.casefold():
           keep.add(key)
           parent = self.tree.parents.get(key)
@@ -175,7 +174,8 @@ class AgentView:
              'Subagents: ' + self.tree.summary(self.selected)]
     lines += ['Observed wait: ' + wait_label(w) + ' · ' +
               elapsed(w.get('at'), now) + ' ago' for w in obs['waits']]
-    lines += ['Work: ' + str(a.get('work', '')),
+    lines += ['Session title: ' + str(a.get('session_title') or 'not recorded'),
+              'Work: ' + str(a.get('work', '')),
               'Model: ' + str(a.get('model', 'unknown')) + ' · ' +
               str(a.get('effort', 'unknown')),
               'Directory: ' + str(a.get('cwd') or 'unknown'),
@@ -245,15 +245,16 @@ class AgentView:
                              else 'agent' if wait['targets'] else 'agent?')
         counts = self.tree.totals(key)
         summary = self.tree.summary(key) if group else ''
+        title = str(a.get('session_title') or a.get('work') or '')
+        context = (summary + ' · ' + title) if group else title
         if width >= 70:
           name_width = min(32, max(20, width // 4))
           text = (clip(label, name_width).ljust(name_width) + ' ' +
                   clip(state, 12).ljust(12) + ' ' +
-                  (summary if group else str(a.get('work') or '')))
+                  context)
         else:
           text = label + ' · ' + state
-          if group:
-            text += ' · ' + summary
+          text += ' · ' + context
         style = 'selected' if key == self.selected else (
           'attention' if state == 'IDLE' and counts['active'] else
           'dim' if state in ('IDLE', 'DONE') else
@@ -267,7 +268,11 @@ class AgentView:
     if detail_slots:
       self.offset = min(self.offset, max(0, len(details) - detail_slots))
       lines.extend((t, '') for t in details[self.offset:self.offset + detail_slots])
-    footer = f'{len(shown)} shown · Space fold ←/→ tree Enter details ? help q quit'
+    start = self.first + 1 if shown and slots else 0
+    end = min(len(shown), self.first + slots) if start else 0
+    groups = len(self.tree.rows) - len(self.tree.parents)
+    footer = (f'Rows {start}-{end}/{len(shown)} · {groups} groups · '
+              f'{len(self.tree.rows)} agents · Space fold ←/→ tree ? help')
     if self.mode == 'filter':
       footer = '/' + self.editor + ' · Enter keep, Esc clear'
     elif self.filter:

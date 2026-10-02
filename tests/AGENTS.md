@@ -355,7 +355,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_activity
 Covers conservative foreground wait recognition, cleared and stale waits,
 Codex/Claude transcript observations, fork versus spawn ancestry, incomplete
 and cyclic hierarchies, descendant summaries, stable selection/collapse,
-filter ancestors and cached task waits without writes. Real PTYs exercise
+filter ancestors, family-preserving live limits, title metadata, explicit
+on-screen ranges and cached task waits without writes. Real PTYs exercise
 help, collapse/expand, resize and terminal restoration on quit and signals
 while collection is slow. Run the quota, agents, timeline and task-live suites
 when changing their shared presentation or parsing.
