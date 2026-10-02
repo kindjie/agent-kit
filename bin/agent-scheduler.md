@@ -14,6 +14,19 @@ The binding covers the stored invocation, working directory and execution
 bounds; it is not a hermetic build or a hash of executable and workspace bytes.
 Result provenance remains part of the separate acceptance workflow.
 
+```mermaid
+flowchart LR
+  G["Exact one-use grant"] --> E["Execution"]
+  E --> R{"Release confirmed<br/>under recorded policy?"}
+  R -->|Yes| F["Reservation released"]
+  R -->|No or uncertain| H["Reservation held;<br/>reconcile if needed"]
+  E --> V["Separate result review"]
+  V --> S["Pending / accepted / rejected<br/>needs-investigation"]
+```
+
+Operational release and semantic acceptance are separate outcomes. Neither
+branch authorizes another execution; a retry requires a new explicit grant.
+
 ## Authority and process scope
 
 Use one agreed coordinator and state directory for a lane. Separate directories

@@ -7,8 +7,23 @@
 `agent-quota` scans the Claude Code and Codex transcript directories on this
 machine to attribute token activity. That scan uploads nothing.
 
-`agent-quota --agents` additionally labels threads, and a label is produced
-by sending a bounded excerpt of the thread to a model. By default the
+```mermaid
+flowchart LR
+  subgraph Local[Your machine]
+    T[Local transcripts] --> A[Activity scan and view]
+    Q[Quota CLI and local cache]
+  end
+  Q -->|Refresh requests| P[Provider quota services]
+  P -->|Quota readings| Q
+  A -.->|Summaries enabled: bounded excerpts| M[Model provider]
+  M -.->|Generated summaries| A
+```
+
+Quota refreshes contact provider services. The model provider can differ from
+the thread's original provider; the dashboard disables summaries by default.
+
+When summaries are enabled, `agent-quota --agents` can label threads by
+sending a bounded excerpt of the thread to a model. By default the
 eligible providers include the one that did not produce the thread, so a
 Claude Code excerpt can be sent to Codex and the reverse, spending that
 provider's quota or credits.

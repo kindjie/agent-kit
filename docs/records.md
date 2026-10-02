@@ -62,6 +62,19 @@ are refused. These commands update only TASK and log the change; `--reason`
 adds context. The owner may edit dependencies, or any agent when no live
 claim exists. Helpers need the owner to make the change.
 
+For example, seating needs the chair-path fix first:
+
+```mermaid
+flowchart LR
+  S["T-0003: Add fireside seating"] -->|depends on| P["T-0002: Fix chair paths"]
+  P --> D{"Prerequisite status is done?"}
+  D -->|Yes| R["Dependency gate passes<br/>for the seating task"]
+  D -->|No| W["Seating excluded from next"]
+```
+
+The dependency arrow points from the dependent task to its prerequisite.
+Passing this gate does not bypass other `next` filters or completion checks.
+
 `agent-task dependency show TASK` lists its direct prerequisites and
 dependents with their current status and title, including archived tasks.
 Use `--json` for full task fields in `prerequisites` and `dependents` arrays.

@@ -44,6 +44,18 @@ proof of a running process. Dead panes are excluded from dashboard totals.
 
 Clone anywhere, then link the pieces you want.
 
+```mermaid
+flowchart LR
+  C["agent-kit checkout"] --> B["bin/ and companion modules"]
+  C --> S["Selected skill directories<br/>including references/"]
+  B -.->|Link the command set| P["Directory on PATH"]
+  S -.->|Whole-directory links| D["Codex: ~/.agents/skills"]
+  S -.->|Whole-directory links| L["Claude Code: ~/.claude/skills"]
+```
+
+Choose either or both agents' skill destinations. Links point back to the
+checkout, so keep it in place. Rules and hooks remain separate opt-ins.
+
 ```sh
 git clone git@github.com:kindjie/agent-kit.git ~/src/agent-kit
 cd ~/src/agent-kit
