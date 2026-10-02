@@ -120,6 +120,28 @@ class LiveModelTest(unittest.TestCase):
     self.assertIn('codex:example [WAITING] until closed', detail)
     self.assertIn('observed 30s ago', detail)
 
+  def test_selected_block_scrolls_into_view_with_update_and_colours(self):
+    rows = {f'T-{i:04d}': record(f'T-{i:04d}') for i in range(1, 31)}
+    rows['T-0011']['fields']['status'] = 'blocked'
+    self.state.update(rows, NOW)
+    view = self.live.LiveView(self.state)
+    view.selected = view.visible()[10]
+    frame = view.frame(120, 17, NOW)
+    selected = [text for text, style in frame if 'selected' in style]
+    self.assertEqual(len(selected), 3)
+    self.assertIn('Updated 2026-01-01 11:00', selected[-1])
+    self.assertIn('1h ago', selected[-1])
+    self.assertTrue(any('open' in style for _, style in frame))
+    view.selected = 'T-0011'
+    frame = view.frame(120, 17, NOW)
+    self.assertTrue(any('blocked' in style for _, style in frame))
+    rows['T-0011']['fields']['title'] = 'Long title ' * 30
+    self.state.update(rows, NOW)
+    selected = [text for text, style in view.frame(55, 20, NOW)
+                if 'selected' in style]
+    self.assertEqual(len(selected), 5)
+    self.assertIn('Updated', selected[-1])
+
   def test_selection_follows_id_filter_and_vim_keys(self):
     rows = {f'T-{i:04d}': record(f'T-{i:04d}') for i in range(1, 31)}
     self.state.update(rows, NOW)

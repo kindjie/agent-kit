@@ -309,6 +309,10 @@ See [agent-quota](bin/agent-quota.md) for the evidence and freshness limits.
 Filter editing supports UTF-8, arrows, Home/End, Ctrl-a/e, Backspace,
 Ctrl-w to remove a word and Ctrl-u to clear. Selection follows the task ID
 across updates; selected titles wrap, with an ellipsis when space runs out.
+Scrolling reserves the whole selected block, including wrapped titles and
+its last recorded update time. That timestamp comes from the task log (or
+creation when no log exists), separately from snapshot verification. Colour
+distinguishes states and warning flags; `NO_COLOR` disables it.
 Tasks group by state, then priority and ID. Mutating taskglance keys are not
 assigned: the dashboard cannot edit, claim, close, delete or undo tasks.
 

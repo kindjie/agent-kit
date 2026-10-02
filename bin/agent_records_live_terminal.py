@@ -41,6 +41,20 @@ def run_live(root, changes, args):
     except curses.error:
       pass
     curses.set_escdelay(30)
+    colors = {}
+    if 'NO_COLOR' not in os.environ and curses.has_colors():
+      try:
+        curses.start_color()
+        curses.use_default_colors()
+        tones = {'open': curses.COLOR_CYAN,
+          'in-progress': curses.COLOR_GREEN, 'in-review': curses.COLOR_MAGENTA,
+          'blocked': curses.COLOR_RED, 'warning': curses.COLOR_YELLOW,
+          'done': curses.COLOR_GREEN, 'cancelled': curses.COLOR_WHITE}
+        for number, (name, foreground) in enumerate(tones.items(), 1):
+          curses.init_pair(number, foreground, -1)
+          colors[name] = curses.color_pair(number)
+      except curses.error:
+        colors = {}
     stdscr.timeout(100)
     stdscr.keypad(True)
     view = LiveView(state, args)
@@ -61,8 +75,11 @@ def run_live(root, changes, args):
       if (frame, height, width) != previous:
         stdscr.erase()
         for y, (text, style) in enumerate(frame):
-          attr = {'selected': curses.A_REVERSE, 'bold': curses.A_BOLD}.get(
-            style, curses.A_NORMAL)
+          attr = curses.A_NORMAL
+          for token in style.split():
+            attr |= {'selected': curses.A_REVERSE, 'bold': curses.A_BOLD,
+                     'cancelled': curses.A_DIM}.get(token, 0)
+            attr |= colors.get(token, 0)
           try:
             stdscr.addstr(y, 0, text, attr)
           except curses.error:

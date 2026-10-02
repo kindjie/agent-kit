@@ -479,33 +479,40 @@ class LiveView:
                         timestamp(r['fields']['closed']))[-2:]]
     recent_slots = min(len(recent_lines), max(0, height - 12))
     available = max(0, height - len(lines) - detail_slots - recent_slots - 1)
+    def describe(ident):
+      row = self.state.rows[ident]
+      f = row['fields']
+      badge = self.state.badges.get(ident)
+      marker = badge[1] + ' ' if badge and (
+        now - badge[0] < timedelta(minutes=5)) else ''
+      deps = unmet(self.state.rows, ident)
+      info = 'needs ' + ','.join(deps) if deps else estimate_label(f)
+      if f['status'] in CLOSED:
+        info = 'closed ' + age(timestamp(f.get('closed')), now) + ' ago'
+      flags = []
+      if f.get('owner', 'none') != 'none' and f.get('expires') and (
+          timestamp(f['expires']) <= now):
+        flags.append('EXPIRED')
+      if f.get('blocked-on-owner', '').startswith('yes'):
+        flags.append('HOLD')
+      if deps:
+        flags.append('WAIT')
+      flags = (' ' + '/'.join(flags)) if flags else ''
+      text = f'{ident} {marker}[{f["status"]}{flags}] {f["title"]}'
+      return text, info, f, bool(flags)
+
     if ids and available:
       index = ids.index(self.selected)
       self.first = min(self.first, index)
-      self.first = max(self.first, index - available + 1)
+      selected_text = describe(self.selected)[0]
+      selected_height = min(available, min(3, len(wrap(
+        selected_text, max(1, width - 2)))) + 2)
+      self.first = max(self.first, index - available + selected_height)
       used = 0
       for ident in ids[self.first:]:
         if used >= available:
           break
-        row = self.state.rows[ident]
-        f = row['fields']
-        badge = self.state.badges.get(ident)
-        marker = badge[1] + ' ' if badge and (
-          now - badge[0] < timedelta(minutes=5)) else ''
-        deps = unmet(self.state.rows, ident)
-        info = 'needs ' + ','.join(deps) if deps else estimate_label(f)
-        if f['status'] in CLOSED:
-          info = 'closed ' + age(timestamp(f.get('closed')), now) + ' ago'
-        flags = []
-        if f.get('owner', 'none') != 'none' and f.get('expires') and (
-            timestamp(f['expires']) <= now):
-          flags.append('EXPIRED')
-        if f.get('blocked-on-owner', '').startswith('yes'):
-          flags.append('HOLD')
-        if deps:
-          flags.append('WAIT')
-        flags = (' ' + '/'.join(flags)) if flags else ''
-        text = f'{ident} {marker}[{f["status"]}{flags}] {f["title"]}'
+        text, info, f, warning = describe(ident)
         selected = ident == self.selected
         if selected:
           wrapped = wrap(text, max(1, width - 2))
@@ -517,14 +524,17 @@ class LiveView:
           if used + len(row_lines) < available:
             row_lines.append(clip('  ' + info, width))
           if used + len(row_lines) < available:
-            row_lines.append(clip('  ' + (f.get('repos') or 'no repo') +
-              ' · ' + f.get('priority', 'unset') + ' · record ' +
-              age(last_update(row), now) + ' ago · ' + f['owner'], width))
+            updated = last_update(self.state.rows[ident])
+            stamp = updated.strftime('%Y-%m-%d %H:%M %Z') if updated else 'unknown'
+            row_lines.append(clip('  Updated ' + stamp + ' · ' +
+              age(updated, now) + ' ago · ' + (f.get('repos') or 'no repo') +
+              ' · ' + f.get('priority', 'unset') + ' · ' + f['owner'], width))
         else:
           row_lines = [clip(text, width)]
         changed = self.state.highlight.get(ident)
-        style = 'selected' if selected else 'bold' if changed and (
-          now - changed < timedelta(seconds=10)) else ''
+        tone = 'warning' if warning else f['status']
+        style = tone + (' selected' if selected else ' bold' if changed and (
+          now - changed < timedelta(seconds=10)) else '')
         lines.extend((line, style) for line in row_lines)
         used += len(row_lines)
     elif available:
