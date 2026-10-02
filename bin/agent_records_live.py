@@ -78,6 +78,14 @@ def age(when, now):
   return f'{seconds // 86400}d'
 
 
+def updated_label(when, now):
+  if when is None:
+    return 'unknown'
+  local = when.astimezone()
+  return local.strftime('%H:%M' if local.date() == now.astimezone().date()
+                        else '%Y-%m-%d')
+
+
 def last_update(row):
   logs = log_lines(row['body'])
   if logs:
@@ -213,6 +221,7 @@ class LiveView:
     self.filter, self.editor, self.mode, self.pending = '', '', 'normal', ''
     self.cursor = 0
     self.expanded = False
+    self.full_details = False
     self.section = 0
     self.detail_offset = 0
     self.first = 0
@@ -324,18 +333,24 @@ class LiveView:
       self.cursor = len(self.editor)
     elif key == '?':
       self.mode = 'help'
-    elif key in ('\n', '\r'):
+    elif key == 'f':
+      self.full_details = not self.full_details
+      self.expanded = True
+      self.detail_offset = 0
+    elif key == '\r':
+      self.full_details = False
       self.expanded = not self.expanded
       self.detail_offset = 0
     elif key == '\t':
       self.expanded = True
       self.section = (self.section + 1) % 4
       self.detail_offset = 0
-    elif key in ('[', ']'):
+    elif key in ('[', ']', '\n', '\x0b'):
       self.detail_offset = max(0, self.detail_offset +
-                               (1 if key == ']' else -1))
+                               (1 if key in (']', '\n') else -1))
     elif key == '\x1b':
       self.expanded = False
+      self.full_details = False
     if ids:
       selected = ids[max(0, min(len(ids) - 1, target))]
       if selected != self.selected:
@@ -349,7 +364,11 @@ class LiveView:
     row = self.state.rows[self.selected]
     f, body = row['fields'], row['body']
     title = ('Progress', 'Dependencies', 'Evidence', 'Observed waits')[self.section]
-    lines = [title + ' · ' + self.selected + ' · Tab section, [/] scroll']
+    updated = last_update(row)
+    stamp = (updated.astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')
+             if updated else 'unknown')
+    lines = [title + ' · ' + self.selected + ' · Tab section, [/] scroll',
+             'Updated: ' + stamp]
     if self.section == 0:
       lines += [f['title'], 'Owner: ' + f['owner'],
                 'Priority: ' + f.get('priority', 'unset') + ' · points: ' +
@@ -414,7 +433,7 @@ class LiveView:
         'Filter: Enter keeps; Esc clears; arrows/Home/End edit',
         'Ctrl-a/e: start/end; Ctrl-w: word; Ctrl-u: clear',
         'Enter: details · Tab: progress/dependencies/evidence/waits',
-        '[/]: scroll detail lines · Esc: close details',
+        'f: full-screen details · [/], Ctrl-j/k: scroll · Esc: close',
         '? or Esc: close help · q/ZZ/Ctrl-C: quit',
         'Selection follows ID; selected titles wrap.',
         'Bold: changed in 10s · NEW badge: 5m · recent closed: 1h',
@@ -424,6 +443,14 @@ class LiveView:
         'No editing, recovery, syncing or model calls.',
       ]
       return [(clip(line, width), '') for line in help_lines[:height]]
+    if self.full_details:
+      detail = [part for line in self.detail(now) for part in wrap(line, width)]
+      slots = max(0, height - 2)
+      self.detail_offset = min(self.detail_offset, max(0, len(detail) - slots))
+      lines = [('DETAILS · full-screen · ' + str(self.selected or ''), 'bold')]
+      lines += [(t, '') for t in detail[self.detail_offset:self.detail_offset + slots]]
+      lines += [('Tab section · [/], Ctrl-j/k scroll · f split · Esc close', '')]
+      return [(clip(t, width), style) for t, style in lines[:height]]
     rows = [row for row in self.state.rows.values() if self.scoped(row)]
     live = [r for r in rows if r['fields']['status'] in LIVE]
     states = Counter(r['fields']['status'] for r in live)
@@ -478,6 +505,10 @@ class LiveView:
                       for r in sorted(recent, key=lambda r:
                         timestamp(r['fields']['closed']))[-2:]]
     recent_slots = min(len(recent_lines), max(0, height - 12))
+    column = width >= 100
+    row_width = width - 12 if column else width
+    if column:
+      lines.append(('Task'.ljust(row_width + 2) + 'Updated', 'bold'))
     available = max(0, height - len(lines) - detail_slots - recent_slots - 1)
     def describe(ident):
       row = self.state.rows[ident]
@@ -506,7 +537,7 @@ class LiveView:
       self.first = min(self.first, index)
       selected_text = describe(self.selected)[0]
       selected_height = min(available, min(3, len(wrap(
-        selected_text, max(1, width - 2)))) + 2)
+        selected_text, max(1, row_width - 2)))) + 2)
       self.first = max(self.first, index - available + selected_height)
       used = 0
       for ident in ids[self.first:]:
@@ -515,7 +546,7 @@ class LiveView:
         text, info, f, warning = describe(ident)
         selected = ident == self.selected
         if selected:
-          wrapped = wrap(text, max(1, width - 2))
+          wrapped = wrap(text, max(1, row_width - 2))
           row_lines = [('> ' if n == 0 else '  ') + line
                        for n, line in enumerate(wrapped[
                          :max(1, min(3, available - used))])]
@@ -530,7 +561,11 @@ class LiveView:
               age(updated, now) + ' ago · ' + (f.get('repos') or 'no repo') +
               ' · ' + f.get('priority', 'unset') + ' · ' + f['owner'], width))
         else:
-          row_lines = [clip(text, width)]
+          row_lines = [clip(text, row_width)]
+        if column:
+          label = clip(row_lines[0], row_width)
+          row_lines[0] = label + ' ' * (row_width + 2 - cells(label)) + \
+            updated_label(last_update(self.state.rows[ident]), now)
         changed = self.state.highlight.get(ident)
         tone = 'warning' if warning else f['status']
         style = tone + (' selected' if selected else ' bold' if changed and (
@@ -546,7 +581,7 @@ class LiveView:
         self.detail_offset:self.detail_offset + detail_slots])
     lines.extend((line, 'bold') for line in recent_lines[-recent_slots:]
                  if recent_slots)
-    footer = f'{len(ids)} tasks · j/k move / filter Enter details ? help q quit'
+    footer = f'{len(ids)} tasks · j/k move / filter Enter details f full ? help q quit'
     if self.mode == 'filter':
       footer = '/' + self.editor[:self.cursor] + '│' + self.editor[self.cursor:]
     elif self.filter:

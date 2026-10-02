@@ -288,7 +288,8 @@ Interactive mode uses Python's standard-library curses on macOS and Linux.
 | `/` | Filter IDs, titles, repositories, owners and states without case |
 | Enter | Keep the filter, or expand/collapse task details |
 | Tab | Show progress, dependencies, evidence or observed waits |
-| `[` / `]` | Scroll detail lines up / down |
+| `[` / `]`, Ctrl-k / Ctrl-j | Scroll detail lines up / down |
+| `f` | Toggle full-screen / split details |
 | `?` | Help; `?` or Esc closes it |
 | Esc | Clear an edited filter, cancel a key sequence, or close details |
 | `q` / `ZZ`, Ctrl-C | Quit |
@@ -310,7 +311,9 @@ Filter editing supports UTF-8, arrows, Home/End, Ctrl-a/e, Backspace,
 Ctrl-w to remove a word and Ctrl-u to clear. Selection follows the task ID
 across updates; selected titles wrap, with an ellipsis when space runs out.
 Scrolling reserves the whole selected block, including wrapped titles and
-its last recorded update time. That timestamp comes from the task log (or
+its last recorded update time. At 101 columns or wider, an Updated column
+shows local `HH:MM` for today and `YYYY-MM-DD` for earlier dates. Details
+retain the full timestamp and timezone. That timestamp comes from the task log (or
 creation when no log exists), separately from snapshot verification. Colour
 distinguishes states and warning flags; `NO_COLOR` disables it.
 Tasks group by state, then priority and ID. Mutating taskglance keys are not

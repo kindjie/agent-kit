@@ -327,7 +327,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_records_live
 It covers collection discovery and archive transitions, dependencies,
 non-predictive estimates, new/done/reopened/removed events, rewritten logs,
 selection and filter controls, full selected-block scrolling, update times,
-semantic row styles, Unicode width and terminal sanitization,
+semantic row styles, local-day update columns, full-screen details and
+Ctrl-j/k scrolling with Enter preserved, Unicode width and terminal sanitization,
 stale snapshots, lock contention and unchanged record bytes. Real PTYs test
 help, resize, quit and terminal mode restoration after SIGINT, SIGTERM and
 SIGHUP. Also run the full records suite after parser/readiness changes.

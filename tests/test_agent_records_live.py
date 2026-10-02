@@ -142,6 +142,39 @@ class LiveModelTest(unittest.TestCase):
     self.assertEqual(len(selected), 5)
     self.assertIn('Updated', selected[-1])
 
+  def test_updated_column_uses_local_day_and_fullscreen_details(self):
+    local_now = NOW.astimezone()
+    self.assertEqual(self.live.updated_label(NOW, NOW),
+                     local_now.strftime('%H:%M'))
+    yesterday = NOW - timedelta(days=1)
+    self.assertEqual(self.live.updated_label(yesterday, NOW),
+                     yesterday.astimezone().strftime('%Y-%m-%d'))
+    self.assertEqual(self.live.updated_label(None, NOW), 'unknown')
+    self.state.update({'T-0001': record('T-0001')}, NOW)
+    view = self.live.LiveView(self.state)
+    wide = '\n'.join(t for t, _ in view.frame(120, 24, NOW))
+    self.assertTrue(any(line.endswith('Updated') for line in wide.splitlines()))
+    self.state.rows['T-0001']['fields']['title'] = '猫 title'
+    frame = view.frame(120, 24, NOW)
+    first = next(t for t, _ in frame if t.startswith('> '))
+    stamp = self.live.updated_label(last_update := NOW - timedelta(hours=1), NOW)
+    self.assertEqual(self.live.cells(first[:first.rfind(stamp)]), 109)
+    view.key('f', 20)
+    self.assertTrue(view.full_details)
+    frame = view.frame(120, 24, NOW)
+    self.assertIn('full-screen', frame[0][0])
+    self.assertIn('Updated:', '\n'.join(t for t, _ in frame))
+    self.assertNotIn('tasks ·', frame[-1][0])
+    view.key('\n', 20)
+    self.assertEqual(view.detail_offset, 1)
+    view.key('\x0b', 20)
+    self.assertEqual(view.detail_offset, 0)
+    view.key(']', 20)
+    view.frame(40, 8, NOW)
+    view.key('\x1b', 20)
+    self.assertFalse(view.full_details)
+    self.assertFalse(view.expanded)
+
   def test_selection_follows_id_filter_and_vim_keys(self):
     rows = {f'T-{i:04d}': record(f'T-{i:04d}') for i in range(1, 31)}
     self.state.update(rows, NOW)
@@ -156,7 +189,7 @@ class LiveModelTest(unittest.TestCase):
     view.key('/', 10)
     for char in 'T-0030':
       view.key(char, 10)
-    view.key('\n', 10)
+    view.key('\r', 10)
     self.assertEqual(view.selected, 'T-0030')
     view.key('/', 10)
     view.key('\x1b', 10)
@@ -191,7 +224,7 @@ class LiveModelTest(unittest.TestCase):
     self.state.update({'T-0001': changed}, NOW)
     self.assertIn('REWRITTEN', [e[1] for e in self.state.events])
     view = self.live.LiveView(self.state)
-    view.key('\n', 20)
+    view.key('\r', 20)
     view.key('\t', 20)
     text = '\n'.join(line for line, _ in view.frame(90, 40, NOW))
     self.assertIn('T-9999 [missing]', text)
@@ -291,6 +324,13 @@ class LiveCommandTest(RecordsFixture):
                 break
             self.fail(repr(output))
           try:
+            until(b'TASKS')
+            os.write(master, b'\r')
+            until(b'Progress')
+            os.write(master, b'f')
+            until(b'full-screen')
+            os.write(master, b'\n\x0b')
+            os.write(master, b'\x1b')
             until(b'TASKS')
             os.write(master, b'?')
             until(b'read-only controls')

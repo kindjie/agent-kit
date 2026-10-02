@@ -55,6 +55,7 @@ def run_live(root, changes, args):
           colors[name] = curses.color_pair(number)
       except curses.error:
         colors = {}
+    curses.nonl()  # Preserve CR (Enter) versus LF (Ctrl-j).
     stdscr.timeout(100)
     stdscr.keypad(True)
     view = LiveView(state, args)
@@ -62,7 +63,7 @@ def run_live(root, changes, args):
     keys = {curses.KEY_DOWN: 'DOWN', curses.KEY_UP: 'UP',
             curses.KEY_LEFT: 'LEFT', curses.KEY_RIGHT: 'RIGHT',
             curses.KEY_HOME: 'HOME', curses.KEY_END: 'END',
-            curses.KEY_BACKSPACE: 'BACKSPACE', curses.KEY_ENTER: '\n'}
+            curses.KEY_BACKSPACE: 'BACKSPACE', curses.KEY_ENTER: '\r'}
     while True:
       if time.monotonic() >= deadline:
         try:
