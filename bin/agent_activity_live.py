@@ -1,4 +1,5 @@
 """Interactive agent tree. UI choices are process-local, never task state."""
+from datetime import datetime, timezone
 import math
 import queue
 import signal
@@ -7,15 +8,15 @@ import threading
 import time
 from pathlib import Path
 
-from agent_activity import AgentTree
+from agent_activity import AgentTree, activity_age, activity_label, activity_status
 from agent_records_live import cells, clip, wrap, help_frame, help_scroll
 
 
 def elapsed(at, now):
-  if not isinstance(at, (float, int)):
+  if (isinstance(at, bool) or not isinstance(at, (float, int)) or
+      not math.isfinite(at)):
     return 'unknown'
-  value = max(0, int(now - at))
-  return f'{value}s' if value < 60 else f'{value // 60}m'
+  return activity_age(max(0, now - at))
 
 
 def wait_label(wait):
@@ -43,8 +44,7 @@ class AgentView:
 
   def update(self, agents, now, incomplete=False):
     old = self.tree
-    self.tree = AgentTree(agents, now, incomplete or any(
-      a.get('coverage_incomplete') for a in agents))
+    self.tree = AgentTree(agents, now, incomplete)
     self.sort_tree()
     identifiers = [a['id'] for a in agents]
     suffix = 8
@@ -213,11 +213,29 @@ class AgentView:
       return []
     a = self.tree.rows[self.selected]
     obs = self.tree.observed[self.selected]
-    lines = [a['key'], obs['reason'],
+    stamp = 'unknown'
+    if obs['age'] is not None:
+      try:
+        stamp = datetime.fromtimestamp(obs['at'], timezone.utc).isoformat()
+      except (OverflowError, OSError, ValueError):
+        pass
+    lines = [a['key'], activity_label(obs, now), obs['reason'],
+             'Last event: ' + str((a.get('observation') or {}).get(
+               'phase') or 'unknown'),
+             'Event timestamp: ' + stamp,
              'Observed ' + elapsed(obs['at'], now) + ' ago',
              'Subagents: ' + self.tree.summary(self.selected)]
-    lines += ['Observed wait: ' + wait_label(w) + ' · ' +
-              elapsed(w.get('at'), now) + ' ago' for w in obs['waits']]
+    lines += ['Discovery: ' + reason for reason in
+              sorted(self.tree.coverage_reasons)]
+    for call in (a.get('observation') or {}).get('pending') or []:
+      lines.append('Pending tool: ' + str(call.get('tool') or 'unknown') +
+                   ' · ' + elapsed(call.get('at'), now) + ' ago')
+    for wait in obs['waits']:
+      timeout = wait.get('timeout')
+      limit = (' · timeout ' + activity_age(timeout) if timeout is not None
+               else ' · timeout unknown')
+      lines.append('Observed wait: ' + wait_label(wait) + ' · ' +
+                   elapsed(wait.get('at'), now) + ' ago' + limit)
     lines += ['Session title: ' + str(a.get('session_title') or 'not recorded'),
               'Work: ' + str(a.get('work', '')),
               'Model: ' + str(a.get('model', 'unknown')) + ' · ' +
@@ -266,13 +284,16 @@ class AgentView:
           ('/', 'Filter; matching ancestors stay visible')]),
         ('Details', [('Enter', 'Open or close details'),
           ('[/]', 'Scroll details'), ('Esc', 'Close details or cancel filter')]),
-        ('Observed states', [('IDLE', 'Turn ended; may not be awaiting work'),
-          ('WAITING', 'Outstanding observed wait; target may be unknown'),
-          ('THINKING / TOOL', 'Reasoning observed / outstanding tool call'),
-          ('UNKNOWN', 'Missing, old or incomplete execution evidence')]),
+        ('Status', [('Working', 'Activity, reasoning or a tool call observed'),
+          ('Waiting', 'A foreground wait was observed'),
+          ('Idle', 'Turn ended; not proof the agent awaits work'),
+          ('Stopped', 'Turn was aborted'),
+          ('Unknown', 'No usable status observation'),
+          ('?', 'Status uncertain; age and details explain why')]),
         ('Reading the view', [('Groups', 'Summaries include collapsed descendants'),
           ('Refresh', 'Selection and collapse choices survive updates'),
-          ('Coverage', 'Local, incomplete observations; no watcher counts')]),
+          ('N+ agents', 'At least N discovered; details explain missing evidence'),
+          ('Evidence', 'Local observations, not proof of process liveness')]),
       ]
       frame, self.help_offset = help_frame(
         'Agents', sections, width, height, self.help_offset)
@@ -282,7 +303,6 @@ class AgentView:
              'Agents · observed activity · refreshed ' +
              elapsed(self.refreshed, now) + ' ago')
     title += ' · sort: ' + self.sort
-    title += ' · partial list' if self.tree.incomplete else ''
     lines = [(title, 'bold')]
     details = [part for line in self.detail(now) for part in wrap(line, width)]
     detail_slots = min(len(details), height // 2) if self.details else 0
@@ -306,18 +326,14 @@ class AgentView:
         group = bool(self.tree.children[key])
         icon = ('▸' if self.collapsed.get(key) and not self.filter else '▾'
                 ) if group else ' '
-        state = obs['state']
-        if state == 'WAITING' and obs['waits']:
-          wait = obs['waits'][0]
-          state = 'WAIT ' + (wait['tasks'][0] if wait['kind'] == 'task'
-                             else 'agent' if wait['targets'] else 'agent?')
+        state = activity_status(obs)
         counts = self.tree.totals(key)
         summary = self.tree.summary(key) if group else ''
         session_title = str(a.get('session_title') or a.get('work') or
                             self.labels[key])
         gutter = '> ' if key == self.selected else '  '
         label = gutter + prefix + icon + ' ' + session_title
-        metadata = self.labels[key] + ' · ' + state
+        metadata = self.labels[key] + ' · ' + activity_label(obs, now)
         if summary:
           metadata += ' · ' + summary
         if width >= 40:
@@ -328,11 +344,11 @@ class AgentView:
         else:
           text = label + ' · ' + metadata
         style = 'selected' if key == self.selected else (
-          'attention' if state == 'IDLE' and counts['active'] else
-          'dim' if state in ('IDLE', 'DONE') else
-          'unknown' if state == 'UNKNOWN' else
-          'waiting' if state.startswith('WAIT') else
-          'working' if state in ('TOOL', 'THINKING') else
+          'attention' if state == 'Idle' and counts['working'] else
+          'dim' if state in ('Idle', 'Stopped') else
+          'unknown' if state == 'Unknown' or obs.get('uncertain') else
+          'waiting' if state == 'Waiting' else
+          'working' if state == 'Working' else
           'bold' if group else '')
         self.mouse_rows[len(lines)] = (key, 2 + cells(prefix))
         lines.append((text, style))
@@ -345,8 +361,9 @@ class AgentView:
     start = self.first + 1 if shown and slots else 0
     end = min(len(shown), self.first + slots) if start else 0
     groups = len(self.tree.rows) - len(self.tree.parents)
+    more = '+' if self.tree.incomplete else ''
     footer = (f'Rows {start}-{end}/{len(shown)} · {groups} groups · '
-              f'{len(self.tree.rows)} agents · s sort · ? help · q quit')
+              f'{len(self.tree.rows)}{more} agents · s sort · ? help · q quit')
     if self.mode == 'filter':
       footer = '/' + self.editor + ' · Enter keep, Esc clear'
     elif self.filter:

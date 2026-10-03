@@ -279,6 +279,14 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
   tests.test_agent_attention tests.test_agent_speak tests.test_agent_activity
 ```
 
+Activity tests cover the five human status labels, retained terminal history,
+uncertain working/waiting observations with age, expired waits and results,
+unknown timestamps, matching plain/live labels, separate uncertain descendant
+counts, narrow plain-table compaction, retained expired-wait tool/timeout
+evidence, and incomplete discovery on the existing total only (including
+grouped internal sessions). Real PTYs cover
+navigation, resizing and terminal restoration without provider calls.
+
 Attention tests cover fixed reason codes, safe pane targeting, clearing,
 subagent/compact hook suppression, bell deduplication, dead-pane/dashboard
 exclusion, and real isolated tmux publication. Speech tests isolate mute and

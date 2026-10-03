@@ -63,7 +63,9 @@ class ActivityTest(unittest.TestCase):
       self.assertEqual(self.mod.observe(agent('a', phase=phase), 1001)['state'],
                        expected)
     self.assertEqual(self.mod.observe(agent('a', phase='thinking'), 2500)[
-      'state'], 'UNKNOWN')
+      'state'], 'THINKING')
+    self.assertTrue(self.mod.observe(agent('a', phase='thinking'), 2500)[
+      'uncertain'])
     self.assertEqual(self.mod.observe({'status': {'state': 'waiting'}}, 1001)[
       'state'], 'UNKNOWN')
 
@@ -75,7 +77,7 @@ class ActivityTest(unittest.TestCase):
     tree = self.mod.AgentTree(rows, 1001)
     self.assertEqual(tree.observed['codex:root']['state'], 'RESULT READY')
     tree = self.mod.AgentTree(rows, 1011)
-    self.assertEqual(tree.observed['codex:root']['state'], 'UNKNOWN')
+    self.assertEqual(tree.observed['codex:root']['state'], 'WAITING')
     early = agent('child', 'root', 'done', seen=999)
     self.assertEqual(self.mod.AgentTree([parent, early], 1001).observed[
       'codex:root']['state'], 'WAITING')
@@ -84,13 +86,117 @@ class ActivityTest(unittest.TestCase):
     rows = [agent('root'), agent('a', 'root'),
             agent('b', 'a', 'thinking'), agent('c', 'root', 'done')]
     tree = self.mod.AgentTree(rows, 1001, incomplete=True)
-    self.assertEqual(tree.totals('codex:root')['active'], 1)
-    self.assertEqual(tree.totals('codex:root')['idle'], 1)
-    self.assertEqual(tree.totals('codex:root')['done'], 1)
-    self.assertIn('coverage unknown', tree.summary('codex:root'))
+    self.assertEqual(tree.totals('codex:root')['working'], 1)
+    self.assertEqual(tree.totals('codex:root')['idle'], 2)
+    self.assertNotIn('coverage unknown', tree.summary('codex:root'))
+    self.assertNotIn('+', tree.summary('codex:root'))
     self.assertEqual(len(tree.order), 4)
     rows[0]['parent_id'] = 'b'
     self.assertEqual(len(self.mod.AgentTree(rows, 1001).order), 4)
+
+  def test_terminal_history_and_unknown_timestamps(self):
+    for phase, label in [('ended', 'Idle'), ('done', 'Idle'),
+                         ('aborted', 'Stopped')]:
+      obs = self.mod.observe(agent('a', phase=phase), 8200)
+      self.assertFalse(obs['uncertain'])
+      self.assertEqual(self.mod.activity_label(obs, 8200), label + ' · 2h ago')
+    for at in (None, float('nan'), float('inf'), True, 9000):
+      obs = self.mod.observe(agent('a', seen=at), 8200)
+      self.assertEqual(self.mod.activity_label(obs, 8200), 'Unknown')
+
+  def test_expired_wait_is_uncertain_and_result_clears_it(self):
+    tracker = self.mod.Tracker()
+    tracker.call('wait', {'ids': ['child'], 'timeout_ms': 10000}, 'w', 1000)
+    row = {'observation': tracker.value()}
+    obs = self.mod.observe(row, 1011)
+    self.assertEqual(self.mod.activity_label(obs, 1011), 'Waiting? · 11s ago')
+    self.assertIn('deadline passed', obs['reason'])
+    tracker.result('w', 1012)
+    row['observation'] = tracker.value()
+    self.assertEqual(self.mod.activity_label(self.mod.observe(row, 1013),
+                                           1013), 'Working')
+
+  def test_five_labels_and_summary_preserve_uncertainty(self):
+    for phase in ('active', 'thinking', 'tool'):
+      obs = self.mod.observe(agent('a', phase=phase), 1001)
+      self.assertEqual(self.mod.activity_label(obs, 1001), 'Working')
+    rows = [agent('root'), agent('a', 'root', 'thinking'),
+            agent('b', 'root', 'thinking', seen=0),
+            agent('c', 'root', 'aborted'), agent('d', 'root', 'unknown')]
+    tree = self.mod.AgentTree(rows, 1300)
+    self.assertEqual(tree.summary('codex:root'),
+      '1 working · 1 working? · 1 stopped · 1 unknown')
+
+  def test_incomplete_inventory_marks_only_existing_total(self):
+    ui = importlib.import_module('agent_activity_live').AgentView()
+    rows = [agent('root'), agent('child', 'root'), agent('other')]
+    ui.update(rows, 1001)
+    complete = ui.frame(160, 12, 1001)
+    ui.update(rows, 1001, incomplete=True)
+    partial = ui.frame(160, 12, 1001)
+    self.assertEqual(len(complete), len(partial))
+    self.assertIn('3+ agents', partial[-1][0])
+    self.assertNotIn('partial list', partial[0][0])
+    self.assertNotIn('coverage unknown', str(partial))
+    self.assertNotIn('+', ui.tree.summary('codex:root'))
+    self.assertIn('incomplete', ' '.join(ui.detail(1001)))
+
+  def test_missing_parent_explained_without_marking_unrelated_family(self):
+    ui = importlib.import_module('agent_activity_live').AgentView()
+    ui.update([agent('root'), agent('child', 'root'),
+               agent('orphan', 'absent')], 1001)
+    self.assertIn('3+ agents', ui.frame(160, 12, 1001)[-1][0])
+    self.assertNotIn('+', ui.tree.summary('codex:root'))
+    ui.selected = 'codex:orphan'
+    self.assertIn('parent', ' '.join(ui.detail(1001)))
+
+  def test_plain_table_uses_same_status_conventions(self):
+    row = agent('a', phase='thinking')
+    row['observed_activity'] = self.mod.observe(row, 2500)
+    self.assertEqual(AGENTS.state_text(row, 'stalled', False,
+                                     fixtures.AGENT_QUOTA),
+                     'Working? · 25m ago')
+
+  def test_grouped_internal_sessions_keep_all_discovery_evidence(self):
+    rows = [agent('lead'), agent('member')]
+    for row in rows:
+      row.update(internal=True, label='reviewer', state='done')
+    rows[1].update(coverage_incomplete=True,
+                  coverage_reasons=['Some transcript evidence could not be read'])
+    grouped = AGENTS.group_internal(rows)
+    ui = importlib.import_module('agent_activity_live').AgentView()
+    ui.update(grouped, 1001)
+    self.assertTrue(ui.tree.incomplete)
+    self.assertIn('1+ agents', ui.frame(160, 12, 1001)[-1][0])
+    self.assertIn('Some transcript evidence could not be read',
+                  ' '.join(ui.detail(1001)))
+
+  def test_expired_wait_details_keep_tool_and_timeout(self):
+    tracker = self.mod.Tracker()
+    tracker.call('collaboration.wait_agent', {'timeout_ms': 10000}, 'w', 1000)
+    ui = importlib.import_module('agent_activity_live').AgentView()
+    row = agent('root')
+    row['observation'] = tracker.value()
+    ui.update([row], 1011)
+    details = ' '.join(ui.detail(1011))
+    self.assertIn('Waiting? · 11s ago', details)
+    self.assertIn('collaboration.wait_agent', details)
+    self.assertIn('timeout 10s', details)
+    self.assertIn('1970-01-01T00:16:40+00:00', details)
+
+  def test_observed_status_compaction_fits_narrow_plain_table(self):
+    from unittest.mock import patch
+    rows = fixtures.AgentViewTest().ladder_agents()
+    for row, phase in zip(rows, ('thinking', 'ended', 'aborted')):
+      row['observed_activity'] = self.mod.observe(agent('a', phase=phase), 5000)
+    for columns in range(60, 201):
+      with patch.object(AGENTS, 'display_width', return_value=columns):
+        output = AGENTS.render(rows, {'sessions': {}},
+                               fixtures.AGENT_QUOTA, 5000)
+      self.assertTrue(all(len(line) <= columns for line in output.splitlines()),
+                      (columns, output))
+    self.assertIn('▸? 1h', AGENTS.state_text(rows[0], 'stalled', True,
+                                          fixtures.AGENT_QUOTA))
 
   def test_live_default_limit_is_100_and_explicit_limit_wins(self):
     from unittest.mock import patch
@@ -127,7 +233,7 @@ class ActivityTest(unittest.TestCase):
     text = str(ui.frame(120, 15, 1001))
     self.assertIn('Build overview', text)
     self.assertIn('co:root', text)
-    self.assertIn('1 active', text)
+    self.assertIn('1 working', text)
 
   def test_title_first_columns_keep_tree_and_unicode_alignment(self):
     ui = importlib.import_module('agent_activity_live').AgentView()
@@ -144,8 +250,8 @@ class ActivityTest(unittest.TestCase):
                      cells(rows[1].split(' │ ')[0]))
     self.assertIn('猫 Build overview', rows[0].split(' │ ')[0])
     self.assertIn('co:root', rows[0].split(' │ ')[1])
-    self.assertIn('IDLE', rows[0].split(' │ ')[1])
-    self.assertIn('1 active', rows[0].split(' │ ')[1])
+    self.assertIn('Idle', rows[0].split(' │ ')[1])
+    self.assertIn('1 working', rows[0].split(' │ ')[1])
     self.assertIn('└─', rows[1].split(' │ ')[0])
     for width in (1, 25, 60, 120):
       self.assertTrue(all(cells(t) < width for t, _ in ui.frame(width, 15, 1001)))
@@ -280,7 +386,7 @@ class ActivityTest(unittest.TestCase):
     text = '\n'.join(t for t, _ in ui.frame(100, 24, 1001))
     self.assertIn('├─', text)
     self.assertIn('└─', text)
-    self.assertIn('2 active', text)
+    self.assertIn('2 working', text)
     ui.key('\n', 10)
     text = '\n'.join(t for t, _ in ui.frame(100, 24, 1001))
     self.assertIn('Turn ended', text)
@@ -312,8 +418,8 @@ class ActivityTest(unittest.TestCase):
   def test_frame_ages_observations_without_new_snapshot(self):
     ui = importlib.import_module('agent_activity_live').AgentView()
     ui.update([agent('root', phase='thinking')], 1001)
-    self.assertIn('THINKING', str(ui.frame(100, 20, 1001)))
-    self.assertIn('UNKNOWN', str(ui.frame(100, 20, 3000)))
+    self.assertIn('Working', str(ui.frame(100, 20, 1001)))
+    self.assertIn('Working? · 33m ago', str(ui.frame(100, 20, 3000)))
 
   def test_filter_keeps_ancestors_and_idle_defaults_collapse(self):
     ui = importlib.import_module('agent_activity_live').AgentView()
@@ -402,7 +508,7 @@ class TerminalTest(unittest.TestCase):
                  PYTHONDONTWRITEBYTECODE='1')
       result = subprocess.run(cmd, capture_output=True, env=env, timeout=10)
       self.assertEqual(result.returncode, 0, result.stderr)
-      self.assertIn(b'active', result.stdout)
+      self.assertIn(b'Working', result.stdout)
       master, slave = pty.openpty()
       try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ,
@@ -414,9 +520,9 @@ class TerminalTest(unittest.TestCase):
           while time.monotonic() < deadline:
             if select.select([master], [], [], .05)[0]:
               output += os.read(master, 65536)
-            if b'1 active' in output or proc.poll() is not None:
+            if b'1 working' in output or proc.poll() is not None:
               break
-          self.assertIn(b'1 active', output)
+          self.assertIn(b'1 working', output)
           os.write(master, b'\r')
           time.sleep(.1)
           os.write(master, b'q')
@@ -489,7 +595,7 @@ run_agent_live(args, Path('/unused'), quota, loader)
                 break
             self.fail(repr(output))
           try:
-            initial = until(b'1 active')
+            initial = until(b'1 working')
             self.assertLess(initial.index(b'Agents'), initial.index(b'Provider quota'))
             def mouse(button, x, y):
               return (f'\x1b[<{button};{x+1};{y+1}M'.encode()
@@ -498,7 +604,7 @@ run_agent_live(args, Path('/unused'), quota, loader)
             os.write(master, b's')
             until(b'updated')
             os.write(master, mouse(0, 2, 2))
-            until(b'THINKING')
+            until(b'Working')
             os.write(master, mouse(65, 9, 3) + b'\r')
             until(b'Reasoning event observed')
             os.write(master, b'\x1b')
@@ -508,13 +614,13 @@ run_agent_live(args, Path('/unused'), quota, loader)
             os.write(master, b'?')
             until(b'Agent tree')
             os.write(master, b'\x1b')
-            until(b'THINKING')
+            until(b'Working')
             # Select the root explicitly after mouse/help activity; folding
             # must not depend on a wheel report's timing in the full suite.
             os.write(master, b'gg ')
             until(b'Rows 1-1/1')
             os.write(master, b'\x1bOC')
-            until(b'THINKING')
+            until(b'Working')
             fcntl.ioctl(slave, termios.TIOCSWINSZ,
                         struct.pack('HHHH', 12, 40, 0, 0))
             proc.send_signal(signal.SIGWINCH)
