@@ -520,9 +520,15 @@ model calls:
   `agent-id` derives from its session variable: the provider and the first
   16 hex digits of the SHA-256 of its session or thread ID. A Claude
   subagent shares its parent's session, so its tasks appear on the parent.
-  The list is read once per view with `agent-task list --json`; nothing is
-  shown when agent-task is absent, unconfigured or slow, and `--cached`
-  skips it, since it starts no processes.
+  Explicit `--agent ID` values in supported literal records-tool calls also
+  identify helpers that use a separately assigned records ID. These observed
+  IDs are matched against current owner/helper fields; task mentions, work
+  labels and inherited fork history do not establish an association.
+  Shell compounds, dynamic shell/JavaScript and unsupported wrappers are not
+  interpreted. Repeated actor flags use the last explicit value.
+  The list is read once per view with `agent-task list --json`. Details
+  mark lookup unavailable when agent-task is absent, unconfigured or slow;
+  `--cached` marks it skipped, since it starts no processes.
 - **Dir**: the directory the session started in (`cwd` in `--compact`),
   shown by its last segment, `~` for home, with parent segments added only
   where two directories would otherwise look alike (`git/app`, `work/app`).
@@ -571,7 +577,13 @@ no extra header or footer rows are added.
 Wait detection accepts typed agent waits, foreground Claude delegate calls,
 and simple foreground `agent-task watch` or cursor-based `events` commands.
 It ignores background calls, prose, shell compounds and unrecognized wrappers.
-Details show wait conditions, targets and observation age. No watcher registry
+Details start with associated task IDs, titles, statuses and owner/helper
+roles, then group Activity, Session and Evidence under separate headings.
+Fields align and wrap; token counts use thousands separators. Failed or
+cache-only task lookups are labelled, rather than presented as no tasks.
+Task-match evidence names the records ID used. Scroll with `[`/`]` or the
+mouse wheel over details. The existing pane size and header/footer rows stay
+the same. Details show wait conditions, targets and observation age. No watcher registry
 or watcher count is maintained. Task live details read only the existing agent
 cache, optionally selected with `--agent-cache-file`; they never scan sessions
 or start a collector. Missing or stale data is unavailable, not zero watchers.

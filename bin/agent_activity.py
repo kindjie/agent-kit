@@ -19,6 +19,71 @@ def arguments(value):
   return value if isinstance(value, dict) else {}
 
 
+def record_actors(name, value):
+  """Explicit actors in literal records commands; never execute input.
+
+  Recognize simple records commands and straight-line literal exec wrappers.
+  Shell compounds, dynamic JS/shell, heredocs and quoted examples are ignored.
+  This is association evidence only, never authority to write a record.
+  """
+  short = name.rsplit('.', 1)[-1]
+  if short == 'exec' and isinstance(value, str):
+    remaining = re.sub(r'^\s*// @exec:[^\n]*\n', '', value)
+    # Quote JS object keys while leaving complete JSON strings untouched.
+    remaining = re.sub(r'"(?:\\.|[^"\\])*"|([A-Za-z_]\w*)\s*:',
+      lambda m: json.dumps(m[1]) + ':' if m[1] else m[0], remaining)
+    actors = set()
+    while remaining.strip():
+      match = re.match(
+        r'\s*(text\(\(?\s*)?await tools\.(exec_command|shell_command)\(\s*',
+        remaining)
+      if not match:
+        return set()
+      try:
+        args, end = json.JSONDecoder().raw_decode(remaining[match.end():])
+      except ValueError:
+        return set()
+      tail = remaining[match.end() + end:]
+      wrapper = (match[1] or '').strip()
+      suffix = (r'\)\)\.output\)\s*;?' if wrapper == 'text(('
+                else r'\)\)\s*;?' if wrapper else r'\)\s*;?')
+      close = re.match(r'\s*' + suffix, tail)
+      if not close:
+        return set()
+      actors.update(record_actors(match[2], args))
+      remaining = tail[close.end():]
+    return actors
+  if short not in ('exec_command', 'shell_command', 'Bash'):
+    return set()
+  args = arguments(value)
+  command = args.get('cmd', args.get('command'))
+  if not isinstance(command, str) or '$' in command or '`' in command:
+    return set()
+  try:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|<>\n()')
+    lexer.whitespace = ' \t\r'
+    lexer.whitespace_split = True
+    words = list(lexer)
+  except ValueError:
+    return set()
+  # Quoting provenance is intentionally not reconstructed. Reject even a
+  # quoted operator rather than mistake an echo/example for another command.
+  if (not words or Path(words[0]).name not in ('agent-task', 'agent-changelog')
+      or any(re.fullmatch(r'[;&|<>()\n]+', word) for word in words)
+      or any(word in ('--help', '-h') for word in words)):
+    return set()
+  actor = ''
+  for index, option in enumerate(words[1:], 1):
+    if option == '--':
+      break
+    if option == '--agent':
+      actor = words[index + 1] if index + 1 < len(words) else ''
+    elif option.startswith('--agent='):
+      actor = option[len('--agent='):]
+  return ({actor} if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', actor)
+          else set())
+
+
 def seconds(value, divisor=1):
   try:
     result = float(value) / divisor
