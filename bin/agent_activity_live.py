@@ -1,4 +1,5 @@
 """Interactive agent tree. UI choices are process-local, never task state."""
+import math
 import queue
 import signal
 import sys
@@ -28,6 +29,7 @@ class AgentView:
   def __init__(self):
     self.tree = AgentTree([], 0)
     self.selected = None
+    self.sort = 'activity'
     self.collapsed = {}
     self.first = 0
     self.details = False
@@ -43,6 +45,7 @@ class AgentView:
     old = self.tree
     self.tree = AgentTree(agents, now, incomplete or any(
       a.get('coverage_incomplete') for a in agents))
+    self.sort_tree()
     identifiers = [a['id'] for a in agents]
     suffix = 8
     while (suffix < max(map(len, identifiers), default=0) and
@@ -62,6 +65,35 @@ class AgentView:
       self.selected = old.parents.get(self.selected)
     self.sync()
     self.refreshed, self.error = now, ''
+
+  def sort_tree(self):
+    # The collector's existing activity order is retained in this mode.
+    if self.sort == 'activity':
+      return
+    tree = self.tree
+    def recent(key):
+      values = [tree.rows[k].get('last_seen') for k in
+                [key] + tree.descendants(key)]
+      known = [v for v in values if isinstance(v, (int, float)) and
+               math.isfinite(v) and v >= 0]
+      return max(known) if known else None
+    def order(key):
+      if self.sort == 'updated':
+        at = recent(key)
+        return (at is None, -at if at is not None else 0, key)
+      a = tree.rows[key]
+      title = str(a.get('session_title') or a.get('work') or
+                  a.get('label') or key)
+      return title.casefold(), key
+    tree.order = []
+    def visit(key):
+      tree.order.append(key)
+      tree.children[key].sort(key=order)
+      for child in tree.children[key]:
+        visit(child)
+    for key in sorted((k for k in tree.rows if k not in tree.parents),
+                      key=order):
+      visit(key)
 
   def visible(self):
     query = (self.editor if self.mode == 'filter' else self.filter).casefold()
@@ -122,6 +154,14 @@ class AgentView:
         self.help_offset = help_scroll(key, seq, self.help_offset, page)
         if key in ('g', 'Z'):
           self.pending = key
+      return False
+    if key == 's':
+      modes = ('activity', 'updated', 'title')
+      self.sort = modes[(modes.index(self.sort) + 1) % len(modes)]
+      self.tree = AgentTree(list(self.tree.rows.values()),
+                            self.refreshed or 0, self.tree.incomplete)
+      self.sort_tree()
+      self.sync()
       return False
     shown = self.sync()
     index = shown.index(self.selected) if self.selected else 0
@@ -216,6 +256,10 @@ class AgentView:
           ('gg / G', 'First / last agent'),
           ('Ctrl-d / Ctrl-u', 'Move half a page'),
           ('Wheel / click', 'Scroll / select agent')]),
+        ('Sorting', [('s', 'Cycle activity, updated (newest), title (A-Z)'),
+          ('Groups', 'Families stay together; descendants count for updates'),
+          ('Ties', 'Agent ID; unknown update times follow known times'),
+          ('Selection', 'Selection and fold choices survive sort changes')]),
         ('Agent tree', [('Space', 'Collapse or expand group'),
           ('Left / h', 'Collapse group or select parent'),
           ('Right / l', 'Expand group or select first child'),
@@ -237,6 +281,7 @@ class AgentView:
              ' ago · ' + self.error if self.error else
              'Agents · observed activity · refreshed ' +
              elapsed(self.refreshed, now) + ' ago')
+    title += ' · sort: ' + self.sort
     title += ' · partial list' if self.tree.incomplete else ''
     lines = [(title, 'bold')]
     details = [part for line in self.detail(now) for part in wrap(line, width)]
@@ -301,7 +346,7 @@ class AgentView:
     end = min(len(shown), self.first + slots) if start else 0
     groups = len(self.tree.rows) - len(self.tree.parents)
     footer = (f'Rows {start}-{end}/{len(shown)} · {groups} groups · '
-              f'{len(self.tree.rows)} agents · ? help · q quit')
+              f'{len(self.tree.rows)} agents · s sort · ? help · q quit')
     if self.mode == 'filter':
       footer = '/' + self.editor + ' · Enter keep, Esc clear'
     elif self.filter:

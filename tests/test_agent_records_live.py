@@ -30,6 +30,58 @@ class LiveModelTest(unittest.TestCase):
     self.live = importlib.import_module('agent_records_live')
     self.state = self.live.LiveState()
 
+  def test_recent_updates_sort_across_status_with_stable_ties(self):
+    rows = {i: record(i, status) for i, status in (
+      ('T-0004', 'in-progress'), ('T-0003', 'blocked'),
+      ('T-0002', 'open'), ('T-0001', 'open'))}
+    rows['T-0003']['body'] += '- 2026-01-01 11:59:00 +0000 a -- changed\n'
+    rows['T-0002']['body'] += '- 2026-01-01 11:59:00 +0000 a -- changed\n'
+    rows['T-0001']['fields']['created'] = ''
+    self.state.update(rows, NOW)
+    view = self.live.LiveView(self.state)
+    self.assertEqual(view.visible(), ['T-0002', 'T-0003', 'T-0004', 'T-0001'])
+    self.state.update(dict(reversed(list(rows.items()))), NOW)
+    self.assertEqual(view.visible(), ['T-0002', 'T-0003', 'T-0004', 'T-0001'])
+
+  def test_update_sort_uses_absolute_time_and_bad_log_falls_back(self):
+    rows = {i: record(i) for i in ('T-0001', 'T-0002', 'T-0003')}
+    rows['T-0001']['body'] += '- 2026-01-01 12:30:00 +0100 a -- changed\n'
+    rows['T-0002']['body'] += '- 2026-01-01 11:45:00 +0000 a -- changed\n'
+    rows['T-0003']['body'] += '- unknown-time a -- legacy record\n'
+    self.assertEqual(self.live.last_update(rows['T-0003']),
+                     NOW - timedelta(hours=1))
+    self.state.update(rows, NOW)
+    self.assertEqual(self.live.LiveView(self.state).visible(),
+                     ['T-0002', 'T-0001', 'T-0003'])
+
+  def test_sort_control_and_refresh_preserve_identity_details_and_mouse(self):
+    rows = {i: record(i, status) for i, status in (
+      ('T-0001', 'blocked'), ('T-0002', 'in-progress'), ('T-0003', 'open'))}
+    rows['T-0003']['body'] += '- 2026-01-01 11:59:00 +0000 a -- changed\n'
+    self.state.update(rows, NOW)
+    view = self.live.LiveView(self.state)
+    view.selected, view.expanded, view.detail_offset = 'T-0003', True, 2
+    view.key('s', 10)
+    self.assertEqual(view.visible(), ['T-0002', 'T-0003', 'T-0001'])
+    self.assertEqual((view.selected, view.detail_offset), ('T-0003', 2))
+    view.key('s', 10)
+    self.assertEqual(view.visible(), ['T-0001', 'T-0002', 'T-0003'])
+    view.key('s', 10)
+    rows = copy.deepcopy(rows)
+    rows['T-0001']['body'] += '- 2026-01-01 12:00:01 +0000 a -- changed\n'
+    self.state.update(rows, NOW + timedelta(seconds=1))
+    self.assertEqual(view.sync()[0], 'T-0001')
+    self.assertEqual(view.selected, 'T-0003')
+    view.frame(100, 30, NOW + timedelta(seconds=1))
+    y = next(y for y, ident in view.mouse_rows.items() if ident == 'T-0001')
+    view.mouse('click', 5, y, 10)
+    self.assertEqual(view.selected, 'T-0001')
+    view.key('/', 10)
+    view.key('s', 10)
+    self.assertEqual(view.editor, 's')
+    view.key('\x1b', 10)
+    self.assertIn('updated', str(view.frame(120, 20, NOW)))
+
   def test_creation_closure_archive_reopen_and_removal(self):
     rows = {'T-0001': record('T-0001')}
     self.state.update(rows, NOW)
@@ -420,6 +472,8 @@ class LiveCommandTest(RecordsFixture):
               return (f'\x1b[<{button};{x+1};{y+1}M'.encode()
                       if b'1006' in initial else
                       b'\x1b[M' + bytes((button+32, x+33, y+33)))
+            os.write(master, b's')
+            until(b'status')
             os.write(master, mouse(65, 5, 4) + b'\r')
             until(b'Progress')
             os.write(master, b'\x1b')

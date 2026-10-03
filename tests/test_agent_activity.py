@@ -200,6 +200,55 @@ class ActivityTest(unittest.TestCase):
     ui.key('G', 7)
     self.assertIn('Rows 14-21/21', str(ui.frame(120, 10, 1001)))
 
+  def test_sort_controls_keep_families_selection_folds_and_filter(self):
+    ui = importlib.import_module('agent_activity_live').AgentView()
+    rows = [agent('z-root', seen=900), agent('z-child', 'z-root', seen=999),
+            agent('a-child', 'z-root', seen=998), agent('a-root', seen=990)]
+    rows[0]['session_title'] = 'Zulu'
+    rows[1]['session_title'] = 'Zulu child'
+    rows[2]['session_title'] = 'Alpha child'
+    rows[3]['session_title'] = 'Alpha'
+    ui.update(rows, 1001)
+    ui.key('RIGHT', 10)
+    ui.selected, ui.details, ui.offset = 'codex:z-child', True, 2
+    ui.key('s', 10)
+    self.assertEqual(ui.visible(), ['codex:z-root', 'codex:z-child',
+                                  'codex:a-child', 'codex:a-root'])
+    ui.key('s', 10)
+    self.assertEqual(ui.visible(), ['codex:a-root', 'codex:z-root',
+                                  'codex:a-child', 'codex:z-child'])
+    self.assertEqual((ui.selected, ui.offset), ('codex:z-child', 2))
+    ui.update(list(reversed(rows)), 1002)
+    self.assertEqual(ui.visible(), ['codex:a-root', 'codex:z-root',
+                                  'codex:a-child', 'codex:z-child'])
+    self.assertFalse(ui.collapsed['codex:z-root'])
+    ui.frame(120, 24, 1002)
+    y = next(y for y, (key, _) in ui.mouse_rows.items()
+             if key == 'codex:a-child')
+    ui.mouse('click', 10, y, 10)
+    self.assertEqual(ui.selected, 'codex:a-child')
+    ui.key('/', 10)
+    for c in 'Zulu child':
+      ui.key(c, 10)
+    ui.key('\r', 10)
+    self.assertEqual(ui.visible(), ['codex:z-root', 'codex:z-child'])
+    ui.key('s', 10)
+    self.assertEqual(ui.visible(), ['codex:z-root', 'codex:z-child'])
+
+  def test_updated_sort_ties_missing_times_and_recent_descendant(self):
+    ui = importlib.import_module('agent_activity_live').AgentView()
+    rows = [agent('z', seen=None), agent('b', seen=999),
+            agent('a', seen=999), agent('parent', seen=800),
+            agent('child', 'parent', seen=1000)]
+    ui.update(rows, 1001)
+    ui.key('s', 10)
+    self.assertEqual(ui.visible(), ['codex:parent', 'codex:a', 'codex:b',
+                                  'codex:z'])
+    ui.update(list(reversed(rows)), 1002)
+    self.assertEqual(ui.visible(), ['codex:parent', 'codex:a', 'codex:b',
+                                  'codex:z'])
+    self.assertIn('updated', str(ui.frame(120, 24, 1002)))
+
   def test_collapsing_preserves_selection_and_explicit_choices(self):
     ui_mod = importlib.import_module('agent_activity_live')
     ui = ui_mod.AgentView()
@@ -446,6 +495,8 @@ run_agent_live(args, Path('/unused'), quota, loader)
               return (f'\x1b[<{button};{x+1};{y+1}M'.encode()
                       if b'1006' in initial else
                       b'\x1b[M' + bytes((button+32, x+33, y+33)))
+            os.write(master, b's')
+            until(b'updated')
             os.write(master, mouse(0, 2, 2))
             until(b'THINKING')
             os.write(master, mouse(65, 9, 3) + b'\r')

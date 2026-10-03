@@ -271,6 +271,7 @@ class LiveView:
   def __init__(self, state, args=None):
     self.state, self.args = state, args
     self.selected = None
+    self.sort = 'updated'
     self.filter, self.editor, self.mode, self.pending = '', '', 'normal', ''
     self.cursor = 0
     self.expanded = False
@@ -316,7 +317,13 @@ class LiveView:
       if query in searchable.casefold():
         result.append(ident)
     def order(ident):
-      f = self.state.rows[ident]['fields']
+      row = self.state.rows[ident]
+      f = row['fields']
+      if self.sort == 'updated':
+        at = last_update(row)
+        return (at is None, -at.timestamp() if at else 0, ident)
+      if self.sort == 'id':
+        return ident
       state = ('in-progress', 'in-review', 'open', 'blocked', *CLOSED)
       priority = ('P0', 'P1', 'P2', 'P3', 'unset')
       return (state.index(f['status']),
@@ -372,6 +379,11 @@ class LiveView:
         self.help_offset = help_scroll(key, seq, self.help_offset, page)
         if key in ('g', 'Z'):
           self.pending = key
+      return False
+    if key == 's':
+      modes = ('updated', 'status', 'id')
+      self.sort = modes[(modes.index(self.sort) + 1) % len(modes)]
+      self.sync()
       return False
     ids = self.sync()
     index = ids.index(self.selected) if self.selected else 0
@@ -518,6 +530,9 @@ class LiveView:
           ('gg / G', 'First / last task'),
           ('Ctrl-d / Ctrl-u', 'Move half a page'),
           ('Wheel / click', 'Scroll / select task')]),
+        ('Sorting', [('s', 'Cycle updated (newest), status/priority, task ID'),
+          ('Ties', 'Task ID; unknown update times follow known times'),
+          ('Selection', 'Selected task stays selected when order changes')]),
         ('Details', [('Enter', 'Open or close details'),
           ('Tab', 'Progress, dependencies, evidence, observed waits'),
           ('f', 'Toggle full-screen details'),
@@ -555,7 +570,7 @@ class LiveView:
     holds = sum(r['fields'].get('blocked-on-owner', '').startswith('yes')
                 for r in live)
     scope = ','.join(self.args.repo or []) if self.args else ''
-    header = f'Agent Tasks · {len(ids)} tasks'
+    header = f'Agent Tasks · {len(ids)} tasks · sort: {self.sort}'
     if scope:
       header += ' · ' + scope
     status = ('STALE · last verified ' + (
@@ -661,7 +676,8 @@ class LiveView:
         self.detail_offset:self.detail_offset + detail_slots])
     lines.extend((line, 'bold') for line in recent_lines[-recent_slots:]
                  if recent_slots)
-    footer = f'{len(ids)} tasks · / filter · Enter details · ? help · q quit'
+    footer = (f'{len(ids)} tasks · s sort · / filter · Enter details · '
+              '? help · q quit')
     if self.mode == 'filter':
       footer = '/' + self.editor[:self.cursor] + '│' + self.editor[self.cursor:]
     elif self.filter:
