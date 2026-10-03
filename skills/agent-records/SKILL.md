@@ -162,6 +162,9 @@ they apply. Update it as things change (`update`), and `close <entry>
 --what ...` once cleaned up. State you remove in the same session needs no
 entry.
 
+To combine kinds, pass one quoted value with spaces around `+`, for example
+`--kind 'backup + scratch'`. The compact form `backup+scratch` is invalid.
+
 Before cleaning anything up, read `agent-changelog list --open --machine`
 (add `--here` for this repository). An entry explains why state exists; it
 never authorizes deleting it.

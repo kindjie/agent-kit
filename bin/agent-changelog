@@ -160,7 +160,8 @@ def parser():
     "scope": "short scope key, or mistake scope text",
     "slug": "lowercase filename slug",
     "kind": "worktree, stash, branch, scratch, asset, backup, tool, "
-            "service or other; combine with +",
+            "service or other; combine with spaced + in one quoted value, "
+            "e.g. --kind 'backup + scratch'",
     "location": "where the recorded state lives",
     "why": "reason this state exists",
     "cleanup_when": "condition under which cleanup is appropriate",
