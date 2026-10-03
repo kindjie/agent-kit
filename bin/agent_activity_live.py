@@ -219,35 +219,59 @@ class AgentView:
         stamp = datetime.fromtimestamp(obs['at'], timezone.utc).isoformat()
       except (OverflowError, OSError, ValueError):
         pass
-    lines = [a['key'], activity_label(obs, now), obs['reason'],
-             'Last event: ' + str((a.get('observation') or {}).get(
-               'phase') or 'unknown'),
-             'Event timestamp: ' + stamp,
-             'Observed ' + elapsed(obs['at'], now) + ' ago',
-             'Subagents: ' + self.tree.summary(self.selected)]
-    lines += ['Discovery: ' + reason for reason in
-              sorted(self.tree.coverage_reasons)]
+    def field(label, value):
+      parts = str(value).splitlines() or ['unknown']
+      return ['  ' + (label + ':').ljust(12) + parts[0]] + [
+        ' ' * 14 + part for part in parts[1:]]
+
+    def number(value):
+      return f'{value:,}' if isinstance(value, (int, float)) else 'unknown'
+
+    lines = ['Tasks']
+    tasks = a.get('tasks') or []
+    for task in tasks:
+      lines.append('  ' + str(task.get('id') or '?') + ' · ' +
+                   str(task.get('status') or 'unknown') + ' · ' +
+                   str(task.get('role') or 'associated'))
+      lines.append('    ' + str(task.get('title') or 'Untitled task'))
+    if not tasks:
+      lines.append('  ' + (a.get('tasks_status') or
+                           'No matching owner/helper tasks found'))
+    lines += ['', 'Activity']
+    lines += field('Status', activity_label(obs, now))
+    lines += field('Work', a.get('work') or 'unknown')
+    lines += field('Current', a.get('now') or 'unknown')
+    if self.tree.children[self.selected]:
+      lines += field('Subagents', self.tree.summary(self.selected))
+    lines += ['', 'Session']
+    lines += field('Title', a.get('session_title') or 'not recorded')
+    lines += field('Agent', a['key'])
+    lines += field('Model', str(a.get('model') or 'unknown') + ' · ' +
+                   str(a.get('effort') or 'unknown'))
+    lines += field('Directory', a.get('cwd') or 'unknown')
+    lines += field('Tokens', number((a.get('tokens') or {}).get('total')) +
+                   ' total · ' + number(a.get('recent_tokens')) +
+                   ' uncached / 15m')
+    lines += ['', 'Evidence']
+    lines += field('Reason', obs['reason'])
+    lines += field('Last event', (a.get('observation') or {}).get('phase') or
+                   'unknown')
+    lines += field('Observed', stamp + ' · ' + elapsed(obs['at'], now) + ' ago')
+    for task in tasks:
+      if task.get('records_id'):
+        lines += field('Task match', str(task['id']) + ' via ' + task['records_id'])
+    for reason in sorted(self.tree.coverage_reasons):
+      lines += field('Discovery', reason)
     for call in (a.get('observation') or {}).get('pending') or []:
-      lines.append('Pending tool: ' + str(call.get('tool') or 'unknown') +
-                   ' · ' + elapsed(call.get('at'), now) + ' ago')
+      lines += field('Tool', str(call.get('tool') or 'unknown') +
+                     ' · ' + elapsed(call.get('at'), now) + ' ago')
     for wait in obs['waits']:
       timeout = wait.get('timeout')
       limit = (' · timeout ' + activity_age(timeout) if timeout is not None
                else ' · timeout unknown')
-      lines.append('Observed wait: ' + wait_label(wait) + ' · ' +
-                   elapsed(wait.get('at'), now) + ' ago' + limit)
-    lines += ['Session title: ' + str(a.get('session_title') or 'not recorded'),
-              'Work: ' + str(a.get('work', '')),
-              'Model: ' + str(a.get('model', 'unknown')) + ' · ' +
-              str(a.get('effort', 'unknown')),
-              'Directory: ' + str(a.get('cwd') or 'unknown'),
-              'Recorded plan: ' + str(a.get('now') or 'unknown'),
-              'Tasks owned/helped: ' + (', '.join(t['id'] for t in
-                a.get('tasks', [])) or 'none observed'),
-              'Tokens: ' + str((a.get('tokens') or {}).get('total', 'unknown')),
-              'Observed uncached tokens / 15m: ' +
-              str(a.get('recent_tokens', 'unknown')),
-              'Local observations only; no watcher count or liveness proof.']
+      lines += field('Wait', wait_label(wait) + ' · ' +
+                     elapsed(wait.get('at'), now) + ' ago' + limit)
+    lines += ['  Local observations; not proof of process liveness.']
     return lines
 
   def mouse(self, action, x, y, page):
@@ -304,7 +328,17 @@ class AgentView:
              elapsed(self.refreshed, now) + ' ago')
     title += ' · sort: ' + self.sort
     lines = [(title, 'bold')]
-    details = [part for line in self.detail(now) for part in wrap(line, width)]
+    details = []
+    for line in self.detail(now):
+      indent = len(line) - len(line.lstrip())
+      if line.startswith('  ') and line[2:14].strip().endswith(':'):
+        indent = 14
+      indent = min(indent, max(0, width - 2))
+      parts = wrap(line[indent:], max(1, width - indent))
+      style = 'bold' if line in ('Tasks', 'Activity', 'Session', 'Evidence') else ''
+      details.extend((line[:indent] + part if index == 0 else
+                      ' ' * indent + part, style)
+                     for index, part in enumerate(parts))
     detail_slots = min(len(details), height // 2) if self.details else 0
     slots = max(0, height - len(lines) - detail_slots - 1)
     if shown and slots:
@@ -357,7 +391,7 @@ class AgentView:
     if detail_slots:
       self.mouse_details = (len(lines), len(lines) + detail_slots)
       self.offset = min(self.offset, max(0, len(details) - detail_slots))
-      lines.extend((t, '') for t in details[self.offset:self.offset + detail_slots])
+      lines.extend(details[self.offset:self.offset + detail_slots])
     start = self.first + 1 if shown and slots else 0
     end = min(len(shown), self.first + slots) if start else 0
     groups = len(self.tree.rows) - len(self.tree.parents)

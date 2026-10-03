@@ -389,7 +389,8 @@ class ActivityTest(unittest.TestCase):
     self.assertIn('2 working', text)
     ui.key('\n', 10)
     text = '\n'.join(t for t, _ in ui.frame(100, 24, 1001))
-    self.assertIn('Turn ended', text)
+    self.assertIn('Tasks', text)
+    self.assertIn('Turn ended', '\n'.join(ui.detail(1001)))
     for width in (1, 20, 40, 80):
       frame = ui.frame(width, 12, 1001)
       self.assertLessEqual(len(frame), 12)
@@ -473,6 +474,129 @@ class ParserObservationTest(unittest.TestCase):
     parsed = AGENTS.parse_session(self.transcript(rows), 'codex')
     self.assertIsNone(parsed['parent_id'])
     self.assertEqual(parsed['observation']['pending'], [])
+
+
+class TaskDetailsTest(unittest.TestCase):
+  setUp = fixtures.AgentViewTest.setUp
+  transcript = fixtures.AgentViewTest.transcript
+  codex_rows = fixtures.AgentViewTest.codex_rows
+
+  def test_explicit_record_actor_from_calls_not_prose_or_quoted_commands(self):
+    from agent_activity import record_actors
+    cmd = "agent-task log T-0012 --agent helper-123 'checking'"
+    self.assertEqual(record_actors('exec_command', {'cmd': cmd}), {'helper-123'})
+    wrapped = ('text((await tools.exec_command({cmd:' + json.dumps(cmd) +
+               ',max_output_tokens:100})).output);')
+    self.assertEqual(record_actors('exec', wrapped), {'helper-123'})
+    for text in ('echo "' + cmd + '"', 'printf x; echo ' + json.dumps(cmd),
+                 "cat <<EOF\n" + cmd + "\nEOF", cmd + ' $(dynamic)',
+                 "agent-task log T-0012 'example --agent other-123'",
+                 'agent-task log T-0012 -- ' + '--agent other-123',
+                 "echo ';' agent-task log T-0012 --agent other-123 checking",
+                 "false && agent-task log T-0012 --agent other-123 checking"):
+      self.assertEqual(record_actors('exec_command', {'cmd': text}), set(), text)
+    self.assertEqual(record_actors('exec', 'if (false) { ' + wrapped + ' }'), set())
+    self.assertEqual(record_actors('exec', 'const sample = ' + json.dumps(wrapped)),
+                     set())
+    self.assertEqual(record_actors('exec_command', {'cmd':
+      'agent-task --agent parent-123 log T-0012 --agent helper-123 checking'}),
+      {'helper-123'})
+
+  def test_parsed_delegate_actor_matches_current_helper_task(self):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    rows = self.codex_rows(None)[:2]
+    rows.append({'type': 'response_item', 'timestamp': '2026-08-19T21:01:00Z',
+      'payload': {'type': 'function_call', 'name': 'exec_command',
+        'call_id': 'r', 'arguments': json.dumps({'cmd':
+          "agent-task log T-0012 --agent helper-123 'checking'"})}})
+    parsed = AGENTS.parse_session(self.transcript(rows), 'codex')
+    self.assertEqual(parsed['records_ids'], ['helper-123'])
+    task = {'id': 'T-0012', 'title': 'Validate the boundary',
+            'status': 'in-review', 'role': 'helper'}
+    args = SimpleNamespace(cached=False, provider='all', agent_days=1,
+                           agent_limit=20, live=True)
+    now = parsed['last_seen'] + 1
+    with patch.object(AGENTS, 'claimed_tasks', return_value={'helper-123':[task]}):
+      shown = AGENTS.view_agents({'sessions': {'s': {'agent': parsed}},
+                                 'summaries': {}}, args, now)
+    self.assertEqual(shown[0]['tasks'][0]['id'], 'T-0012')
+    self.assertEqual(shown[0]['tasks'][0]['role'], 'helper')
+    ui = importlib.import_module('agent_activity_live').AgentView()
+    ui.update(shown, now)
+    details = '\n'.join(ui.detail(now))
+    self.assertIn('Validate the boundary', details)
+    self.assertIn('helper', details)
+    self.assertIn('in-review', details)
+    self.assertLess(details.index('T-0012'), details.index('Activity'))
+    args.cached = True
+    with patch.object(AGENTS, 'claimed_tasks') as lookup:
+      cached = AGENTS.view_agents({'sessions': {'s': {'agent': parsed}},
+                                  'summaries': {}}, args, now)
+    lookup.assert_not_called()
+    self.assertIn('skipped', cached[0]['tasks_status'])
+
+  def test_inherited_history_does_not_assign_parent_records_identity(self):
+    rows = self.codex_rows(None)[:2]
+    rows[0]['payload']['timestamp'] = '2026-08-19T21:02:00Z'
+    rows[0]['payload']['forked_from_id'] = 'original'
+    rows.append({'type': 'response_item', 'timestamp': '2026-08-19T21:01:00Z',
+      'payload': {'type': 'function_call', 'name': 'exec_command',
+        'call_id': 'r', 'arguments': json.dumps({'cmd':
+          "agent-task log T-0012 --agent parent-123 'checking'"})}})
+    parsed = AGENTS.parse_session(self.transcript(rows), 'codex')
+    self.assertEqual(parsed['records_ids'], [])
+
+  def test_task_association_deduplicates_and_preserves_session_status(self):
+    row = agent('root')
+    task = dict(id='T-0012', title='Example task', status='in-review', role='helper')
+    row['records_ids'] = ['helper-123', 'helper-456']
+    original = row['status']
+    AGENTS.associate_tasks(row, {'helper-123': [task], 'helper-456': [task]})
+    self.assertEqual(len(row['tasks']), 1)
+    self.assertIs(row['status'], original)
+    other = agent('child')
+    other.update(internal=True, label='reviewers', tasks=[task])
+    row.update(internal=True, label='reviewers')
+    grouped = AGENTS.group_internal([row,other])
+    self.assertIn('T-0012', [t['id'] for t in grouped[0]['tasks']])
+
+  def test_details_group_fields_format_numbers_and_wrap_commands(self):
+    from agent_records_live import cells
+    ui = importlib.import_module('agent_activity_live').AgentView()
+    row = agent('root', phase='active')
+    row.update(tasks=[dict(id='T-0012', title='Validate the boundary',
+                          status='in-progress', role='owner')],
+               now='exec: first command\nsecond command ' + 'x' * 200,
+               tokens={'total': 9717445}, recent_tokens=41948)
+    ui.update([row], 1001)
+    details = '\n'.join(ui.detail(1001))
+    self.assertIn('9,717,445', details)
+    self.assertIn('41,948', details)
+    self.assertIn('Tasks', details)
+    self.assertIn('Session', details)
+    self.assertNotIn('Recorded plan:', details)
+    ui.key('\n', 8)
+    frame = ui.frame(70, 18, 1001)
+    self.assertTrue(any(t == 'Tasks' and style == 'bold' for t,style in frame))
+    for _ in range(150):
+      ui.key(']', 8)
+      self.assertTrue(all(cells(t) < 70 for t,_ in ui.frame(70,18,1001)))
+    self.assertEqual(ui.selected, 'codex:root')
+
+  def test_lookup_failure_is_not_reported_as_no_tasks(self):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    row = agent('root'); row['messages'] = []
+    args = SimpleNamespace(cached=False, provider='all', agent_days=1,
+                           agent_limit=20, live=True)
+    with patch.object(AGENTS, 'claimed_tasks', return_value=None):
+      shown = AGENTS.view_agents({'sessions': {'s': {'agent': row}},
+                                 'summaries': {}}, args, 1001)
+    ui = importlib.import_module('agent_activity_live').AgentView()
+    ui.update(shown, 1001)
+    self.assertIn('unavailable', '\n'.join(ui.detail(1001)))
+
 
 
 class TerminalTest(unittest.TestCase):
@@ -606,6 +730,8 @@ run_agent_live(args, Path('/unused'), quota, loader)
             os.write(master, mouse(0, 2, 2))
             until(b'Working')
             os.write(master, mouse(65, 9, 3) + b'\r')
+            until(b'Tasks')
+            os.write(master, b']' * 12)
             until(b'Reasoning event observed')
             os.write(master, b'\x1b')
             until(b'Rows')

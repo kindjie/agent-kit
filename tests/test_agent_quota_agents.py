@@ -1135,6 +1135,13 @@ class AgentViewTest(unittest.TestCase):
       again = AGENTS.collect(cache, self.root, self.root / "missing", now, 1)
       parse.assert_not_called()
     self.assertEqual(again["summaries"], cache["summaries"])
+    # Upgrade legacy per-session parses without dropping retained summaries.
+    del cache["sessions"][str(path)]["agent"]["records_ids"]
+    with patch.object(AGENTS, "parse_session", wraps=AGENTS.parse_session) as parse:
+      upgraded = AGENTS.collect(cache, self.root, self.root / "missing", now, 1)
+      parse.assert_called_once_with(path, "codex")
+    self.assertIn("records_ids", upgraded["sessions"][str(path)]["agent"])
+    self.assertEqual(upgraded["summaries"], cache["summaries"])
     path.unlink()
     again = AGENTS.collect(cache, self.root, self.root / "missing", now, 1)
     self.assertEqual(again["sessions"], {})
@@ -1377,8 +1384,9 @@ class AgentViewTest(unittest.TestCase):
          patch.object(AGENTS.subprocess, "run", return_value=result):
       claims = AGENTS.claimed_tasks()
     self.assertEqual([t["id"] for t in claims[owner]], ["T-0007", "T-0008"])
+    self.assertEqual([t["role"] for t in claims[owner]], ["owner", "helper"])
     with patch.object(AGENTS.shutil, "which", return_value=None):
-      self.assertEqual(AGENTS.claimed_tasks(), {})
+      self.assertIsNone(AGENTS.claimed_tasks())
     agent = dict(self.work_row("s1", "Fix HUD layout", "Fix HUD"),
                  state="working", turn_age=60, long_turn=False, now="—",
                  recent_tokens=10, tasks=claims[owner])

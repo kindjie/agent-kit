@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from agent_activity import AgentTree, Tracker, observe, activity_label
+from agent_activity import AgentTree, Tracker, observe, activity_label, record_actors
 
 CACHE_VERSION = 8
 # Bumped when the label schema changes so cached entries refresh once.
@@ -361,6 +361,7 @@ def parse_session(path, provider):
     "tokens": None,
     "source": str(path),
     "warnings": [],
+    "records_ids": [],
   }
   child = provider == "claude" and path.parent.name == "subagents"
   if child:
@@ -471,6 +472,8 @@ def parse_session(path, provider):
                                                   "custom_tool_call"):
         name = payload.get("name") or "tool"
         value = payload.get("arguments", payload.get("input"))
+        agent["records_ids"] = sorted(set(agent["records_ids"]) |
+                                      record_actors(name, value))
         if name == "update_plan":
           try:
             plan = json.loads(value).get("plan")
@@ -540,6 +543,8 @@ def parse_session(path, provider):
         for item in items:
           if isinstance(item, dict) and item.get("type") == "tool_use":
             name = item.get("name") or "tool"
+            agent["records_ids"] = sorted(set(agent["records_ids"]) |
+              record_actors(name, item.get("input")))
             if name == "TodoWrite":
               todos = (item.get("input") or {}).get("todos")
               status["progress"] = plan_progress(todos, "content") or \
@@ -738,18 +743,20 @@ def records_id(agent):
 
 def claimed_tasks(binary="agent-task"):
   """{records ID: [{id, title, status}]} for live tasks each ID owns or
-  helps with; empty when agent-task is absent, unconfigured or slow."""
+  helps with; None when agent-task is absent, unconfigured or slow."""
   command = shutil.which(binary)
   if not command:
-    return {}
+    return None
   try:
     result = subprocess.run([command, "--wait", "5", "list", "--json"],
                             capture_output=True, text=True, timeout=15)
     tasks = json.loads(result.stdout)["tasks"] if result.returncode == 0 \
-      else []
+      else None
   except (OSError, subprocess.TimeoutExpired, ValueError, KeyError,
           TypeError):
-    return {}
+    return None
+  if not isinstance(tasks, list):
+    return None
   claims = {}
   for task in tasks if isinstance(tasks, list) else []:
     if not isinstance(task, dict) or task.get("status") not in CLAIMED:
@@ -758,8 +765,22 @@ def claimed_tasks(binary="agent-task"):
       name.strip() for name in str(task.get("helpers") or "").split(",")]
     entry = {key: task.get(key) for key in ("id", "title", "status")}
     for holder in dict.fromkeys(filter(None, holders)):
-      claims.setdefault(holder, []).append(entry)
+      claims.setdefault(holder, []).append(dict(entry,
+        role="owner" if holder == task.get("owner") else "helper"))
   return claims
+
+
+def associate_tasks(agent, claims, status=""):
+  """Attach current records matches; pure seam for collectors and fixtures."""
+  identities = list(dict.fromkeys(filter(None,
+    [records_id(agent), *agent.get("records_ids", [])])))
+  associated = {}
+  for identity in identities:
+    for task in claims.get(identity, []):
+      key = (task["id"], task.get("role", "associated"))
+      associated.setdefault(key, dict(task, records_id=identity))
+  agent["tasks"] = list(associated.values())
+  agent["tasks_status"] = status
 
 
 def summary_prompt(agent, previous):
@@ -1203,7 +1224,9 @@ def collect(cache, codex_root, claude_root, now, days):
   for _, provider, path, stat in candidates[:100]:
     source = str(path)
     signature = [stat.st_mtime_ns, stat.st_size]
-    if sessions.get(source, {}).get("signature") == signature:
+    cached = sessions.get(source, {})
+    if (cached.get("signature") == signature and
+        "records_ids" in cached.get("agent", {})):
       continue
     try:
       agent = parse_session(path, provider)
@@ -1232,7 +1255,11 @@ def collect(cache, codex_root, claude_root, now, days):
 
 def view_agents(cache, args, now):
   # --cached promises no process starts; claims need agent-task.
-  claims = {} if getattr(args, "cached", False) else claimed_tasks()
+  cache_only = getattr(args, "cached", False)
+  claims = None if cache_only else claimed_tasks()
+  tasks_status = ("Task lookup skipped (--cached)" if cache_only else
+                  "Task lookup unavailable" if claims is None else "")
+  claims = claims or {}
   agents = []
   for record in cache["sessions"].values():
     agent = copy.deepcopy(record["agent"])
@@ -1278,7 +1305,7 @@ def view_agents(cache, args, now):
     else:
       agent["now"] = "—"
     agent["recent_tokens"] = recent_tokens(agent.get("token_events"), now)
-    agent["tasks"] = claims.get(records_id(agent), [])
+    associate_tasks(agent, claims, tasks_status)
     agent["observed_activity"] = observe(agent, now)
     agents.append(agent)
   agents.sort(key=lambda item: item["last_seen"], reverse=True)
@@ -1518,6 +1545,8 @@ def group_internal(agents):
     rows.append({
       **lead,
       "key": f"{key[0]}:group:{key[1]}", "id": key[1], "group": len(members),
+      "tasks": list({(t['id'], t.get('role'), t.get('records_id')): t
+                     for m in members for t in m.get('tasks', [])}.values()),
       "coverage_incomplete": any(m.get("coverage_incomplete") for m in members),
       "coverage_reasons": sorted({reason for m in members
                                   for reason in m.get("coverage_reasons", [])}),

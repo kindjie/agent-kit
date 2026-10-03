@@ -294,6 +294,13 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
   tests.test_agent_attention tests.test_agent_speak tests.test_agent_activity
 ```
 
+Task-detail regressions cover explicit delegate records IDs in literal tool
+calls (including supported Codex wrappers), rejection of prose/dynamic commands
+and inherited history, current owner/helper joins and duplicate matches,
+unavailable/cache-only lookup, grouped tasks, titles/status/roles, aligned
+wrapping and formatted counts. PTYs scroll the new sections before testing
+resize and terminal restoration.
+
 Activity tests cover the five human status labels, retained terminal history,
 uncertain working/waiting observations with age, expired waits and results,
 unknown timestamps, matching plain/live labels, separate uncertain descendant
