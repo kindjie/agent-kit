@@ -1,11 +1,11 @@
 # A comfortable terminal, if you want one
 
+<img class="guide-float" src="assets/moss-and-muggs/scenes/hedgehog-laptop.png" width="280"
+  alt="A hedgehog using a laptop displaying the agent-kit toolbox, with tea beside it.">
+
 Your existing terminal is usually enough. Agent-kit does not require a
 particular theme, font, or terminal application. The dashboard uses tmux;
 individual skills need no terminal dashboard at all.
-
-<img src="assets/moss-and-muggs/scenes/hedgehog-laptop.png" width="280"
-  alt="A hedgehog using a laptop displaying the agent-kit toolbox, with tea beside it.">
 
 ## Ask for help
 

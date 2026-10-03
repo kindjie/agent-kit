@@ -4,3 +4,19 @@
 .md-typeset a:not(.md-button):not(.headerlink) { text-decoration: underline; }
 .md-typeset img { max-width: 100%; height: auto; }
 .md-typeset h1, .md-typeset h2 { font-weight: 650; }
+
+/* Decorative figures wrap beside prose, then stack on small screens. */
+.md-typeset img.guide-float {
+  float: right;
+  max-width: 35%;
+  margin: 0 0 1rem 1.5rem;
+}
+.md-typeset h2, .md-typeset p[align="center"] { clear: both; }
+@media (max-width: 600px) {
+  .md-typeset img.guide-float {
+    float: none;
+    display: block;
+    max-width: 100%;
+    margin: 0 auto 1rem;
+  }
+}

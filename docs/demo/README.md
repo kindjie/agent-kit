@@ -1,10 +1,10 @@
 # Try the Moss & Muggs demo
 
+<img class="guide-float" src="../assets/moss-and-muggs/scenes/tea-cottage.png" width="180" alt="">
+
 Explore the dashboard through a fictional woodland tea-shop game. You can
 see how a parent agent works with helpers, inspect shared tasks, and read a
 quota timeline without loading your own projects or accounts.
-
-<img src="../assets/moss-and-muggs/scenes/tea-cottage.png" width="180" alt="">
 
 ## Ask your agent to help
 

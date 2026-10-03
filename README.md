@@ -25,6 +25,11 @@ A live dashboard gives you an overview of agents, tasks and quota timing.
 Reusable skills also cover profiling, planning, testing, review and handoffs.
 Adopt individual pieces or combine them into your workflow.
 
+**Best on one machine.** Activity and usage views rely on local observations.
+If agents delegate work to other machines, the overview can be incomplete
+or stale, reducing its accuracy and usefulness. Shared task records do not
+make the dashboard a live monitor of every machine.
+
 [Quick start](#quick-start) · [Requirements](#requirements) ·
 [Profiling](#investigate-performance-with-evidence) ·
 [Agents](#follow-agents) · [Timeline](#read-the-quota-timeline) ·
@@ -50,11 +55,11 @@ flowchart TD
   D --> U
 ```
 
+<img class="guide-float" src="docs/assets/moss-and-muggs/scenes/tea-cottage.png" width="180" alt="">
+
 You choose integrations, control account switching, and resolve decisions.
 Agents manage their queue and report progress, evidence, and attention needs.
 The dashboard gives you a place to see what is happening.
-
-<img src="docs/assets/moss-and-muggs/scenes/tea-cottage.png" width="180" alt="">
 
 *The cottage belongs to the fictional demo world, not a separate product.*
 

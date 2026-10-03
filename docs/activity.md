@@ -2,6 +2,10 @@
 
 [Back to the introduction](../README.md#follow-activity-and-quota).
 
+Agent-kit works best when the agents run on one machine. This view reads
+local activity; agents and delegated work on other machines may be absent
+or stale. Treat it as an incomplete overview of a multi-machine setup.
+
 ![Expanded brewing parent and two helpers beside profiling and chair-path
   sessions](assets/agent-activity.png)
 

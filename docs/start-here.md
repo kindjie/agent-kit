@@ -3,10 +3,9 @@
 You can use agent-kit a piece at a time. Start with a useful skill or a quota
 check; shared records and global instructions can wait.
 
-<img src="assets/moss-and-muggs/characters/hedgehog-hold-cup.png" width="76" alt="">
-
-
 ## Working from a desktop app?
+
+<img class="guide-float" src="assets/moss-and-muggs/characters/hedgehog-hold-cup.png" width="76" alt="">
 
 Paste the setup prompt from the [introduction](../README.md#quick-start)
 into your coding agent. An app with local file and command access can help
@@ -35,7 +34,9 @@ flowchart TD
 - **Dashboard:** see Agents, Agent Tasks, and Timeline in a terminal.
   Task setup may be unconfigured; that is expected before records setup.
 
-![The three dashboard views](assets/dashboard.png)
+[![The three dashboard views](assets/dashboard.png)](assets/dashboard.png)
+
+[Open the dashboard at full size](assets/dashboard.png).
 
 *Fictional Moss & Muggs data. Your own view will reflect available observations.*
 

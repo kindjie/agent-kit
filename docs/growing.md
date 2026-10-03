@@ -27,6 +27,11 @@ Keep your decision list separate from their queue.
 
 ## Several projects and accounts
 
+The overview works best on a single machine. Delegation across machines can
+leave agent activity and usage attribution incomplete or stale, reducing
+the accuracy and usefulness of the dashboard. Shared task records can help
+coordinate work, but do not provide live visibility into every machine.
+
 [![Fictional dashboard with several projects, agent families and accounts](assets/growing-dashboard.png)](assets/growing-dashboard.png)
 
 *Thirteen fictional agents across seven parent groups, with four quota
