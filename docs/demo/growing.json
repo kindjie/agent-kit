@@ -1,0 +1,596 @@
+{
+  "clock": "2026-10-02T12:00:00Z",
+  "tasks": {
+    "T-0001": {
+      "fields": {
+        "id": "T-0001",
+        "title": "Add teapot brewing",
+        "status": "in-progress",
+        "owner": "demo-brewing",
+        "priority": "P2",
+        "repos": "moss-and-mugs",
+        "created": "2026-10-02 10:00:00 +0000 by demo",
+        "expires": "2026-10-02 14:00:00 +0000",
+        "closed": "",
+        "review": "n/a",
+        "storypoints": "3",
+        "helpers": "demo-timer,demo-recipes",
+        "depends-on": "",
+        "execution-model": "gpt-6.1-sol",
+        "estimates": "{\"gpt-6.1-sol\": {\"tokens\": 90000, \"wall-seconds\": 1800}}",
+        "produces-changes": "yes",
+        "blocked-on-owner": "no",
+        "severity": "unset",
+        "links": "",
+        "related": ""
+      },
+      "body": "## Known\n\nFictional Moss & Mugs demonstration; no game implementation.\n\n## Done when\n\n- [ ] merged: merged on the default branch, its CI green\n- [ ] cleanup: worktrees, branches, stashes and scratch removed\n- [ ] docs: documentation updated\n- [ ] work-reviewed: the work was reviewed\n\n## Log\n- 2026-10-02 11:50:00 +0000 demo -- Synthetic demonstration record; not real CI evidence.\n"
+    },
+    "T-0002": {
+      "fields": {
+        "id": "T-0002",
+        "title": "Fix hedgehog chair paths",
+        "status": "in-progress",
+        "owner": "demo-chairs",
+        "priority": "P2",
+        "repos": "moss-and-mugs",
+        "created": "2026-10-02 10:00:00 +0000 by demo",
+        "expires": "2026-10-02 14:00:00 +0000",
+        "closed": "",
+        "review": "n/a",
+        "storypoints": "2",
+        "helpers": "",
+        "depends-on": "",
+        "execution-model": "gpt-6.1-sol",
+        "estimates": "{\"gpt-6.1-sol\": {\"tokens\": 90000, \"wall-seconds\": 1800}}",
+        "produces-changes": "yes",
+        "blocked-on-owner": "no",
+        "severity": "unset",
+        "links": "",
+        "related": ""
+      },
+      "body": "## Known\n\nGuests should reach seats without walking through the teapot stand, including the narrow gap beside the fireplace.\n\n## Done when\n\n- [ ] merged: merged on the default branch, its CI green\n- [ ] cleanup: worktrees, branches, stashes and scratch removed\n- [ ] docs: documentation updated\n- [ ] work-reviewed: the work was reviewed\n\n## Log\n- 2026-10-02 11:50:00 +0000 demo -- Synthetic demonstration record; not real CI evidence.\n"
+    },
+    "T-0003": {
+      "fields": {
+        "id": "T-0003",
+        "title": "Add fireside seating",
+        "status": "open",
+        "owner": "none",
+        "priority": "P2",
+        "repos": "moss-and-mugs",
+        "created": "2026-10-02 10:00:00 +0000 by demo",
+        "expires": "",
+        "closed": "",
+        "review": "n/a",
+        "storypoints": "3",
+        "helpers": "",
+        "depends-on": "T-0002",
+        "execution-model": "gpt-6.1-sol",
+        "estimates": "{\"gpt-6.1-sol\": {\"tokens\": 90000, \"wall-seconds\": 1800}}",
+        "produces-changes": "yes",
+        "blocked-on-owner": "no",
+        "severity": "unset",
+        "links": "",
+        "related": ""
+      },
+      "body": "## Known\n\nFictional Moss & Mugs demonstration; no game implementation.\n\n## Done when\n\n- [ ] merged: merged on the default branch, its CI green\n- [ ] cleanup: worktrees, branches, stashes and scratch removed\n- [ ] docs: documentation updated\n- [ ] work-reviewed: the work was reviewed\n\n## Log\n- 2026-10-02 11:50:00 +0000 demo -- Synthetic demonstration record; not real CI evidence.\n"
+    },
+    "T-0004": {
+      "fields": {
+        "id": "T-0004",
+        "title": "Save the shop overnight",
+        "status": "in-review",
+        "owner": "demo-save",
+        "priority": "P2",
+        "repos": "moss-and-mugs",
+        "created": "2026-10-02 10:00:00 +0000 by demo",
+        "expires": "2026-10-02 14:00:00 +0000",
+        "closed": "",
+        "review": "pending",
+        "storypoints": "5",
+        "helpers": "",
+        "depends-on": "",
+        "execution-model": "gpt-6.1-sol",
+        "estimates": "{\"gpt-6.1-sol\": {\"tokens\": 90000, \"wall-seconds\": 1800}}",
+        "produces-changes": "yes",
+        "blocked-on-owner": "no",
+        "severity": "unset",
+        "links": "ref:synthetic-save-load-cases",
+        "related": ""
+      },
+      "body": "## Known\n\nPreserve tea inventory, furniture layout and tomorrow\u2019s weather. Never duplicate a guest payment after loading.\n\n## Done when\n\n- [x] merged: merged on the default branch, its CI green -- evidence: synthetic demonstration evidence only\n- [x] cleanup: worktrees, branches, stashes and scratch removed -- evidence: synthetic demonstration evidence only\n- [x] docs: documentation updated -- evidence: synthetic demonstration evidence only\n- [ ] work-reviewed: the work was reviewed\n\n## Log\n- 2026-10-02 11:50:00 +0000 demo -- Synthetic demonstration record; not real CI evidence.\n"
+    },
+    "T-0005": {
+      "fields": {
+        "id": "T-0005",
+        "title": "Add rain on the roof",
+        "status": "done",
+        "owner": "none",
+        "priority": "P2",
+        "repos": "moss-and-mugs",
+        "created": "2026-10-02 10:00:00 +0000 by demo",
+        "expires": "",
+        "closed": "2026-10-02 11:50:00 +0000 by demo",
+        "review": "passed synthetic demonstration review",
+        "storypoints": "2",
+        "helpers": "",
+        "depends-on": "",
+        "execution-model": "gpt-6.1-sol",
+        "estimates": "{\"gpt-6.1-sol\": {\"tokens\": 90000, \"wall-seconds\": 1800}}",
+        "produces-changes": "yes",
+        "blocked-on-owner": "no",
+        "severity": "unset",
+        "links": "",
+        "related": ""
+      },
+      "body": "## Known\n\nFictional Moss & Mugs demonstration; no game implementation.\n\n## Done when\n\n- [x] merged: merged on the default branch, its CI green -- evidence: synthetic demonstration evidence only\n- [x] cleanup: worktrees, branches, stashes and scratch removed -- evidence: synthetic demonstration evidence only\n- [x] docs: documentation updated -- evidence: synthetic demonstration evidence only\n- [x] work-reviewed: the work was reviewed -- evidence: synthetic demonstration evidence only\n\n## Log\n- 2026-10-02 11:50:00 +0000 demo -- Synthetic demonstration record; not real CI evidence.\n"
+    },
+    "T-0006": {
+      "fields": {
+        "id": "T-0006",
+        "title": "Write opening-day tutorial",
+        "status": "open",
+        "owner": "none",
+        "priority": "P2",
+        "repos": "moss-and-mugs",
+        "created": "2026-10-02 10:00:00 +0000 by demo",
+        "expires": "",
+        "closed": "",
+        "review": "n/a",
+        "storypoints": "2",
+        "helpers": "",
+        "depends-on": "",
+        "execution-model": "gpt-6.1-sol",
+        "estimates": "{\"gpt-6.1-sol\": {\"tokens\": 90000, \"wall-seconds\": 1800}}",
+        "produces-changes": "yes",
+        "blocked-on-owner": "no",
+        "severity": "unset",
+        "links": "",
+        "related": ""
+      },
+      "body": "## Known\n\nFictional Moss & Mugs demonstration; no game implementation.\n\n## Done when\n\n- [ ] merged: merged on the default branch, its CI green\n- [ ] cleanup: worktrees, branches, stashes and scratch removed\n- [ ] docs: documentation updated\n- [ ] work-reviewed: the work was reviewed\n\n## Log\n- 2026-10-02 11:50:00 +0000 demo -- Synthetic demonstration record; not real CI evidence.\n"
+    },
+    "T-0007": {
+      "fields": {
+        "id": "T-0007",
+        "title": "Profile busy tea-time",
+        "status": "in-progress",
+        "owner": "demo-profile",
+        "priority": "P2",
+        "repos": "moss-and-mugs",
+        "created": "2026-10-02 10:00:00 +0000 by demo",
+        "expires": "2026-10-02 14:00:00 +0000",
+        "closed": "",
+        "review": "n/a",
+        "storypoints": "3",
+        "helpers": "",
+        "depends-on": "",
+        "execution-model": "gpt-6.1-sol",
+        "estimates": "{}",
+        "produces-changes": "yes",
+        "blocked-on-owner": "no",
+        "severity": "unset",
+        "links": "",
+        "related": ""
+      },
+      "body": "## Known\n\nTea-time feels uneven with a full shop. Decide whether to measure simulation, CPU submission, GPU work or waiting; no performance finding yet.\n\n## Done when\n\n- [ ] merged: merged on the default branch, its CI green\n- [ ] cleanup: worktrees, branches, stashes and scratch removed\n- [ ] docs: documentation updated\n- [ ] work-reviewed: the work was reviewed\n\n## Log\n- 2026-10-02 11:50:00 +0000 demo -- Synthetic demonstration record; not real CI evidence.\n"
+    }
+  },
+  "agents": [
+    {
+      "key": "codex:demo-brewing",
+      "provider": "codex",
+      "id": "demo-brewing",
+      "parent_id": null,
+      "label": "Brewing",
+      "work": "Add teapot brewing",
+      "session_title": "Moss & Muggs :: Add teapot brewing",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "cwd": "/demo/moss-and-mugs",
+      "last_seen": 1790942392.0,
+      "observation": {
+        "phase": "active",
+        "at": 1790942392.0,
+        "pending": [
+          {
+            "id": "demo-wait",
+            "at": 1790942385.0,
+            "tool": "wait",
+            "wait": {
+              "kind": "agent",
+              "targets": [
+                "demo-timer",
+                "demo-recipes"
+              ],
+              "timeout": 600
+            }
+          }
+        ]
+      },
+      "status": {},
+      "recent_tokens": 12000,
+      "tokens": {
+        "total": 80000
+      },
+      "tasks": [
+        {
+          "id": "T-0001"
+        }
+      ]
+    },
+    {
+      "key": "codex:demo-timer",
+      "provider": "codex",
+      "id": "demo-timer",
+      "parent_id": "demo-brewing",
+      "label": "Timer",
+      "work": "Implement steeping timer",
+      "session_title": "Implement steeping timer",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "cwd": "/demo/moss-and-mugs",
+      "last_seen": 1790942392.0,
+      "observation": {
+        "phase": "active",
+        "at": 1790942392.0,
+        "pending": []
+      },
+      "status": {},
+      "recent_tokens": 12000,
+      "tokens": {
+        "total": 80000
+      },
+      "tasks": [
+        {
+          "id": "T-0001"
+        }
+      ]
+    },
+    {
+      "key": "codex:demo-recipes",
+      "provider": "codex",
+      "id": "demo-recipes",
+      "parent_id": "demo-brewing",
+      "label": "Recipes",
+      "work": "Test tea recipes",
+      "session_title": "Test tea recipes",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "cwd": "/demo/moss-and-mugs",
+      "last_seen": 1790942392.0,
+      "observation": {
+        "phase": "thinking",
+        "at": 1790942392.0,
+        "pending": []
+      },
+      "status": {},
+      "recent_tokens": 12000,
+      "tokens": {
+        "total": 80000
+      },
+      "tasks": [
+        {
+          "id": "T-0001"
+        }
+      ]
+    },
+    {
+      "key": "codex:demo-chairs",
+      "provider": "codex",
+      "id": "demo-chairs",
+      "parent_id": null,
+      "label": "Chair paths",
+      "work": "Fix hedgehog chair paths",
+      "session_title": "Moss & Muggs :: Fix hedgehog chair paths",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "cwd": "/demo/moss-and-mugs",
+      "last_seen": 1790942392.0,
+      "observation": {
+        "phase": "active",
+        "at": 1790942392.0,
+        "pending": []
+      },
+      "status": {},
+      "recent_tokens": 12000,
+      "tokens": {
+        "total": 80000
+      },
+      "tasks": [
+        {
+          "id": "T-0002"
+        }
+      ]
+    },
+    {
+      "key": "codex:demo-profile",
+      "provider": "codex",
+      "id": "demo-profile",
+      "parent_id": null,
+      "label": "Profiling",
+      "work": "Profile busy tea-time",
+      "session_title": "Moss & Muggs :: Profile busy tea-time",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "cwd": "/demo/moss-and-mugs",
+      "last_seen": 1790942392.0,
+      "observation": {
+        "phase": "thinking",
+        "at": 1790942392.0,
+        "pending": []
+      },
+      "status": {},
+      "recent_tokens": 12000,
+      "tokens": {
+        "total": 80000
+      },
+      "tasks": [
+        {
+          "id": "T-0007"
+        }
+      ]
+    },
+    {
+      "key": "codex:demo-group-0",
+      "provider": "codex",
+      "id": "demo-group-0",
+      "parent_id": null,
+      "label": "lantern-trails",
+      "work": "Lantern Trails :: Light the forest path",
+      "session_title": "Lantern Trails :: Light the forest path",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "cwd": "/demo/lantern-trails",
+      "last_seen": 1790942392.0,
+      "observation": {
+        "phase": "active",
+        "at": 1790942392.0,
+        "pending": []
+      },
+      "status": {},
+      "recent_tokens": 12000,
+      "tokens": {
+        "total": 80000
+      },
+      "tasks": []
+    },
+    {
+      "key": "codex:demo-helper-0",
+      "provider": "codex",
+      "id": "demo-helper-0",
+      "parent_id": "demo-group-0",
+      "label": "Helper",
+      "work": "Review lantern shadows",
+      "session_title": "Review lantern shadows",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "cwd": "/demo/lantern-trails",
+      "last_seen": 1790942392.0,
+      "observation": {
+        "phase": "thinking",
+        "at": 1790942392.0,
+        "pending": []
+      },
+      "status": {},
+      "recent_tokens": 12000,
+      "tokens": {
+        "total": 80000
+      },
+      "tasks": []
+    },
+    {
+      "key": "codex:demo-group-1",
+      "provider": "codex",
+      "id": "demo-group-1",
+      "parent_id": null,
+      "label": "field-notes",
+      "work": "Field Notes :: Map viewer",
+      "session_title": "Field Notes :: Map viewer",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "cwd": "/demo/field-notes",
+      "last_seen": 1790942392.0,
+      "observation": {
+        "phase": "active",
+        "at": 1790942392.0,
+        "pending": []
+      },
+      "status": {},
+      "recent_tokens": 12000,
+      "tokens": {
+        "total": 80000
+      },
+      "tasks": []
+    },
+    {
+      "key": "codex:demo-helper-1",
+      "provider": "codex",
+      "id": "demo-helper-1",
+      "parent_id": "demo-group-1",
+      "label": "Helper",
+      "work": "Check map tile loading",
+      "session_title": "Check map tile loading",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "cwd": "/demo/field-notes",
+      "last_seen": 1790942392.0,
+      "observation": {
+        "phase": "active",
+        "at": 1790942392.0,
+        "pending": []
+      },
+      "status": {},
+      "recent_tokens": 12000,
+      "tokens": {
+        "total": 80000
+      },
+      "tasks": []
+    },
+    {
+      "key": "codex:demo-group-2",
+      "provider": "codex",
+      "id": "demo-group-2",
+      "parent_id": null,
+      "label": "copper-weather",
+      "work": "Copper Weather :: Forecast cards",
+      "session_title": "Copper Weather :: Forecast cards",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "cwd": "/demo/copper-weather",
+      "last_seen": 1790942392.0,
+      "observation": {
+        "phase": "active",
+        "at": 1790942392.0,
+        "pending": []
+      },
+      "status": {},
+      "recent_tokens": 12000,
+      "tokens": {
+        "total": 80000
+      },
+      "tasks": []
+    },
+    {
+      "key": "codex:demo-helper-2",
+      "provider": "codex",
+      "id": "demo-helper-2",
+      "parent_id": "demo-group-2",
+      "label": "Helper",
+      "work": "Test forecast parsing",
+      "session_title": "Test forecast parsing",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "cwd": "/demo/copper-weather",
+      "last_seen": 1790942392.0,
+      "observation": {
+        "phase": "thinking",
+        "at": 1790942392.0,
+        "pending": []
+      },
+      "status": {},
+      "recent_tokens": 12000,
+      "tokens": {
+        "total": 80000
+      },
+      "tasks": []
+    },
+    {
+      "key": "codex:demo-group-3",
+      "provider": "codex",
+      "id": "demo-group-3",
+      "parent_id": null,
+      "label": "moss-and-mugs",
+      "work": "Moss & Muggs :: Garden planting",
+      "session_title": "Moss & Muggs :: Garden planting",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "cwd": "/demo/moss-and-mugs",
+      "last_seen": 1790942392.0,
+      "observation": {
+        "phase": "active",
+        "at": 1790942392.0,
+        "pending": []
+      },
+      "status": {},
+      "recent_tokens": 12000,
+      "tokens": {
+        "total": 80000
+      },
+      "tasks": []
+    },
+    {
+      "key": "codex:demo-helper-3",
+      "provider": "codex",
+      "id": "demo-helper-3",
+      "parent_id": "demo-group-3",
+      "label": "Helper",
+      "work": "Review planting interactions",
+      "session_title": "Review planting interactions",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "cwd": "/demo/moss-and-mugs",
+      "last_seen": 1790942392.0,
+      "observation": {
+        "phase": "active",
+        "at": 1790942392.0,
+        "pending": []
+      },
+      "status": {},
+      "recent_tokens": 12000,
+      "tokens": {
+        "total": 80000
+      },
+      "tasks": []
+    }
+  ],
+  "quotas": [
+    {
+      "id": "claude_code",
+      "provider": "anthropic",
+      "name": "Claude Code",
+      "limits": [
+        {
+          "id": "weekly",
+          "used": 85,
+          "reset": "2026-10-02T14:00:00Z"
+        }
+      ],
+      "account_label": "woodland-demo"
+    },
+    {
+      "id": "codex",
+      "provider": "openai",
+      "name": "Codex",
+      "limits": [
+        {
+          "id": "weekly",
+          "used": 70,
+          "reset": "2026-10-04T12:00:00Z",
+          "burn": {
+            "exhausts_at": "2026-10-03T08:00:00Z",
+            "exhausts_before_reset": true,
+            "remaining_seconds": 72000,
+            "rate_percent_per_hour": 1.5,
+            "span_seconds": 10800
+          }
+        }
+      ],
+      "account_label": "woodland-demo"
+    },
+    {
+      "id": "claude_code-archive",
+      "provider": "anthropic",
+      "name": "Claude Code (last checked)",
+      "limits": [
+        {
+          "id": "weekly",
+          "used": 40,
+          "reset": "2026-10-02T14:00:00Z"
+        }
+      ],
+      "account_label": "studio-demo"
+    },
+    {
+      "id": "codex-archive",
+      "provider": "openai",
+      "name": "Codex (last checked)",
+      "limits": [
+        {
+          "id": "weekly",
+          "used": 40,
+          "reset": "2026-10-04T12:00:00Z",
+          "burn": {
+            "exhausts_at": "2026-10-03T08:00:00Z",
+            "exhausts_before_reset": true,
+            "remaining_seconds": 72000,
+            "rate_percent_per_hour": 1.5,
+            "span_seconds": 10800
+          }
+        }
+      ],
+      "account_label": "studio-demo"
+    }
+  ]
+}

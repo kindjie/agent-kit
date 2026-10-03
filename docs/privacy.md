@@ -2,6 +2,10 @@
 
 [Back to the introduction](../README.md).
 
+<p align="center">
+  <img src="assets/moss-and-muggs/decor/leaf-divider.png" width="180" alt="">
+</p>
+
 ## What it reads, and what leaves the machine
 
 `agent-quota` scans the Claude Code and Codex transcript directories on this

@@ -1,0 +1,6 @@
+/* System fonts: no third-party font requests. */
+:root { --md-typeset-a-color: #87500d; --md-primary-fg-color: #3d4941; --md-accent-fg-color: #87500d; }
+[data-md-color-scheme="slate"] { --md-typeset-a-color: #ffc16b; --md-accent-fg-color: #ffc16b; }
+.md-typeset a:not(.md-button):not(.headerlink) { text-decoration: underline; }
+.md-typeset img { max-width: 100%; height: auto; }
+.md-typeset h1, .md-typeset h2 { font-weight: 650; }

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+<title id="title">agent-kit icon — light</title>
+<desc id="desc">A friendly toolbox with a rounded handle and smiling eyes. Flat artwork; transparent background; text converted to vector outlines.</desc>
+<defs><clipPath id="eye-cutouts"><path clip-rule="evenodd" fill-rule="evenodd" d="M0 0H256V256H0ZM70 133A4.5 4.5 0 0 0 79 133A9 9 0 0 1 97 133A4.5 4.5 0 0 0 106 133A18 18 0 0 0 70 133ZM150 133A4.5 4.5 0 0 0 159 133A9 9 0 0 1 177 133A4.5 4.5 0 0 0 186 133A18 18 0 0 0 150 133Z"/></clipPath></defs>
+<g id="toolbox" clip-path="url(#eye-cutouts)">
+  <path id="handle" fill="#202B36" d="M84 88V70A22 22 0 0 1 106 48H150A22 22 0 0 1 172 70V88H156V72A8 8 0 0 0 148 64H108A8 8 0 0 0 100 72V88Z"/>
+  <rect id="case" x="24" y="88" width="208" height="120" rx="24" fill="#FF882B"/>
+  <rect id="lid" x="24" y="88" width="208" height="66" rx="24" fill="#202B36"/>
+  <rect id="clasp" x="117" y="144" width="22" height="27" rx="4" fill="#202B36"/>
+</g>
+</svg>

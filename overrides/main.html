@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block scripts %}
+  <script>
+    (() => {
+      const searchDialog = document.querySelector(
+        ".md-search[role=\"dialog\"]",
+      );
+      searchDialog?.setAttribute(
+        "aria-label", {{ lang.t("search") | tojson }},
+      );
+
+      const mermaidRuntimeUrl = new URL(
+        {{ "docs/assets/javascripts/mermaid.min.js" | url | tojson }},
+        document.baseURI,
+      ).href;
+      let initializationOptions;
+      let runtimePromise;
+
+      const mermaidProxy = {
+        initialize(options) {
+          initializationOptions = options;
+        },
+        async render(...args) {
+          const mermaidRuntime = await loadMermaidRuntime();
+          return mermaidRuntime.render(...args);
+        },
+      };
+
+      function loadMermaidRuntime() {
+        if (!runtimePromise) {
+          runtimePromise = new Promise((resolve, reject) => {
+            const script = document.createElement("script");
+            script.src = mermaidRuntimeUrl;
+            script.addEventListener("load", () => {
+              const mermaidRuntime = window.mermaid;
+              if (mermaidRuntime === mermaidProxy) {
+                reject(new Error("Mermaid runtime did not initialize"));
+                return;
+              }
+              mermaidRuntime.initialize(initializationOptions);
+              resolve(mermaidRuntime);
+            }, { once: true });
+            script.addEventListener("error", () => {
+              reject(new Error("Unable to load Mermaid runtime"));
+            }, { once: true });
+            document.head.append(script);
+          });
+        }
+        return runtimePromise;
+      }
+
+      window.mermaid = mermaidProxy;
+    })();
+  </script>
+  {{ super() }}
+{% endblock %}

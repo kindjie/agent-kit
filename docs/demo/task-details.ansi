@@ -1,13 +1,13 @@
-[1mAgent Tasks · 7 tasks · verified 12:00:00[0m
+[1mAgent Tasks · 7 tasks · sort: updated · verified 12:00:00[0m
 3 working · 1 review · 2 open · 0 blocked · 0 expired · 0 holds
 [1m  Task    SP Est tokens Est time  Task / state                                                     Updated[0m
 [32m  T-0001   3        90k      30m  [in-progress] Add teapot brewing                                 10m ago[39m
 [32m  T-0002   2        90k      30m  [in-progress] Fix hedgehog chair paths                           10m ago[39m
-[32m  T-0007   3          —        —  [in-progress] Profile busy tea-time                              10m ago[39m
-[7m> T-0004   5        90k      30m  [in-review] Save the shop overnight                              10m ago[0m
 [33m  T-0003   3        90k      30m  [open WAIT] Add fireside seating                                 10m ago[39m
-[36m  T-0006   2        90k      30m  [open] Write opening-day tutorial                                10m ago[39m
+[7m> T-0004   5        90k      30m  [in-review] Save the shop overnight                              10m ago[0m
 [32m  T-0005   2        90k      30m  [done] Add rain on the roof                                      10m ago[39m
+[36m  T-0006   2        90k      30m  [open] Write opening-day tutorial                                10m ago[39m
+[32m  T-0007   3          —        —  [in-progress] Profile busy tea-time                              10m ago[39m
 Evidence · T-0004 · Tab section, [/] scroll
 Updated: 2026-10-02 11:50:00 UTC
 3/4 completion checks recorded
@@ -19,4 +19,4 @@ only
 - [x] docs: documentation updated -- evidence: synthetic demonstration evidence only
 - [ ] work-reviewed: the work was reviewed
 [1mDONE T-0005 · Add rain on the roof[0m
-[2m7 tasks · / filter · Enter details · ? help · q quit[0m
+[2m7 tasks · s sort · / filter · Enter details · ? help · q quit[0m

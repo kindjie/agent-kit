@@ -1,0 +1,45 @@
+[1m─ Agents ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[1mAgents · observed activity · refreshed 0s ago · sort: activity[0m
+Claude Code · weekly 15% left · resets in 2h 0m
+Codex · weekly 30% left · runs out ~20h 0m · 15m: codex:demo…wing 8%, codex:demo…imer 8%, codex:demo…ipes 8%
+[7m> ▾ Moss & Muggs :: Add teapot brewing                                       │ Brewing · Waiting · 2 working[0m
+[32m  ├─  Implement steeping timer                                               │ Timer · Working[39m
+[32m  └─  Test tea recipes                                                       │ Recipes · Working[39m
+[32m    Moss & Muggs :: Fix hedgehog chair paths                                 │ Chair paths · Working[39m
+[32m    Moss & Muggs :: Profile busy tea-time                                    │ Profiling · Working[39m
+[32m  ▸ Lantern Trails :: Light the forest path                                  │ lantern-trails · Working · 1 working[39m
+[32m  ▸ Field Notes :: Map viewer                                                │ field-notes · Working · 1 working[39m
+[32m  ▸ Copper Weather :: Forecast cards                                         │ copper-weather · Working · 1 working[39m
+[32m  ▸ Moss & Muggs :: Garden planting                                          │ moss-and-mugs · Working · 1 working[39m
+[2mRows 1-9/9 · 7 groups · 13 agents · s sort · ? help · q quit[0m
+
+[1m─ Agent Tasks ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[1mAgent Tasks · 7 tasks · sort: updated · verified 12:00:00[0m
+3 working · 1 review · 2 open · 0 blocked · 0 expired · 0 holds
+[1m  Task    SP Est tokens Est time  Task / state                                                                                   Updated[0m
+[7m> T-0001   3        90k      30m  [in-progress] Add teapot brewing                                                               10m ago[0m
+[32m  T-0002   2        90k      30m  [in-progress] Fix hedgehog chair paths                                                         10m ago[39m
+[33m  T-0003   3        90k      30m  [open WAIT] Add fireside seating                                                               10m ago[39m
+[35m  T-0004   5        90k      30m  [in-review] Save the shop overnight                                                            10m ago[39m
+[32m  T-0005   2        90k      30m  [done] Add rain on the roof                                                                    10m ago[39m
+[36m  T-0006   2        90k      30m  [open] Write opening-day tutorial                                                              10m ago[39m
+[32m  T-0007   3          —        —  [in-progress] Profile busy tea-time                                                            10m ago[39m
+[1mDONE T-0005 · Add rain on the roof[0m
+[2m7 tasks · s sort · / filter · Enter details · ? help · q quit[0m
+
+[1m─ Timeline ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[2m⠈[0;1m Timeline[0;2m (UTC; now Fri 02 Oct 12:00)[0m · every 5s · quota data 0m old · q to quit
+  [1mToday[0m
+    [1min 2h 0m[0m   14:00  [1m[32mRESET[0m  [1mClaude[0m                [36mwoodland-demo[39m  [2;3m15% left[0m
+    [2;3min 2h 0m[0m   [2;3m14:00[0m  [2;3m[32mRESET[0m  [2;3mClaude[0m                [2;3m[35mstudio-demo[0m    [2;3mwas 60%[0m
+  [1mTomorrow[0m
+    [1min 20h 0m[0m  08:00  [1m[31mBURN[0m   [1mCodex[0m                 [36mwoodland-demo[39m  [2;3m30% left, 1.5%/h, out 1d 4h before reset, lasts at ≤0.62%/h[0m
+  [1mSun 04 Oct[0m
+    in 2d 0h   12:00  [1m[32mRESET[0m  [1mCodex[0m                 [36mwoodland-demo[39m  [2;3m30% left[0m
+    [2;3min 2d 0h[0m   [2;3m12:00[0m  [2;3m[32mRESET[0m  [2;3mCodex (last checked)[0m  [2;3m[35mstudio-demo[0m    [2;3mwas 60%[0m
+
+[2;3mBURN extrapolates the last 3h of use and is listed only when a quota[0m
+[2;3mwould run out before it resets. As width allows, it adds how long[0m
+[2;3mbefore the reset it runs out, the hourly rate that would last until[0m
+[2;3mthen, and the busiest agents' shares of the last 15 minutes.[0m
+[2;3mOther accounts: "was" is the last known value, unverified.[0m

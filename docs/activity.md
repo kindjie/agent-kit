@@ -6,7 +6,9 @@
   sessions](assets/agent-activity.png)
 
 *Follow parent sessions and delegated agents, with observation details and
-freshness information. Synthetic Moss & Mugs demo data.*
+freshness information. Synthetic Moss & Muggs demo data.*
+
+<img src="assets/moss-and-muggs/characters/hedgehog-look-down.png" width="73" alt="">
 
 Space folds a parent group; Left/Right move through the tree. Enter opens
 observed activity details, and `?` opens scrollable controls and state help.

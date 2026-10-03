@@ -8,6 +8,7 @@
 
 | Command | Does |
 | --- | --- |
+| [`agent-doctor`](../bin/agent-doctor.md) | Checks installation structure without repairs or model calls; offers a prompt for instruction review |
 | `agent-dash` | Opens activity, shared tasks, and quota timing in tmux; optional personal tasks |
 | `agent-quota` | Reports Claude Code and Codex subscription quota, credits and pace as JSON, compact tables or a reset and run-out timeline |
 | `agent-status` | Renders that report as a Claude Code status line or a tmux component |

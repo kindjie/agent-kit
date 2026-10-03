@@ -30,6 +30,34 @@ class DemoTest(unittest.TestCase):
     self.assertEqual(lines[2], '')
     self.assertEqual(lines[5], '')
 
+  def test_growing_scenario_is_authored_and_keeps_families(self):
+    from unittest.mock import patch
+    import os
+    with patch.dict(os.environ, {'DEMO_SCENARIO': 'growing'}):
+      data = self.demo.fixture()
+    self.assertEqual(len(data['agents']), 13)
+    self.assertEqual(len(data['quotas']), 4)
+    ids = {a['id'] for a in data['agents']}
+    self.assertTrue(all(not a.get('parent_id') or a['parent_id'] in ids
+                        for a in data['agents']))
+    self.assertTrue(all(a['cwd'].startswith('/demo/') for a in data['agents']))
+    self.assertEqual({p['account_label'] for p in data['quotas']},
+                     {'woodland-demo', 'studio-demo'})
+
+  def test_growing_timeline_includes_real_archived_account_schema(self):
+    from unittest.mock import patch
+    import os
+    quota = self.demo.quota_module()
+    with patch.dict(os.environ, {'DEMO_SCENARIO': 'growing'}):
+      _, moment, document = self.demo.inputs(quota)
+    events = quota.timeline_events(document, moment)
+    self.assertEqual({e['account'] for e in events},
+                     {'woodland-demo', 'studio-demo'})
+    self.assertTrue(all(e['active'] for e in events
+                       if e['account'] == 'woodland-demo'))
+    self.assertTrue(all(not e['active'] for e in events
+                       if e['account'] == 'studio-demo'))
+
   def test_fixture_relationships_and_real_dependency_semantics(self):
     data = self.demo.fixture()
     self.assertEqual(len(data['tasks']), 7)

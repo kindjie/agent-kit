@@ -1,20 +1,20 @@
-[1mAgents · observed activity · refreshed 0s ago[0m
+[1mAgents · observed activity · refreshed 0s ago · sort: activity[0m
 Claude Code · weekly 15% left · resets in 2h 0m
 Codex · weekly 30% left · runs out ~20h 0m · 15m: co:wing 20%, co:imer 20%, co:ipes 20%
-[7m> ▾ Add teapot brewing                                      │ Brewing · WAIT agent · 2 active[0m
-  ├─  Implement steeping timer                              │ Timer · ACTIVE
-[32m  └─  Test tea recipes                                      │ Recipes · THINKING[39m
-    Fix hedgehog chair paths                                │ Chair paths · ACTIVE
-[32m    Profile busy tea-time                                   │ Profiling · THINKING[39m
+[7m> ▾ Add teapot brewing                                      │ Brewing · Waiting · 2 working[0m
+[32m  ├─  Implement steeping timer                              │ Timer · Working[39m
+[32m  └─  Test tea recipes                                      │ Recipes · Working[39m
+[32m    Fix hedgehog chair paths                                │ Chair paths · Working[39m
+[32m    Profile busy tea-time                                   │ Profiling · Working[39m
 codex:demo-brewing
+Waiting
 Outstanding observed call: wait
+Last event: active
+Event timestamp: 2026-10-02T11:59:52+00:00
 Observed 8s ago
-Subagents: 2 active
-Observed wait: subagent demo-timer, demo-recipes · 15s ago
+Subagents: 2 working
+Pending tool: wait · 15s ago
+Observed wait: subagent demo-timer, demo-recipes · 15s ago · timeout 10m
 Session title: Add teapot brewing
 Work: Add teapot brewing
-Model: gpt-6.1-sol · high
-Directory: /demo/moss-and-mugs
-Recorded plan: unknown
-Tasks owned/helped: T-0001
-[2mRows 1-5/5 · 3 groups · 5 agents · ? help · q quit[0m
+[2mRows 1-5/5 · 3 groups · 5 agents · s sort · ? help · q quit[0m

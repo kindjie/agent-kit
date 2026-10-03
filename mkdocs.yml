@@ -1,0 +1,74 @@
+site_name: agent-kit
+site_description: Tools and skills that help coding agents manage work
+site_url: https://agent-kit.owx.dev/
+repo_url: https://github.com/kindjie/agent-kit
+repo_name: kindjie/agent-kit
+edit_uri: ''
+docs_dir: build/docs-source
+site_dir: build/site
+theme:
+  name: material
+  custom_dir: overrides
+  logo: docs/assets/brand/agent-kit-icon.svg
+  font: false
+  features:
+    - content.code.copy
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.suggest
+  palette:
+    - media: '(prefers-color-scheme: light)'
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: '(prefers-color-scheme: dark)'
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+plugins:
+  - search
+markdown_extensions:
+  - toc:
+      slugify: !!python/name:tools.site_slug.slugify
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.highlight
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+extra_css:
+  - docs/stylesheets/site.css
+nav:
+  - Home: index.md
+  - Start Here:
+      - First steps: docs/start-here.md
+      - Fictional demo: docs/demo/README.md
+      - Optional terminal setup: docs/terminal.md
+  - Guides:
+      - Follow agents: docs/activity.md
+      - Understand quota: docs/quota.md
+      - Coordinate work: docs/work.md
+      - Investigate performance: docs/profiling.md
+      - As your work grows: docs/growing.md
+  - Reference:
+      - Tools and skills: docs/tools.md
+      - Privacy: docs/privacy.md
+  - For Agents:
+      - Setup: docs/install.md
+      - Shared records: docs/records.md
+      - Coordination: docs/coordination.md
+      - Quota command: bin/agent-quota.md
+      - Installation diagnostics: bin/agent-doctor.md
+      - Site maintenance: docs/site-tooling.md
+exclude_docs: |
+  /docs/assets/brand/README.md

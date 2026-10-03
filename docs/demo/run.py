@@ -20,7 +20,8 @@ BIN = ROOT / 'bin'
 
 
 def fixture():
-  return json.loads(Path(__file__).with_name('moss-and-mugs.json').read_text())
+  name = 'growing.json' if os.environ.get('DEMO_SCENARIO') == 'growing' else 'moss-and-mugs.json'
+  return json.loads(Path(__file__).with_name(name).read_text())
 
 
 def environment(stage):
@@ -35,7 +36,8 @@ def environment(stage):
     'TZ': 'UTC', 'LANG': 'en_US.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1',
     'AGENT_TASK_ROOT': str(stage / 'tasks'),
     'AGENT_CHANGELOG_ROOT': str(stage / 'changes'),
-    'DEMO_STAGE': str(stage), 'DEMO_PYTHON': sys.executable}
+    'DEMO_STAGE': str(stage), 'DEMO_PYTHON': sys.executable,
+    'DEMO_SCENARIO': os.environ.get('DEMO_SCENARIO', 'small')}
 
 
 def quota_module():
@@ -62,11 +64,19 @@ def inputs(quota):
         'last_observation': observation,
         'pace': {'reset_in_seconds': (reset - moment).total_seconds()},
         'burn': item.get('burn', {})})
-    document['services'][provider['id']] = {
-      'service_id': provider['id'], 'display_name': provider['name'],
+    service_id = provider['id'].removesuffix('-archive')
+    service = {
+      'service_id': service_id, 'display_name': provider['name'],
       'provider_id': provider['provider'], 'account': {
-        'label': 'woodland-demo', 'email': 'demo@example.invalid'},
+        'label': provider.get('account_label', 'woodland-demo'),
+        'email': 'demo@example.invalid',
+        'key': provider['id'], 'observed_at': data['clock']},
       'limits': limits, 'checked_at': data['clock'], 'freshness': 'fresh'}
+    if provider['id'].endswith('-archive'):
+      archive = quota.ACCOUNT_ARCHIVES[service_id]
+      document.setdefault(archive, {})[provider['id']] = service
+    else:
+      document['services'][service_id] = service
   return data, moment, document
 
 
@@ -192,12 +202,15 @@ def main():
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument('--pane', help=argparse.SUPPRESS)
   parser.add_argument('--capture', type=Path, help='write ANSI captures to directory')
+  parser.add_argument('--scenario', choices=('small', 'growing'), default='small',
+    help='authored fictional workload')
   args, rest = parser.parse_known_args()
   if args.pane:
     pane(args.pane, rest)
     return
   if rest:
     parser.error('unknown arguments: ' + ' '.join(rest))
+  os.environ['DEMO_SCENARIO'] = args.scenario
   tmux = shutil.which('tmux')
   if not tmux:
     parser.error('tmux is required')
@@ -209,7 +222,9 @@ def main():
       return subprocess.run([str(stage / 'bin/tmux'), *argv], env=env,
         check=True, text=True, capture_output=True).stdout
     try:
-      run('new-session', '-d', '-s', 'demo', '-x', '110', '-y', '42')
+      run('new-session', '-d', '-s', 'demo', '-x',
+          '140' if args.scenario == 'growing' else '110', '-y',
+          '60' if args.scenario == 'growing' else '42')
       run('set-option', '-g', 'status', 'off')
       run('set-option', '-g', 'pane-border-status', 'top')
       run('set-option', '-g', 'pane-border-format', ' #{pane_title} ')

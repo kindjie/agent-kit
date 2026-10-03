@@ -461,3 +461,18 @@ Run the quota, agents, timeline and task-live suites
 when changing their shared presentation or parsing.
 Presentation checks cover title-case headings, separate selection/fold
 markers, neutral selection and compact footers without spacer rows.
+
+## Documentation site
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_docs_site tests.test_readme_demo
+python3 tools/stage_docs.py
+.venv-docs/bin/python -m mkdocs build --strict
+python3 tools/check_docs_links.py build/site
+python3 tools/check_mermaid.py
+```
+
+The diagram check covers the staged homepage and all published references.
+Demo regressions check both current and archived accounts through the actual
+quota timeline schema. Visually inspect light/dark and narrow layouts; build
+success alone does not prove readable diagrams, screenshots or colours.

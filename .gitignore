@@ -1,2 +1,6 @@
 __pycache__/
 *.py[cod]
+
+build/
+.venv-docs/
+docs/assets/javascripts/mermaid.min.js
