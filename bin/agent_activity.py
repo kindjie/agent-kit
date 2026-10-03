@@ -168,20 +168,15 @@ def observe(agent, now):
   raw = agent.get('observation') or {}
   phase, at = raw.get('phase'), raw.get('at')
   result = {'state': 'UNKNOWN', 'at': at, 'waits': [],
-            'reason': 'No current execution observation'}
-  if not isinstance(at, (int, float)) or at > now + 5:
+            'reason': 'No current execution observation', 'uncertain': False,
+            'age': None}
+  if (isinstance(at, bool) or not isinstance(at, (int, float)) or
+      not math.isfinite(at) or at > now + 5):
     return result
+  result['age'] = max(0, now - at)
   pending = raw.get('pending') or []
   result['waits'] = [dict(p['wait'], at=p.get('at')) for p in pending
                      if p.get('wait')]
-  if now - at > FRESH_FOR:
-    result['reason'] = 'Observation older than 20m; current state unknown'
-    return result
-  for wait in result['waits']:
-    if wait.get('timeout') is not None and (
-        now - (wait.get('at') or at) > wait['timeout']):
-      result['reason'] = 'Observed wait deadline passed; result not observed'
-      return result
   if pending:
     all_waiting = all(p.get('wait') for p in pending)
     result.update(state='WAITING' if all_waiting else 'TOOL',
@@ -196,7 +191,47 @@ def observe(agent, now):
       'active': 'Turn open; current action unknown',
       'aborted': 'Turn aborted', 'tool': 'Tool operation observed',
     }.get(phase, 'No current execution observation'))
+  if result['state'] not in ('IDLE', 'DONE', 'ABORTED', 'UNKNOWN'):
+    if now - at > FRESH_FOR:
+      result.update(uncertain=True,
+                    reason='Last observation older than 20m; ' + result['reason'])
+    for wait in result['waits']:
+      started = wait.get('at')
+      if not isinstance(started, (int, float)):
+        started = at
+      if wait.get('timeout') is not None and now - started > wait['timeout']:
+        result.update(uncertain=True,
+          reason='Observed wait deadline passed; result not observed')
+        break
   return result
+
+
+def activity_status(observed):
+  """Human vocabulary; raw observation states remain available in details."""
+  state = observed.get('state')
+  label = ('Working' if state in ('ACTIVE', 'THINKING', 'TOOL') else
+           'Waiting' if state in ('WAITING', 'RESULT READY') else
+           'Idle' if state in ('IDLE', 'DONE') else
+           'Stopped' if state == 'ABORTED' else 'Unknown')
+  return label + ('?' if observed.get('uncertain') and label != 'Unknown' else '')
+
+
+def activity_age(age):
+  value = max(0, int(age))
+  for size, suffix in ((86400, 'd'), (3600, 'h'), (60, 'm'), (1, 's')):
+    if value >= size or size == 1:
+      return f'{value // size}{suffix}'
+
+
+def activity_label(observed, now=None):
+  label = activity_status(observed)
+  age = observed.get('age')
+  if now is not None and age is not None:
+    age = max(0, now - observed['at'])
+  if age is not None and (observed.get('uncertain') or
+                          label in ('Idle', 'Stopped')):
+    label += ' · ' + activity_age(age) + ' ago'
+  return label
 
 
 def cached_task_waits(task, now, path=None):
@@ -226,7 +261,8 @@ def cached_task_waits(task, now, path=None):
       for wait in obs['waits']:
         if task in wait['tasks']:
           key = a.get('key') or a.get('id', 'unknown')
-          result[key] = {'agent': key, 'state': obs['state'],
+          result[key] = {'agent': key,
+                         'state': 'UNKNOWN' if obs['uncertain'] else obs['state'],
                          'condition': wait['condition'], 'at': wait['at']}
     label = 'Cached local observations; coverage not guaranteed'
     if cache.get('scan_truncated') or cache.get('scan_errors'):
@@ -242,6 +278,15 @@ class AgentTree:
     self.children = {key: [] for key in self.rows}
     self.parents, self.order = {}, []
     self.incomplete = incomplete
+    self.coverage_reasons = set()
+    if incomplete:
+      self.coverage_reasons.add('Agent discovery incomplete')
+    for row in agents:
+      self.coverage_reasons.update(row.get('coverage_reasons') or [])
+      if row.get('coverage_incomplete'):
+        self.incomplete = True
+        if not row.get('coverage_reasons'):
+          self.coverage_reasons.add('Agent discovery incomplete')
     for key, row in self.rows.items():
       parent = row['provider'] + ':' + str(row.get('parent_id'))
       # Only keep an acyclic path; malformed links remain separate roots.
@@ -252,12 +297,14 @@ class AgentTree:
         cursor = other['provider'] + ':' + str(other.get('parent_id'))
       if cursor in visited:
         self.incomplete = True
+        self.coverage_reasons.add('Parent links contain a cycle')
         continue
       if parent in self.rows:
         self.parents[key] = parent
         self.children[parent].append(key)
       elif row.get('parent_id'):
         self.incomplete = True
+        self.coverage_reasons.add('A recorded parent is missing from the list')
     def visit(key):
       self.order.append(key)
       for child in self.children[key]:
@@ -270,7 +317,7 @@ class AgentTree:
   def refresh(self, now):
     self.observed = {k: observe(a, now) for k, a in self.rows.items()}
     for key, obs in self.observed.items():
-      if obs['state'] != 'WAITING':
+      if obs['state'] != 'WAITING' or obs.get('uncertain'):
         continue
       waits = obs['waits']
       targets = [(self.rows[key]['provider'] + ':' + i, w['at'])
@@ -294,18 +341,12 @@ class AgentTree:
   def totals(self, key):
     totals = Counter()
     for child in self.descendants(key):
-      state = self.observed[child]['state']
-      category = ('active' if state in ('ACTIVE', 'THINKING', 'TOOL') else
-                  'idle' if state == 'IDLE' else 'done' if state == 'DONE' else
-                  'waiting' if state in ('WAITING', 'RESULT READY') else 'unknown')
+      category = activity_status(self.observed[child]).lower()
       totals[category] += 1
     return totals
 
   def summary(self, key):
     counts = self.totals(key)
-    text = ' · '.join(f'{counts[k]} {k}' for k in
-                       ('active', 'waiting', 'idle', 'done', 'unknown')
-                       if counts[k]) or 'no active subagents observed'
-    if self.incomplete:
-      text += ' · coverage unknown'
-    return text
+    return ' · '.join(f'{counts[k]} {k}' for k in
+      ('working', 'working?', 'waiting', 'waiting?', 'idle', 'stopped', 'unknown')
+      if counts[k]) or 'no subagents observed'

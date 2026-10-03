@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from agent_activity import AgentTree, Tracker, observe
+from agent_activity import AgentTree, Tracker, observe, activity_label
 
 CACHE_VERSION = 8
 # Bumped when the label schema changes so cached entries refresh once.
@@ -1300,6 +1300,12 @@ def view_agents(cache, args, now):
     agent["coverage_incomplete"] = bool(
       cache.get("scan_truncated") or cache.get("scan_errors") or
       len(unique) > len(shown) or agent.get("warnings"))
+    agent["coverage_reasons"] = [reason for missing, reason in (
+      (cache.get("scan_truncated"), "Transcript scan limit reached"),
+      (cache.get("scan_errors"), "Some transcript files could not be read"),
+      (len(unique) > len(shown), "Agent display limit reached"),
+      (agent.get("warnings"), "Some transcript evidence could not be read"),
+    ) if missing]
     agent["inventory_observed_at"] = cache.get("observed_at")
   return order_by_activity(shown)
 
@@ -1374,6 +1380,10 @@ STATE_LEGEND = {
   "done": ("✓", "done"),
   "aborted": ("✗", "aborted"),
 }
+
+
+OBSERVED_GLYPHS = {"Working": "▸", "Waiting": "⬥", "Idle": "∙",
+                   "Stopped": "✗"}
 
 
 def model_label(model):
@@ -1459,7 +1469,14 @@ def state_text(agent, state, glyphs, quota):
   """`working 12m (long)`, or `● 12m+` when glyphs are needed."""
   observed = agent.get("observed_activity")
   if observed:
-    return observed["state"].lower()
+    text = activity_label(observed)
+    if glyphs:
+      for label, glyph in OBSERVED_GLYPHS.items():
+        if text.startswith(label):
+          text = glyph + text[len(label):]
+          break
+      text = text.replace(" · ", " ").removesuffix(" ago")
+    return text
   age = agent.get("turn_age")
   timed = age is not None and state not in ("done", "aborted")
   if glyphs and state in STATE_LEGEND:
@@ -1501,6 +1518,9 @@ def group_internal(agents):
     rows.append({
       **lead,
       "key": f"{key[0]}:group:{key[1]}", "id": key[1], "group": len(members),
+      "coverage_incomplete": any(m.get("coverage_incomplete") for m in members),
+      "coverage_reasons": sorted({reason for m in members
+                                  for reason in m.get("coverage_reasons", [])}),
       "parent_id": None, "cwd": dirs.pop() if len(dirs) == 1 else None,
       "last_seen": max(member["last_seen"] for member in members),
       "recent_tokens": sum(member.get("recent_tokens") or 0
@@ -1709,8 +1729,12 @@ def render(agents, cache, quota, now, verbose=False, color=False,
                   if "fold_now" in steps else "."))
   notes.append("15m: uncached tokens, last 15 minutes.")
   if any(a.get('observed_activity') for a in agents):
-    notes.append("State: observed activity, not liveness. Idle = turn ended; "
-                 "waiting = observed wait; unknown = missing or old evidence.")
+    legend = ("; ".join(f"{glyph} {label}" for label, glyph in
+                         OBSERVED_GLYPHS.items()) + "; "
+              if "state_glyphs" in steps else "")
+    notes.append("State: " + legend + "observed activity, not liveness. "
+                 "Idle = turn ended; Stopped = aborted; ? = uncertain; "
+                 "Unknown = no usable observation.")
   elif "state_glyphs" in steps:
     notes.append("State: " + "  ".join(
       # A no-break space keeps each glyph with its meaning when wrapped.

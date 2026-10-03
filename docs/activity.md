@@ -12,10 +12,17 @@ Space folds a parent group; Left/Right move through the tree. Enter opens
 observed activity details, and `?` opens scrollable controls and state help.
 Descendant summaries stay visible when a group is collapsed.
 
-IDLE means an observed turn ended. It does not establish that an agent has
-no work. WAITING represents a recognized outstanding wait; its target or
-condition may be unknown. THINKING and TOOL describe observed reasoning or
-calls, not a heartbeat. Old or incomplete evidence remains UNKNOWN.
+`Working` covers activity, reasoning and tool calls. `Waiting` means a
+foreground wait was observed. `Idle` means a turn ended; `Stopped` means it
+was aborted. Neither proves what the agent's process is doing now.
+`Unknown` means no usable status observation.
+
+Old working/waiting evidence keeps its status with `?` and age, such as
+`Waiting? · 25m ago`. Ended and stopped turns retain their status and age.
+Enter shows the recorded event, timestamp, pending tools, wait timeout and
+reason for uncertainty. The existing total shows `N+ agents` when discovery
+is incomplete; details explain why. No additional header or footer rows
+are needed.
 
 Explicit attention badges are separate reports from an agent. They can
 signal an owner decision, blocker, readiness for more work, or concrete

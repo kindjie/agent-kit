@@ -503,15 +503,17 @@ from current configuration.
 Each row also shows where the agent is, derived from its transcript without
 model calls:
 
-- **State**: `ACTIVE` means a turn is open but its current action is unknown;
-  `THINKING` requires a reasoning event; `TOOL` means an outstanding tool
-  call; `WAITING` requires a recognized outstanding foreground wait.
-  `IDLE` means the turn ended, not proof that the agent awaits new work.
-  `DONE` means a subagent turn ended, and `ABORTED` means a recorded abort.
-  Observations older than 20 minutes, future timestamps and waits past their
-  recorded deadlines become `UNKNOWN`. These are transcript observations,
-  never process-liveness claims. JSON retains its legacy `state` field for
-  compatibility and adds `observation` and `observed_activity`.
+- **State**: `Working` covers an open turn, reasoning or a tool call.
+  `Waiting` means a recognized foreground wait was observed. `Idle` means
+  a parent or subagent turn ended; `Stopped` means it was aborted. These
+  endings retain their age instead of becoming unknown after 20 minutes.
+  `Unknown` means no usable status observation. An old working/waiting
+  observation, or a wait past its deadline without a recorded result, keeps
+  its last status with `?` and age, such as `Waiting? · 25m ago`.
+  These are transcript observations, never process-liveness claims.
+  Details retain the event, timestamp, tool/wait information and uncertainty
+  reason. JSON retains its legacy `state` field; `observed_activity` keeps
+  detailed states and adds `uncertain` and observation `age` in seconds.
 - **Claimed tasks**: when agent-kit's `agent-task` is configured, Work leads
   with the tasks an agent holds (`T-0007 · …`, or `T-0007+2` for three) and
   `--compact` lists them as `tasks`. An agent is matched by the records ID
@@ -551,16 +553,20 @@ and collapse choices follow agent IDs across refreshes. Groups start
 collapsed to show the overview; Space reveals their children. The footer
 reports the on-screen row range, rows exposed by expansion/filtering, and
 total loaded groups and agents. Collapsed rows summarize all observed descendants, distinguishing
-an idle parent with active children from no active subagents observed.
+working, waiting, idle, stopped and unknown agents. Uncertain working or
+waiting counts retain `?` and are separate from recent activity.
 Rows lead with recorded session titles, falling back to the work label.
 Tree connectors stay with the title; IDs, states and descendant summaries
 occupy a separate column when the terminal is wide enough. Codex titles come from its local session index; Claude titles come
 from title events, with custom titles taking precedence. Enter reveals the
 full title; filtering includes titles. No model call generates these titles.
-Explicit waits name known targets; a target ending after the wait began can
-show `RESULT READY`. Unknown targets remain unknown. Fork ancestry alone is
-not a parent/subagent relationship. Missing parents, cycles and truncated
-inventory are marked as incomplete coverage.
+Wait targets and results ready for a parent are explained in details; the
+main row stays `Waiting`. Unknown targets remain unknown. Fork ancestry alone
+is not a parent/subagent relationship. The existing total shows `N+ agents`
+when discovery is incomplete: at least N agents were found. Details explain
+scan/display limits, unreadable evidence, missing parents or cycles. This
+inventory-wide marker does not label every family's counts as incomplete;
+no extra header or footer rows are added.
 
 Wait detection accepts typed agent waits, foreground Claude delegate calls,
 and simple foreground `agent-task watch` or cursor-based `events` commands.
