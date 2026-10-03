@@ -1,0 +1,135 @@
+/* agent-kit / Moss & Muggs: optional section surfaces, not a theme replacement.
+   Merge through extra_css. Asset URLs are relative to THIS stylesheet.
+   Only explicitly marked .ak-section blocks are affected. */
+:root,
+[data-md-color-scheme="default"] {
+  --ak-paper: #f7f4ed;
+  --ak-moss: #edf1e7;
+  --ak-ink: #29332d;
+  --ak-muted: #59665c;
+  --ak-line: #d6dccf;
+  --ak-link: #385944;
+  --ak-link-hover: #78441f;
+  --ak-code-bg: #fffdf8;
+  --ak-code-fg: #29332d;
+  --ak-grain: url("../assets/moss-and-muggs/surfaces/grain-on-light.png");
+  --ak-vine-opacity: .52;
+}
+[data-md-color-scheme="slate"] {
+  --ak-paper: #282b27;
+  --ak-moss: #26322c;
+  --ak-ink: #eeede5;
+  --ak-muted: #bfc7bc;
+  --ak-line: #465247;
+  --ak-link: #cadcb6;
+  --ak-link-hover: #ffd09b;
+  --ak-code-bg: #1c231f;
+  --ak-code-fg: #e4e8df;
+  --ak-grain: url("../assets/moss-and-muggs/surfaces/grain-on-dark.png");
+  --ak-vine-opacity: .70;
+}
+.ak-section {
+  --md-code-bg-color: var(--ak-code-bg);
+  --md-code-fg-color: var(--ak-code-fg);
+  position: relative;
+  isolation: isolate;
+  box-sizing: border-box;
+  min-width: 0;
+  margin-block: 2rem;
+  padding: clamp(1rem, 2.5vw, 1.75rem);
+  color: var(--ak-ink);
+  background-color: var(--ak-paper);
+  background-image: var(--ak-grain);
+  background-repeat: repeat;
+  background-size: 256px 256px; /* 512px native tile, displayed at 2x density. */
+  border: 1px solid var(--ak-line);
+  border-radius: 12px;
+}
+.ak-section--moss { background-color: var(--ak-moss); }
+.ak-section--paper { background-color: var(--ak-paper); }
+.ak-section--plain { background-image: none; }
+.ak-section > :first-child { margin-top: 0; }
+.ak-section > :last-child { margin-bottom: 0; }
+.ak-section :is(h1, h2, h3, h4) { color: var(--ak-ink); }
+.ak-section .ak-caption { color: var(--ak-muted); font-size: .875em; }
+.ak-section a:not(.md-button):not(.headerlink) {
+  color: var(--ak-link);
+  text-decoration: underline;
+  text-underline-offset: .16em;
+}
+.ak-section a:not(.md-button):not(.headerlink):hover { color: var(--ak-link-hover); }
+.ak-section a:focus-visible,
+.ak-section button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+/* Only the background is textured. Commands, inputs and charts stay solid.
+   Existing Material/Pygments token colors and native copy controls are retained. */
+.ak-section :is(pre, .highlight) {
+  background-color: var(--ak-code-bg);
+  background-image: none;
+}
+.ak-section pre { max-width: 100%; overflow-x: auto; }
+.ak-section img { max-width: 100%; height: auto; }
+.ak-prompt pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* One small non-tiling vine, with a reserved empty gutter. No text behind it.
+   44 CSS px is within the native crop's documented resolution limit. */
+.ak-section--botanical {
+  padding-inline-end: calc(clamp(1rem, 2.5vw, 1.75rem) + 3.25rem);
+}
+.ak-section--botanical::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  user-select: none;
+  inset-block: .8rem;
+  inset-inline-end: .5rem;
+  width: 44px;
+  background: url("../assets/moss-and-muggs/surfaces/botanical-edge-right.png")
+              right center / 44px auto no-repeat;
+  opacity: var(--ak-vine-opacity);
+}
+.ak-section--botanical-left {
+  padding-inline-end: clamp(1rem, 2.5vw, 1.75rem);
+  padding-inline-start: calc(clamp(1rem, 2.5vw, 1.75rem) + 3.25rem);
+}
+.ak-section--botanical-left::after {
+  inset-inline-end: auto;
+  inset-inline-start: .5rem;
+  background-image: url("../assets/moss-and-muggs/surfaces/botanical-edge-left.png");
+  background-position: left center;
+}
+/* A compact heading row for an EXISTING hedgehog image. No empty image-only row.
+   This class is optional; the new pack does not duplicate the character files. */
+.ak-prompt-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: .8rem;
+}
+.ak-prompt-heading > :first-child { flex: 1; min-width: 0; }
+.ak-prompt-heading h2, .ak-prompt-heading h3 { margin: 0 0 .4rem; }
+.ak-prompt-heading p { margin: 0; }
+.ak-prompt-heading img { height: 76px; width: auto; flex: 0 0 auto; }
+@media (max-width: 700px) {
+  .ak-section { padding: 1rem; margin-block: 1.5rem; }
+  .ak-section--botanical::after { display: none; }
+  .ak-prompt-heading img { height: 60px; }
+}
+@media (forced-colors: active) {
+  .ak-section { background: Canvas; color: CanvasText; border-color: CanvasText; }
+  .ak-section :is(h1,h2,h3,h4,.ak-caption) { color: CanvasText; }
+  .ak-section::after { display: none; }
+  .ak-section a:not(.md-button):not(.headerlink) { color: LinkText; }
+  .ak-section :is(pre,.highlight) { background: Canvas; color: CanvasText; }
+}
+@media print {
+  .ak-section { background: white; color: black; border-color: #aaa; }
+  .ak-section :is(h1,h2,h3,h4,.ak-caption) { color: black; }
+  .ak-section::after { display: none; }
+  .ak-section a:not(.md-button):not(.headerlink) { color: black; }
+  .ak-section :is(pre,.highlight) { background: white; color: black; }
+}

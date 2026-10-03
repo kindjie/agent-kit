@@ -1,9 +1,15 @@
 # Investigate performance with evidence
 
+<!-- site:wrap -->
+
+<img class="ak-illustration ak-illustration--right ak-illustration--character" src="assets/moss-and-muggs/characters/hedgehog-point-down-right.png" width="80" alt="">
+
 The profiling skill helps your agent choose useful measurements before
 changing code. It covers CPU work, GPU timing, WebAssembly, and parallel
 scaling. You choose the problem and authorize the captures; the agent
 checks available tools and explains what the evidence can establish.
+
+<!-- /site:wrap -->
 
 ```mermaid
 flowchart TD
@@ -15,9 +21,9 @@ flowchart TD
   H --> V["Repeat the workload and verify"]
 ```
 
-## Start with a request
+<!-- site:paper -->
 
-<img src="assets/moss-and-muggs/characters/hedgehog-point-down-right.png" width="87" alt="">
+## Start with a request
 
 ```text
 Use the profiling skill to investigate uneven frame pacing when the
@@ -27,6 +33,8 @@ Do not propose an optimization from source inspection alone.
 ```
 
 *An illustrative request, not a transcript or measured performance result.*
+
+<!-- /site:paper -->
 
 Install only this skill if that is all you need: use the
 [setup prompt](../README.md#quick-start) and choose profiling alone.

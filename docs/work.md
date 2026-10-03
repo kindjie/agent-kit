@@ -23,12 +23,16 @@ recorded dependency; a running or in-review task is still outstanding.*
 
 ## Keep owner decisions separate
 
+<!-- site:wrap -->
+
+<img class="ak-illustration ak-illustration--right ak-illustration--character" src="assets/moss-and-muggs/characters/hedgehog-point-down-right.png" width="80" alt="">
+
 The agents' queue is `agent-task`. Your personal list can use
 [taskglance](https://github.com/kindjie/taskglance) for work needing you.
 A task lease expiring does not establish that work stopped, and an estimate
 is not an ETA. Ask the responsible agent when the records need clarification.
 
-<img src="assets/moss-and-muggs/characters/hedgehog-point-down-right.png" width="80" alt="">
+<!-- /site:wrap -->
 
 ```text
 Help our agents coordinate this project. Inspect existing task records

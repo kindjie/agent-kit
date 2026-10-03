@@ -55,13 +55,17 @@ flowchart TD
   D --> U
 ```
 
-<img class="guide-float" src="docs/assets/moss-and-muggs/scenes/tea-cottage.png" width="180" alt="">
+<!-- site:wrap -->
+
+<img class="ak-illustration ak-illustration--right ak-illustration--cottage" src="docs/assets/moss-and-muggs/scenes/tea-cottage.png" width="180" alt="">
 
 You choose integrations, control account switching, and resolve decisions.
 Agents manage their queue and report progress, evidence, and attention needs.
 The dashboard gives you a place to see what is happening.
 
 *The cottage belongs to the fictional demo world, not a separate product.*
+
+<!-- /site:wrap -->
 
 <p align="center">
   <img src="docs/assets/moss-and-muggs/decor/leaf-divider.png"
@@ -72,6 +76,8 @@ The dashboard gives you a place to see what is happening.
 
 You can start with just a skill, a quota check, or the dashboard. Shared task
 records and global agent rules are optional.
+
+<!-- site:paper -->
 
 ### Let your agent help with setup
 
@@ -95,6 +101,8 @@ Keep model summaries off. Do not add global rules or hooks, or create
 shared task stores, unless I choose those integrations.
 Verify the setup and show me one command or prompt to get started.
 ```
+
+<!-- /site:paper -->
 
 ### Try it yourself
 
@@ -154,11 +162,17 @@ prefer manual configuration.
 
 ## Investigate performance with evidence
 
+<!-- site:wrap -->
+
+<img class="ak-illustration ak-illustration--right ak-illustration--character" src="docs/assets/moss-and-muggs/characters/hedgehog-point-down-right.png" width="80" alt="">
+
 The [profiling skill](skills/profiling/SKILL.md) helps your coding agent decide
 what to measure before changing code. It connects symptoms to useful signals,
 guides capture with platform tools, and separates what measurements show from
 what still needs testing. Use it on its own; agent quota and task records are
 separate tools.
+
+<!-- /site:wrap -->
 
 | Investigating | What the guidance covers |
 | --- | --- |
@@ -177,8 +191,6 @@ flowchart LR
   S[Symptom] --> W[Reproducible workload] --> C[Capture evidence]
   C --> I[Interpret] --> V[Change and verify]
 ```
-
-<img src="docs/assets/moss-and-muggs/characters/hedgehog-point-down-right.png" width="87" alt="">
 
 Example requests, illustrating how to start an investigation:
 
@@ -226,6 +238,10 @@ keeping observation freshness visible.
 ```
 
 ![Parent session waiting on active helpers](docs/assets/agent-activity.png)
+
+*Enter shows associated task IDs, titles, statuses and owner/helper roles,
+followed by Activity, Session and Evidence. Scroll the details with `[`/`]`.
+Matches rely on recorded identities; no match is not proof of no work.*
 
 *Expand a group to distinguish the parent's wait from its helpers' activity.
 Synthetic demo data; observed idle is not proof of an empty work queue.*

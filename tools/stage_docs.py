@@ -65,6 +65,12 @@ def stage(root, destination):
           return match[0]
         return match[1] + '../' + url + match[3]
       text = re.sub(r'(src=["\'])([^"\']+)(["\'])', html_image, text)
+    layouts = {'wrap': 'ak-wrap', 'paper': 'ak-section ak-section--paper',
+               'moss': 'ak-section ak-section--moss'}
+    for name, classes in layouts.items():
+      text = text.replace('<!-- site:' + name + ' -->',
+        '<div class="' + classes + '" markdown="1">')
+      text = text.replace('<!-- /site:' + name + ' -->', '</div>')
     target.write_text(text, encoding='utf-8')
 
 

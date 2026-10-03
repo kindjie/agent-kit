@@ -5,7 +5,9 @@ check; shared records and global instructions can wait.
 
 ## Working from a desktop app?
 
-<img class="guide-float" src="assets/moss-and-muggs/characters/hedgehog-hold-cup.png" width="76" alt="">
+<!-- site:wrap -->
+
+<img class="ak-illustration ak-illustration--right ak-illustration--character" src="assets/moss-and-muggs/characters/hedgehog-hold-cup.png" width="76" alt="">
 
 Paste the setup prompt from the [introduction](../README.md#quick-start)
 into your coding agent. An app with local file and command access can help
@@ -16,6 +18,8 @@ signed in; the setup agent should check.
 
 You choose the integrations. The agent should preserve your settings,
 explain conflicts, and verify only the pieces you choose.
+
+<!-- /site:wrap -->
 
 ```mermaid
 flowchart TD

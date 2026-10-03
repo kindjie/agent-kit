@@ -48,6 +48,8 @@ markdown_extensions:
           format: !!python/name:pymdownx.superfences.fence_code_format
 extra_css:
   - docs/stylesheets/site.css
+  - docs/stylesheets/moss-surfaces.css
+  - docs/stylesheets/moss-illustrations.css
 nav:
   - Home: index.md
   - Start Here:

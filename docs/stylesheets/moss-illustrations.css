@@ -1,0 +1,68 @@
+/* agent-kit / Moss & Muggs — site-only prose wrapping (v2).
+   Load AFTER moss-surfaces.css and the site's base styles.
+   Opt in per passage: .ak-wrap + .ak-illustration. No global img floats.
+   The grouped passage is the float boundary; the container query uses its
+   actual text-column width, not the width of the browser incl. sidebars. */
+.md-typeset .ak-wrap {
+  display: flow-root;
+  container-name: ak-copy;
+  container-type: inline-size;
+  min-width: 0;
+}
+.md-typeset .ak-wrap > :first-child { margin-top: 0; }
+.md-typeset .ak-wrap > :last-child { margin-bottom: 0; }
+
+/* Stacked is the safe base for narrow columns and older browsers.
+   Width is capped, so a small source never grows to fill a mobile screen. */
+.md-typeset .ak-wrap img.ak-illustration {
+  display: block;
+  float: none;
+  width: min(var(--ak-illustration-width, 80px), 100%);
+  max-width: 100%;
+  height: auto;
+  margin: .2rem 0 .75rem;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.md-typeset .ak-wrap img.ak-illustration--cottage { --ak-illustration-width: 180px; }
+.md-typeset .ak-wrap img.ak-illustration--character { --ak-illustration-width: 80px; }
+.md-typeset .ak-wrap img.ak-illustration--tea { --ak-illustration-width: 56px; }
+
+/* Real inline text wrapping, including full-width lines below the image.
+   A flex/grid column beside the image is not equivalent. The 560px threshold
+   is a starting point, chosen to leave readable text beside the cottage. */
+@container ak-copy (min-width: 560px) {
+  .md-typeset .ak-wrap img.ak-illustration--right,
+  .md-typeset .ak-wrap img.ak-illustration[align="right"] {
+    float: right;
+    margin: .2rem 0 .75rem 1.25rem;
+  }
+  .md-typeset .ak-wrap img.ak-illustration--left,
+  .md-typeset .ak-wrap img.ak-illustration[align="left"] {
+    float: left;
+    margin: .2rem 1.25rem .75rem 0;
+  }
+}
+
+/* Full-width content and subsequent headings must not squeeze beside art.
+   Prefer putting these AFTER the local .ak-wrap; this is a safety net.
+   .ak-clear is available for existing custom screenshot/diagram wrappers. */
+.md-typeset .ak-wrap > :is(h2,h3,h4,h5,h6,pre,table,figure,
+  .highlight,.highlighttable,.md-typeset__scrollwrap,.mermaid,
+  .tabbed-set,.admonition,details,.ak-clear) {
+  clear: both;
+}
+.md-typeset .ak-clear { clear: both; }
+
+/* Do not use this with a semantic image: hiding it is only for decoration.
+   Default mobile behavior is stacking, not hiding. */
+@container ak-copy (max-width: 559.98px) {
+  .md-typeset .ak-wrap img.ak-illustration--omit-on-narrow { display: none; }
+}
+@media print {
+  .md-typeset .ak-wrap img.ak-illustration {
+    float: none;
+    margin: 0 0 .75rem;
+  }
+}

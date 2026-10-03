@@ -72,3 +72,25 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Quiet surfaces and illustration placement
+
+The supplied v2 surface add-on contributes eight PNGs and two opt-in
+stylesheets. Its manifest is retained beside the assets. Grain overlays
+are periodic, theme-specific 512px tiles displayed at 256px; botanical
+edges are non-repeating ornaments, not wallpaper. No font is included.
+
+Hidden `site:paper`, `site:moss` and `site:wrap` comment pairs become
+Markdown-enabled containers during staging. GitHub keeps ordinary Markdown
+without site panels. Use surfaces sparingly. Wrap only prose with an
+explicit illustration class; the local flow-root contains the float, and
+a 560px content-width query stacks it when sidebars reduce usable space.
+Keep commands, tables, diagrams and screenshots outside the wrap. The
+closing laptop artwork remains standalone. Print and forced-color modes
+remove textured backgrounds.
+
+Placement audit: homepage setup/profiling prose, demo cottage, first-steps
+character, terminal introduction, quota introduction, work decisions and
+activity controls use contained wrapping. Request blocks stay full-width;
+the image-only pointer rows before them were removed. Section surfaces
+highlight setup/request blocks; reference prose stays plain.

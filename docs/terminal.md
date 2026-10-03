@@ -1,15 +1,19 @@
 # A comfortable terminal, if you want one
 
-<img class="guide-float" src="assets/moss-and-muggs/scenes/hedgehog-laptop.png" width="280"
+<!-- site:wrap -->
+
+<img class="ak-illustration ak-illustration--right ak-illustration--laptop" src="assets/moss-and-muggs/scenes/hedgehog-laptop.png" width="280"
   alt="A hedgehog using a laptop displaying the agent-kit toolbox, with tea beside it.">
 
 Your existing terminal is usually enough. Agent-kit does not require a
 particular theme, font, or terminal application. The dashboard uses tmux;
 individual skills need no terminal dashboard at all.
 
-## Ask for help
+<!-- /site:wrap -->
 
-<img src="assets/moss-and-muggs/characters/hedgehog-point-down-right.png" width="88" alt="">
+<!-- site:paper -->
+
+## Ask for help
 
 ```text
 Help me use a terminal for agent-kit. First check what I already have.
@@ -19,6 +23,8 @@ explain the options, including Kitty where supported, and ask before
 installing software or changing fonts, settings, or keybindings.
 Preserve my existing configuration and verify the change I choose.
 ```
+
+<!-- /site:paper -->
 
 A terminal is the window where commands run. A shell interprets those
 commands. tmux arranges several terminal views in one window. You can

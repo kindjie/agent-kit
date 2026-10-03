@@ -68,6 +68,28 @@ class DemoTest(unittest.TestCase):
     self.assertIn('synthetic', data['tasks']['T-0004']['body'].lower())
     self.assertEqual(data['tasks']['T-0001']['fields']['helpers'], 'demo-timer,demo-recipes')
 
+  def test_agent_task_associations_use_production_identity_and_roles(self):
+    import sys
+    sys.path.insert(0, str(ROOT / 'bin'))
+    import agent_quota_agents as agents
+    from unittest.mock import patch
+    import json
+    from types import SimpleNamespace
+    data = self.demo.fixture()
+    reply = SimpleNamespace(returncode=0, stdout=json.dumps({
+      'tasks': [row['fields'] for row in data['tasks'].values()]}))
+    with patch.object(agents.shutil, 'which', return_value='demo-agent-task'), \
+         patch.object(agents.subprocess, 'run', return_value=reply):
+      claims = agents.claimed_tasks()
+    rows = self.demo.associated_agents(data['agents'], claims)
+    parent = next(a for a in rows if a['id'] == 'demo-brewing')
+    helper = next(a for a in rows if a['id'] == 'demo-timer')
+    self.assertEqual(parent['tasks'][0]['id'], 'T-0001')
+    self.assertEqual(parent['tasks'][0]['role'], 'owner')
+    self.assertEqual(helper['tasks'][0]['role'], 'helper')
+    self.assertEqual(helper['tasks'][0]['records_id'], 'demo-timer')
+    self.assertNotIn('records_ids', data['agents'][0])
+
   def test_production_dependency_and_quota_renderers(self):
     import sys
     sys.path.insert(0, str(ROOT / 'bin'))

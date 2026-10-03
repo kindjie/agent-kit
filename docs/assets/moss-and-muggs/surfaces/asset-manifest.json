@@ -1,0 +1,162 @@
+{
+  "palette_base_colors": {
+    "paper-light": "#F7F4ED",
+    "moss-light": "#EDF1E7",
+    "paper-dark": "#282B27",
+    "moss-dark": "#26322C"
+  },
+  "assets": [
+    {
+      "path": "docs/assets/moss-and-muggs/surfaces/botanical-edge-left.png",
+      "size_px": [
+        103,
+        244
+      ],
+      "mode": "RGBA",
+      "bytes": 29407,
+      "sha256": "315c641c6cf15f960da13d986bbc6746389d665bed0659a04296336fbe747a39",
+      "role": "single decorative edge, DO NOT REPEAT",
+      "suggested_css_width_px": 44,
+      "maximum_recommended_css_width_px": 48,
+      "mirrored_from": "botanical-edge-right.png",
+      "source": "native-resolution painted crop with transparent padding and inward alpha fade",
+      "has_alpha": true
+    },
+    {
+      "path": "docs/assets/moss-and-muggs/surfaces/botanical-edge-right.png",
+      "size_px": [
+        103,
+        244
+      ],
+      "mode": "RGBA",
+      "bytes": 29333,
+      "sha256": "aa8355ee61e0ce253fe4232f8c16bef21c0a66440d147fe32d98d8a4bbf359ea",
+      "role": "single decorative edge, DO NOT REPEAT",
+      "suggested_css_width_px": 44,
+      "maximum_recommended_css_width_px": 48,
+      "mirrored_from": null,
+      "source": "native-resolution painted crop with transparent padding and inward alpha fade",
+      "has_alpha": true
+    },
+    {
+      "path": "docs/assets/moss-and-muggs/surfaces/grain-on-dark.png",
+      "size_px": [
+        512,
+        512
+      ],
+      "mode": "P",
+      "bytes": 103026,
+      "sha256": "870ea234253aa5b711a035397f283139ea21005edae82a2e7f17787c7908ba1c",
+      "role": "seamless repeating background",
+      "suggested_css_tile_size_px": [
+        256,
+        256
+      ],
+      "opposite_edges_identical": true,
+      "source": "512px periodic spectral reconstruction from the generated native paper sample; theme variants share the same grain",
+      "has_alpha": true
+    },
+    {
+      "path": "docs/assets/moss-and-muggs/surfaces/grain-on-light.png",
+      "size_px": [
+        512,
+        512
+      ],
+      "mode": "P",
+      "bytes": 121940,
+      "sha256": "a18179c2916585715aa6845c1ab5400e37068da2d18ad99a565a64528b473635",
+      "role": "seamless repeating background",
+      "suggested_css_tile_size_px": [
+        256,
+        256
+      ],
+      "opposite_edges_identical": true,
+      "source": "512px periodic spectral reconstruction from the generated native paper sample; theme variants share the same grain",
+      "has_alpha": true
+    },
+    {
+      "path": "docs/assets/moss-and-muggs/surfaces/moss-dark.png",
+      "size_px": [
+        512,
+        512
+      ],
+      "mode": "P",
+      "bytes": 103006,
+      "sha256": "b138d6453a9a079633c10e466b1caa4343e6273ba00f4b13693407cd2f58a046",
+      "role": "seamless repeating background",
+      "suggested_css_tile_size_px": [
+        256,
+        256
+      ],
+      "opposite_edges_identical": true,
+      "source": "512px periodic spectral reconstruction from the generated native paper sample; theme variants share the same grain",
+      "has_alpha": false
+    },
+    {
+      "path": "docs/assets/moss-and-muggs/surfaces/moss-light.png",
+      "size_px": [
+        512,
+        512
+      ],
+      "mode": "P",
+      "bytes": 121970,
+      "sha256": "867cd2862a837247ac83d026d8f7c17d3376de899b44c0d64d18776e45b6814d",
+      "role": "seamless repeating background",
+      "suggested_css_tile_size_px": [
+        256,
+        256
+      ],
+      "opposite_edges_identical": true,
+      "source": "512px periodic spectral reconstruction from the generated native paper sample; theme variants share the same grain",
+      "has_alpha": false
+    },
+    {
+      "path": "docs/assets/moss-and-muggs/surfaces/paper-dark.png",
+      "size_px": [
+        512,
+        512
+      ],
+      "mode": "P",
+      "bytes": 103006,
+      "sha256": "ded23256ea0eb2697fc95818f77cc313cb0b154781c068e61cf5af8a8de7254b",
+      "role": "seamless repeating background",
+      "suggested_css_tile_size_px": [
+        256,
+        256
+      ],
+      "opposite_edges_identical": true,
+      "source": "512px periodic spectral reconstruction from the generated native paper sample; theme variants share the same grain",
+      "has_alpha": false
+    },
+    {
+      "path": "docs/assets/moss-and-muggs/surfaces/paper-light.png",
+      "size_px": [
+        512,
+        512
+      ],
+      "mode": "P",
+      "bytes": 121970,
+      "sha256": "f933bfced06c7ad8edeb4fcfe099ca170516cc8db91dba6b662535e54b42b424",
+      "role": "seamless repeating background",
+      "suggested_css_tile_size_px": [
+        256,
+        256
+      ],
+      "opposite_edges_identical": true,
+      "source": "512px periodic spectral reconstruction from the generated native paper sample; theme variants share the same grain",
+      "has_alpha": false
+    }
+  ],
+  "package_revision": "v2 \u2014 explicit split assets and site-only prose wrapping",
+  "production_image_change": "none; all eight PNG hashes match v1",
+  "stylesheets": [
+    {
+      "path": "docs/stylesheets/moss-illustrations.css",
+      "sha256": "82fd3a802a2193fbef8ff875f693d48d4fbfb0b1a4634d8e7e42b9b79ffdbcaa"
+    },
+    {
+      "path": "docs/stylesheets/moss-surfaces.css",
+      "sha256": "cfa13bb57fe356f0e0b6e87ed9ba298395e7d33653303f297f8ea3dde61e5fcb"
+    }
+  ]
+}

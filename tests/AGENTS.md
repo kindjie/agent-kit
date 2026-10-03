@@ -480,6 +480,9 @@ python3 tools/check_mermaid.py
 ```
 
 The diagram check covers the staged homepage and all published references.
+Demo regressions also verify production task joins and owner/helper roles
+using fictional records identities. Staging checks keep site-only surface
+containers out of the portable Markdown source.
 Demo regressions check both current and archived accounts through the actual
 quota timeline schema. Visually inspect light/dark and narrow layouts; build
 success alone does not prove readable diagrams, screenshots or colours.

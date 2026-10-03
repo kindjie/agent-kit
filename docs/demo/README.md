@@ -1,14 +1,18 @@
 # Try the Moss & Muggs demo
 
-<img class="guide-float" src="../assets/moss-and-muggs/scenes/tea-cottage.png" width="180" alt="">
+<!-- site:wrap -->
+
+<img class="ak-illustration ak-illustration--right ak-illustration--cottage" src="../assets/moss-and-muggs/scenes/tea-cottage.png" width="180" alt="">
 
 Explore the dashboard through a fictional woodland tea-shop game. You can
 see how a parent agent works with helpers, inspect shared tasks, and read a
 quota timeline without loading your own projects or accounts.
 
-## Ask your agent to help
+<!-- /site:wrap -->
 
-<img src="../assets/moss-and-muggs/characters/hedgehog-point-down-right.png" width="88" alt="">
+<!-- site:paper -->
+
+## Ask your agent to help
 
 ```text
 Help me try agent-kit's Moss & Muggs demo. Read docs/demo/README.md and
@@ -19,10 +23,13 @@ open an interactive terminal. Explain the three views and how to exit.
 Do not query providers or enable model summaries.
 ```
 
+<!-- /site:paper -->
+
 ## What to look for
 
 - **Agents:** a brewing parent waiting on two active helpers, alongside
-  other work. Expand or fold the group to see the relationship.
+  other work. Expand or fold the group to see the relationship. Enter
+  shows its associated task, owner/helper role, activity and evidence.
 - **Agent Tasks:** dependencies, completed work and an overnight-save task
   with its review still outstanding. Open details to inspect the evidence.
 - **Timeline:** an upcoming quota reset and projected run-out. These are
@@ -114,6 +121,7 @@ checks run with:
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_readme_demo
 ```
 
-Capture baseline: `e8b71ce` plus the README refresh working changes, including
-its portable launcher. The final delivery commit records the complete source.
+Capture baseline: reviewed tool details `91667fe`, integrated as `431de70`,
+plus sorting `63be28a` and the current fixture adapter. The delivery commit
+records the final source and captures.
 No font files, cache directories, or failed captures are included.

@@ -127,6 +127,17 @@ def materialize_records(stage):
     raise RuntimeError('Invalid demo records: ' + '; '.join(errors))
 
 
+def associated_agents(rows, claims):
+  """Use production task joins with authored, explicitly observed fixture IDs."""
+  import agent_quota_agents as agents
+  result = copy.deepcopy(rows)
+  for agent in result:
+    agent['records_ids'] = [agent['id']]
+    agents.associate_tasks(agent, claims or {},
+      'Task lookup unavailable' if claims is None else '')
+  return result
+
+
 def pane(kind, argv):
   quota = quota_module()
   if kind == 'agent-quota':
@@ -143,7 +154,7 @@ def pane(kind, argv):
       print('Synthetic adapter: list --live | list --json')
       return
     if '--json' in argv:
-      print(json.dumps(data['tasks']))
+      print(json.dumps({'tasks': [r['fields'] for r in data['tasks'].values()]}))
       return
     if argv != ['list', '--live']:
       raise SystemExit('Demo permits only agent-task list --live')
@@ -158,7 +169,9 @@ def pane(kind, argv):
     # Override this module's wall clock only; leave scheduling/host clock alone.
     activity.time = SimpleNamespace(time=lambda: moment.timestamp())
     args = SimpleNamespace(interval=2, color_on=True, verbose=False, notify=False)
-    frame = {'agents': data['agents'], 'cache': {'sessions': {}}, 'command': None}
+    import agent_quota_agents as agent_data
+    rows = associated_agents(data['agents'], agent_data.claimed_tasks())
+    frame = {'agents': rows, 'cache': {'sessions': {}}, 'command': None}
     activity.run_agent_live(args, stage / 'cache/quota.json', quota,
       loader=lambda: (copy.deepcopy(frame), copy.deepcopy(document)))
   elif '--timeline' in argv:
@@ -295,6 +308,7 @@ def capture(run, output):
   time.sleep(.2)
   expanded = save('agent-activity', agents)
   assert 'Implement steeping timer' in expanded
+  assert 'Tasks' in expanded and 'T-0001' in expanded and 'owner' in expanded
   print('Captured real isolated dashboard panes in ' + str(output))
 
 

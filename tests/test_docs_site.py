@@ -36,6 +36,22 @@ class SiteTest(unittest.TestCase):
       self.assertIn('../index.md', text)
       self.assertIn('https://github.com/kindjie/agent-kit/blob/main/bin/tool', text)
 
+  def test_site_surfaces_preserve_portable_markdown_source(self):
+    staging = module('stage_docs')
+    with tempfile.TemporaryDirectory() as temporary:
+      root = Path(temporary) / 'repo'
+      root.mkdir()
+      original = ('<!-- site:paper -->\n\n## Setup\n\n'
+                  'Readable prose.\n\n<!-- /site:paper -->\n')
+      (root / 'README.md').write_text(original)
+      out = Path(temporary) / 'stage'
+      staging.stage(root, out)
+      text = (out / 'index.md').read_text()
+      self.assertIn('<div class="ak-section ak-section--paper" markdown="1">', text)
+      self.assertIn('## Setup', text)
+      self.assertIn('</div>', text)
+      self.assertEqual((root / 'README.md').read_text(), original)
+
   def test_checker_rejects_missing_file_anchor_and_escape(self):
     checker = module('check_docs_links')
     with tempfile.TemporaryDirectory() as temporary:

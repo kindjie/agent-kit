@@ -1,6 +1,6 @@
 # Reading agent activity
 
-[Back to the introduction](../README.md#follow-activity-and-quota).
+[Back to the introduction](../README.md#follow-agents).
 
 Agent-kit works best when the agents run on one machine. This view reads
 local activity; agents and delegated work on other machines may be absent
@@ -12,11 +12,22 @@ or stale. Treat it as an incomplete overview of a multi-machine setup.
 *Follow parent sessions and delegated agents, with observation details and
 freshness information. Synthetic Moss & Muggs demo data.*
 
-<img src="assets/moss-and-muggs/characters/hedgehog-look-down.png" width="73" alt="">
+<!-- site:wrap -->
+
+<img class="ak-illustration ak-illustration--right ak-illustration--character" src="assets/moss-and-muggs/characters/hedgehog-look-down.png" width="73" alt="">
 
 Space folds a parent group; Left/Right move through the tree. Enter opens
 observed activity details, and `?` opens scrollable controls and state help.
 Descendant summaries stay visible when a group is collapsed.
+
+<!-- /site:wrap -->
+
+Details start with **Tasks**: matching IDs, titles, status and owner/helper
+roles. **Activity**, **Session** and **Evidence** follow. Use `[`/`]` to
+scroll. Task matches use observed records identities and current claims;
+unsupported commands, missing identities or unavailable records can leave
+the list empty. This is association evidence, not a watch count or proof
+that an agent has no work.
 
 `Working` covers activity, reasoning and tool calls. `Waiting` means a
 foreground wait was observed. `Idle` means a turn ended; `Stopped` means it
