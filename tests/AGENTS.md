@@ -1,5 +1,20 @@
 # Focused Tests
 
+## Read-only installation doctor
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_doctor
+```
+
+Fixtures exercise selected/missing commands, symlink resolution and invocation
+companions, transitive local imports, executable permissions, syntax errors,
+configuration types, existing read locks and contention, recovery journals,
+linked-checkout refusal, skill links/references and scoped review prompts.
+An audit hook rejects subprocesses, network activity and filesystem writes;
+checked tools contain execution sentinels. All inputs are temporary fictional
+files. Neither records doctors nor live installs/providers/models run.
+Also run `tests.test_agent_records_privacy` for public additions.
+
 ## Portable dashboard and README demo
 
 ```sh
