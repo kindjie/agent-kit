@@ -379,12 +379,12 @@ with core.locks([tasks, changes], [tasks, changes], 1, 'agent-a', 'cross'):
     self.run_cmd("agent-task", "--agent", "agent-a", "new",
                  "--title", "Lock")
     script = """
-import fcntl, json, sys, time
+import fcntl, json, os, sys, time
 with open(sys.argv[1], 'r+b') as stream:
   fcntl.flock(stream, fcntl.LOCK_EX)
   stream.seek(0)
   stream.truncate()
-  stream.write(json.dumps({'pid': 123, 'agent': 'holder',
+  stream.write(json.dumps({'pid': os.getpid(), 'agent': 'holder',
     'operation': 'test', 'started': '2026-01-01 00:00:00 +0000'}).encode())
   stream.flush()
   print('READY', flush=True)
@@ -398,8 +398,8 @@ with open(sys.argv[1], 'r+b') as stream:
       [sys.executable, str(BIN / "agent-task"), "--wait", "0.1", "list"],
       env=self.env, cwd=self.base, capture_output=True, text=True)
     self.assertEqual(result.returncode, 1, result.stderr)
-    self.assertRegex(result.stderr,
-                     r"lock held by 123 holder test for \d+s; retry")
+    self.assertRegex(result.stderr, "lock held by " + str(process.pid) +
+                     r" holder test for \d+s; retry")
     process.kill()
     process.wait(timeout=2)
     process.stdout.close()
@@ -411,3 +411,42 @@ with open(sys.argv[1], 'r+b') as stream:
       self.assertIn("UNVERIFIED", output)
     finally:
       lock.chmod(0o600)
+
+  def test_shared_reader_wait_reports_last_writer(self):
+    self.init()
+    lock = self.tasks / ".records.lock"
+    writer = """
+import fcntl, json, os, sys
+with open(sys.argv[1], 'r+b') as stream:
+  fcntl.flock(stream, fcntl.LOCK_EX)
+  stream.seek(0)
+  stream.truncate()
+  stream.write(json.dumps({'pid': os.getpid(), 'agent': 'old-writer',
+    'operation': 'write', 'started': '2026-01-01 00:00:00 +0000'}).encode())
+  stream.flush()
+"""
+    subprocess.run([sys.executable, "-c", writer, str(lock)],
+                   env=self.env, check=True)
+    reader = """
+import fcntl, sys, time
+with open(sys.argv[1], 'rb') as stream:
+  fcntl.flock(stream, fcntl.LOCK_SH)
+  print('READY', flush=True)
+  time.sleep(60)
+"""
+    process = subprocess.Popen(
+      [sys.executable, "-c", reader, str(lock)], env=self.env,
+      stdout=subprocess.PIPE, text=True)
+    try:
+      self.assertEqual(process.stdout.readline().strip(), "READY")
+      result = subprocess.run(
+        [sys.executable, str(BIN / "agent-task"), "--wait", "0.1",
+         "--agent", "agent-a", "new", "--title", "Blocked"],
+        env=self.env, cwd=self.base, capture_output=True, text=True)
+      self.assertEqual(result.returncode, 1, result.stderr)
+      self.assertIn("last writer", result.stderr)
+      self.assertIn("old-writer write", result.stderr)
+    finally:
+      process.kill()
+      process.wait(timeout=2)
+      process.stdout.close()

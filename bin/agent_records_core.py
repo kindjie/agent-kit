@@ -498,15 +498,25 @@ def locks(roots, writes=(), wait=LOCK_WAIT, agent="reader", operation="read",
             os.lseek(fd, 0, os.SEEK_SET)
             holder = os.read(fd, 4096).decode(errors="replace").strip()
             os.close(fd)
+            message = "lock held by "
             try:
               info = json.loads(holder)
               held_for = int((now() - parse_time(
                 info["started"])).total_seconds())
-              holder = (str(info["pid"]) + " " + info["agent"] + " " +
+              pid = int(info["pid"])
+              if pid <= 0:
+                raise ValueError("invalid lock pid")
+              holder = (str(pid) + " " + info["agent"] + " " +
                         info["operation"] + " for " + str(held_for) + "s")
+              try:
+                os.kill(pid, 0)
+              except ProcessLookupError:
+                message = "lock held; last writer "
+              except PermissionError:
+                pass
             except (ValueError, KeyError, TypeError, RecordsError):
               holder = holder or "another reader or writer"
-            raise RecordsError("lock held by " + holder + "; retry", 1)
+            raise RecordsError(message + holder + "; retry", 1)
           time.sleep(min(0.05, deadline - time.monotonic()))
       if root in writes:
         os.ftruncate(fd, 0)

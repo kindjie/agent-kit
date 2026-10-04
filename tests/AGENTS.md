@@ -481,7 +481,9 @@ locks, staged deletions, journals, and cross-repository races. The privacy
 suite scans tracked and new files;
 `AGENT_RECORDS_PRIVACY_DENYLIST` can name a private newline-delimited list
 of additional strings. Keep lock and timeout fixtures short so the full
-suite stays fast.
+suite stays fast. Lock wait coverage distinguishes a live exclusive writer
+from a finished writer whose metadata remains while a shared reader holds
+the lock.
 
 For a faster records-only run, the optional standard-library runner executes
 independent test classes in parallel. Its worker count defaults to

@@ -369,3 +369,5 @@ Mutations retain automatic recovery before applying their own transaction.
 A live writer may still hold a lock: readers wait up to `--wait` rather than
 inspect its in-flight transaction. Do not delete its lock or launch competing
 recovery operations. `doctor` and explicit recovery are mutating operations.
+If a wait reports `last writer`, that process has exited; a shared reader may
+still hold the lock.
