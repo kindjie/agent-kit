@@ -17,6 +17,7 @@
 | `agent-speak.sh` | Spoken attention notification, with mute control |
 | `agent-attention` | Explicit tmux attention badges and prompt reset hook |
 | `md-preview` | Local GitHub-style Markdown preview served on loopback |
+| [`steamos`](../bin/steamos.md) | Shares a Steam Deck or Steam Machine through a device lease and reports its status |
 | `agent-id` | Derives or mints agent IDs and manages repository keys |
 | `agent-task` | Creates, claims, hands off and closes task records |
 | `agent-resource` | Serializes cooperating foreground jobs with scoped resource locks |

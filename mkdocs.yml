@@ -71,6 +71,7 @@ nav:
       - Coordination: docs/coordination.md
       - Quota command: bin/agent-quota.md
       - Installation diagnostics: bin/agent-doctor.md
+      - SteamOS devices: bin/steamos.md
       - Site maintenance: docs/site-tooling.md
 exclude_docs: |
   /docs/assets/brand/README.md

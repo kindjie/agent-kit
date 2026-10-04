@@ -22,7 +22,7 @@ COMMANDS = (
   'agent-task', 'agent-changelog', 'agent-records-hook', 'agent-kit-rules',
   'agent-speak.sh', 'agent-attention', 'agent-resource', 'agent-efficiency',
   'agent-scheduler', 'agent-release-check', 'claude-ctx.sh',
-  'claude-status.sh', 'md-preview',
+  'claude-status.sh', 'md-preview', 'steamos',
 )
 # These shell wrappers use the invocation directory, rather than realpath.
 INVOCATION_COMPANIONS = {

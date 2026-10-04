@@ -1,0 +1,525 @@
+#!/usr/bin/env python3
+"""Share and inspect SteamOS devices (Steam Deck, Steam Machine) over ssh.
+
+Device facts come from the device itself over one ssh call per command.
+Configuration lives in $XDG_CONFIG_HOME/agent-kit/steamos.json; see
+steamos.md beside this file.
+"""
+import argparse
+import getpass
+import json
+import os
+import re
+from pathlib import Path
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+import time
+
+OK, REFUSED, USAGE, UNREACHABLE = 0, 1, 2, 3
+DEFAULT_KEY = Path('~/.config/steamos-devkit/devkit_rsa')
+SAFE_PATH = re.compile(r'[A-Za-z0-9._-][A-Za-z0-9._/-]*')
+
+# Every device script starts by printing this line, so a dropped
+# connection after the script began is not mistaken for one that never
+# connected (and the command is not retried at another address).
+PREAMBLE = 'echo connected=1\n'
+
+# Runs on the device with HOME as its root. POSIX sh using only `date +%s`
+# and `find -mmin`, so it behaves the same on SteamOS and on the test host.
+# Prints key=value lines; exit 0 on success, 1 when refused.
+#
+# Every change to the lease happens while holding a mutex directory, so
+# take, renew, release, reclaim and break never interleave. The mutex
+# holds an owner token: a stale one (older than two minutes) is renamed
+# aside and removed only if it is still the one judged stale. Functions
+# return explicit statuses because `set -e` does not apply inside `if`.
+LEASE_SCRIPT = r'''
+set -eu
+action=$1 holder=$2 purpose=$3 seconds=$4 grace=$5 reason=$6
+shift 6
+legacy_paths=$*
+lock=$HOME/.agent-kit-steamos-lease
+info=$lock/info
+mutex=$lock.mutex
+log=$HOME/.agent-kit-steamos-lease.log
+now=$(date +%s)
+token=$$.$now
+fresh='' owned=''
+cleanup() {
+  if [ -n "$fresh" ]; then rm -rf -- "$lock"; fi
+  if [ -n "$owned" ] && [ "$(cat "$mutex/owner" 2>/dev/null)" = "$token" ]
+  then rm -rf -- "$mutex"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+field() { sed -n "s/^$1=//p" "$info" 2>/dev/null | head -n 1; }
+# state: free, broken (a lock without info: being taken, or left behind),
+# active, expired (within grace) or reclaimable.
+state() {
+  if [ ! -d "$lock" ]; then echo free
+  elif [ ! -f "$info" ]; then
+    if [ -n "$(find "$lock" -maxdepth 0 -mmin +"$grace" 2>/dev/null)" ]; then
+      echo reclaimable
+    else
+      echo broken
+    fi
+  else
+    expires=$(field expires)
+    case $expires in
+      ''|*[!0-9]*) echo broken; return ;;
+    esac
+    if [ "$now" -lt "$expires" ]; then echo active
+    elif [ "$now" -lt $((expires + grace * 60)) ]; then echo expired
+    else echo reclaimable
+    fi
+  fi
+}
+legacy=''
+for path in $legacy_paths; do
+  if [ -e "$HOME/$path" ]; then legacy=$path; fi
+done
+emit() {
+  printf 'state=%s\nnow=%s\n' "$(state)" "$now"
+  # Reads without the mutex may race a removal; a vanished file is free.
+  sed 's/^/lease_/' "$info" 2>/dev/null || true
+  for path in $legacy_paths; do
+    if [ -e "$HOME/$path" ]; then
+      printf 'legacy=%s\n' "$path"
+      if [ -f "$HOME/$path/info" ]; then
+        printf 'legacy_info=%s: %s\n' "$path" \
+          "$(tr '\n' ' ' <"$HOME/$path/info" 2>/dev/null || true)"
+      fi
+    fi
+  done
+}
+finish() { printf 'result=%s\n' "$1"; emit; exit "$2"; }
+mine() { [ -f "$info" ] && [ "$(field holder)" = "$holder" ]; }
+record() { printf '%s %s by=%s %s\n' "$now" "$1" "$holder" "$2" >>"$log"; }
+lock_mutex() {
+  if [ -n "$(find "$mutex" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then
+    stale=$(cat "$mutex/owner" 2>/dev/null || echo none)
+    aside=$mutex.stale.$$
+    if mv "$mutex" "$aside" 2>/dev/null; then
+      if [ "$(cat "$aside/owner" 2>/dev/null || echo none)" = "$stale" ]
+      then
+        rm -rf -- "$aside"
+      elif [ ! -e "$mutex" ]; then
+        # Someone else's live mutex: put it back. If that fails it stays
+        # aside for the sweep, never deleted while it may be in use.
+        mv "$aside" "$mutex" 2>/dev/null || true
+      fi
+    fi
+  fi
+  mkdir "$mutex" 2>/dev/null || return 1
+  owned=1
+  printf '%s\n' "$token" >"$mutex/owner" || return 1
+  # Leftovers of interrupted runs, once they are older than the grace.
+  find "$HOME" -maxdepth 1 \( -name '.agent-kit-steamos-lease.removed.*' \
+    -o -name '.agent-kit-steamos-lease.mutex.stale.*' \) \
+    -mmin +"$grace" -exec rm -rf {} + 2>/dev/null || true
+}
+# remove_lock EVENT DETAIL: moves the lock aside in one rename, logs its
+# info, then deletes it.
+remove_lock() {
+  aside=$lock.removed.$now.$$
+  mv "$lock" "$aside" 2>/dev/null || return 1
+  record "$1" "$2 $(tr '\n' ' ' <"$aside/info" 2>/dev/null || true)" ||
+    true
+  rm -rf -- "$aside"
+}
+write() {
+  new=$lock/info.new.$$
+  printf 'holder=%s\npurpose=%s\nstart=%s\nexpires=%s\n' \
+    "$holder" "$purpose" "$1" "$((now + seconds))" >"$new" || return 1
+  mv -f "$new" "$info" || return 1
+}
+take_new() {
+  mkdir "$lock" 2>/dev/null || return 1
+  fresh=1
+  write "$now" || return 1
+  fresh=''
+}
+case $action in
+  take)
+    if [ -n "$legacy" ]; then finish legacy 1; fi
+    lock_mutex || finish busy 1
+    current=$(state)
+    if [ "$current" = free ]; then
+      take_new && finish took 0 || finish failed 1
+    elif mine; then
+      write "$(field start)" && finish refreshed 0 || finish failed 1
+    elif [ "$current" = reclaimable ]; then
+      remove_lock reclaimed '' || finish gone 1
+      take_new && finish reclaimed 0 || finish failed 1
+    fi
+    finish held 1 ;;
+  renew)
+    lock_mutex || finish busy 1
+    if mine; then
+      write "$(field start)" && finish refreshed 0 || finish failed 1
+    fi
+    finish notmine 1 ;;
+  release)
+    lock_mutex || finish busy 1
+    if [ ! -d "$lock" ]; then finish free 0; fi
+    if mine; then
+      remove_lock released '' && finish released 0
+      finish gone 1
+    fi
+    finish notmine 1 ;;
+  break)
+    lock_mutex || finish busy 1
+    if [ ! -d "$lock" ]; then finish free 0; fi
+    remove_lock broken "reason=$reason" && finish broke 0
+    finish gone 1 ;;
+  check)
+    if mine; then
+      if [ "$(state)" = active ]; then finish ok 0; fi
+      finish expired 1
+    fi
+    finish notmine 1 ;;
+  show) finish shown 0 ;;
+esac
+'''
+
+# Read-only device facts. Prints key=value lines.
+STATUS_SCRIPT = r'''
+if [ -r /etc/os-release ]; then
+  . /etc/os-release
+fi
+echo "os_name=${PRETTY_NAME-}"
+echo "os_version=${VERSION_ID-}"
+echo "os_build=${BUILD_ID-}"
+echo "os_variant=${VARIANT_ID-}"
+echo "channel=$(steamos-select-branch -c 2>/dev/null || true)"
+echo "model=$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)"
+echo "hostname=$(uname -n)"
+echo "free_bytes=$(df -Pk "$HOME" | awk 'NR == 2 { print $4 * 1024 }')"
+echo "uptime_seconds=$(cut -d. -f1 /proc/uptime 2>/dev/null || true)"
+if [ -d "$HOME/devkit-utils" ]; then echo devkit_utils=yes
+else echo devkit_utils=no
+fi
+for supply in /sys/class/power_supply/*; do
+  [ -r "$supply/type" ] || continue
+  case $(cat "$supply/type") in
+    Mains|USB)
+      if [ "$(cat "$supply/online" 2>/dev/null)" = 1 ]; then
+        echo external_power=yes
+      fi ;;
+    Battery)
+      echo "battery_percent=$(cat "$supply/capacity" 2>/dev/null)"
+      echo "battery_status=$(cat "$supply/status" 2>/dev/null)" ;;
+  esac
+done
+'''
+
+
+class Failure(Exception):
+  def __init__(self, code, message):
+    super().__init__(message)
+    self.code = code
+
+
+def config_path():
+  root = os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config'
+  return Path(root) / 'agent-kit' / 'steamos.json'
+
+
+def load_config():
+  path = config_path()
+  try:
+    config = json.loads(path.read_text())
+  except FileNotFoundError:
+    raise Failure(USAGE, f'no configuration at {path}; see steamos.md')
+  except (OSError, ValueError) as error:
+    raise Failure(USAGE, f'cannot read {path}: {error}')
+  if not isinstance(config.get('devices'), dict) or not config['devices']:
+    raise Failure(USAGE, f'{path} names no devices')
+  return config
+
+
+def device(config, name):
+  name = name or config.get('default')
+  if not name and len(config['devices']) == 1:
+    name = next(iter(config['devices']))
+  if name not in config['devices']:
+    known = ', '.join(sorted(config['devices']))
+    raise Failure(USAGE, f'unknown device {name!r}; configured: {known}')
+  entry = dict(config['devices'][name])
+  entry.setdefault('name', name)
+  entry.setdefault('user', 'deck')
+  return name, entry
+
+
+def targets(entry):
+  """Addresses to try in order: the configured one, then mDNS."""
+  found = []
+  if entry.get('address'):
+    found.append(entry['address'])
+  mdns = entry['name'] + '.local'
+  if mdns not in found:
+    found.append(mdns)
+  return found
+
+
+def ssh(entry, script, args):
+  key = entry.get('key')
+  key = Path(key).expanduser() if key else DEFAULT_KEY.expanduser()
+  options = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10']
+  if key.is_file():
+    options += ['-o', 'IdentitiesOnly=yes', '-i', str(key)]
+  remote = 'sh -s -- ' + ' '.join(shlex.quote(str(a)) for a in args)
+  errors = []
+  for address in targets(entry):
+    proc = subprocess.run(
+      ['ssh', *options, f'{entry["user"]}@{address}', remote],
+      input=PREAMBLE + script, capture_output=True, text=True)
+    if proc.returncode != 255:
+      return proc
+    if 'connected=1' in proc.stdout.splitlines():
+      raise Failure(UNREACHABLE, f'the connection to {address} dropped '
+                    'after the command started; its effect is unknown, so '
+                    'check with `steamos lease show`')
+    errors.append(f'{address}: {proc.stderr.strip()}')
+  raise Failure(UNREACHABLE, 'cannot reach the device over ssh:\n  ' +
+                '\n  '.join(errors))
+
+
+def parse(text):
+  values, legacy = {}, []
+  for line in text.splitlines():
+    key, sep, value = line.partition('=')
+    if not sep:
+      continue
+    if key == 'legacy':
+      legacy.append(value)
+    elif key == 'legacy_info':
+      values.setdefault('legacy_info', []).append(value)
+    else:
+      values[key] = value
+  values['legacy'] = legacy
+  return values
+
+
+def holder(config):
+  name = os.environ.get('STEAMOS_LEASE_HOLDER') or config.get('holder')
+  if not name and not os.environ.get('STEAMOS_NO_AGENT_ID') and \
+      shutil.which('agent-id'):
+    proc = subprocess.run(['agent-id', 'show'], capture_output=True,
+                          text=True, timeout=10)
+    name = proc.stdout.strip() if proc.returncode == 0 else ''
+  return name or f'{getpass.getuser()}@{stable_host()}'
+
+
+def stable_host():
+  """A host name that does not follow the network, as macOS's does."""
+  if sys.platform == 'darwin' and shutil.which('scutil'):
+    proc = subprocess.run(['scutil', '--get', 'LocalHostName'],
+                          capture_output=True, text=True, timeout=10)
+    if proc.returncode == 0 and proc.stdout.strip():
+      return proc.stdout.strip()
+  return socket.gethostname().split('.')[0]
+
+
+def one_line(label, value):
+  if '\n' in value or '\r' in value:
+    raise Failure(USAGE, f'the {label} must be one line')
+  return value
+
+
+def iso(epoch):
+  return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(int(epoch)))
+
+
+def lease_summary(values):
+  lease = {'state': values.get('state', 'unknown'),
+           'legacy': values.get('legacy', []),
+           'legacy_info': values.get('legacy_info', [])}
+  for key in ('holder', 'purpose', 'start', 'expires'):
+    if 'lease_' + key in values:
+      lease[key] = values['lease_' + key]
+  for key in ('start', 'expires'):
+    if lease.get(key, '').isdigit():
+      lease[key] = int(lease[key])
+  return lease
+
+
+def describe(name, lease):
+  if lease['state'] == 'free':
+    text = f'The {name} lease is free.'
+  elif lease['state'] == 'broken':
+    text = (f'The {name} lease lock exists without its record: it is being '
+            'taken now, or was left behind and will be reclaimable after '
+            'the grace period.')
+  else:
+    text = (f'The {name} lease is {lease["state"]}: held by '
+            f'{lease.get("holder")} for "{lease.get("purpose")}" since '
+            f'{iso(lease.get("start", 0))}, until '
+            f'{iso(lease.get("expires", 0))}.')
+  for path in lease['legacy']:
+    text += (f'\nAn older project lock is present on the device: ~/{path}; '
+             'remove it with that project\'s tool once it is not needed.')
+  for info in lease.get('legacy_info', []):
+    text += f'\n  {info.strip()}'
+  return text
+
+
+def number(value, label, low, high):
+  if isinstance(value, bool) or not isinstance(value, (int, float)) or \
+      not low < value <= high:
+    raise Failure(USAGE, f'{label} must be a number above {low} and at '
+                  f'most {high}')
+  return value
+
+
+def lease_policy(config):
+  policy = config.get('lease', {})
+  if not isinstance(policy, dict):
+    raise Failure(USAGE, 'lease must be an object')
+  number(policy.get('hours', 4), 'hours', 0, 72)
+  grace = int(number(policy.get('grace_minutes', 30), 'grace_minutes', 0,
+                     7 * 24 * 60))
+  if grace < 1:
+    raise Failure(USAGE, 'grace_minutes must be at least 1')
+  legacy = policy.get('legacy_locks', [])
+  if not isinstance(legacy, list) or not all(
+      isinstance(p, str) and SAFE_PATH.fullmatch(p) and
+      '..' not in p.split('/') for p in legacy):
+    raise Failure(USAGE, 'legacy_locks must be paths inside the device '
+                  'home made of letters, digits, ".", "_", "-" and "/"')
+  return policy, grace, legacy
+
+
+def lease_command(options):
+  config = load_config()
+  name, entry = device(config, options.device)
+  policy, grace, legacy = lease_policy(config)
+  hours = number(options.hours or policy.get('hours', 4), 'hours', 0, 72)
+  who = one_line('holder', holder(config))
+  purpose = one_line('purpose', getattr(options, 'purpose', '') or '')
+  reason = one_line('reason', getattr(options, 'reason', '') or '')
+  if options.action == 'break':
+    if not reason:
+      raise Failure(USAGE, 'break needs --reason')
+    breakers = policy.get('breakers') or []
+    if breakers and who not in breakers:
+      raise Failure(REFUSED, f'{who} may not break a lease; configured '
+                    f'breakers: {", ".join(breakers)}')
+  proc = ssh(entry, LEASE_SCRIPT, [
+    options.action, who, purpose, int(hours * 3600), grace, reason,
+    *legacy])
+  if proc.returncode not in (0, 1):
+    raise Failure(UNREACHABLE, f'device script failed: {proc.stderr.strip()}')
+  values = parse(proc.stdout)
+  lease = lease_summary(values)
+  result = values.get('result', 'unknown')
+  if options.json:
+    print(json.dumps(dict(lease, result=result, device=name), indent=2))
+  else:
+    messages = {
+      'took': f'Took the {name} lease.',
+      'refreshed': f'Renewed the {name} lease.',
+      'reclaimed': f'Took the {name} lease (reclaimed an expired one).',
+      'released': f'Released the {name} lease.',
+      'broke': f'Broke the {name} lease; the device log records why.',
+      'free': f'The {name} lease is free.',
+      'ok': f'The {name} lease is yours.',
+      'legacy': f'An older project lock holds the {name}.',
+      'busy': f'Another agent is reclaiming or breaking the {name} lease.',
+      'notmine': f'The {name} lease is not yours.',
+      'held': f'The {name} lease is held.',
+      'expired': f'Your {name} lease has expired; renew it to keep it.',
+      'gone': f'The {name} lease changed while this ran; check it again.',
+      'failed': f'Could not write the {name} lease record on the device.',
+    }
+    stream = sys.stdout if proc.returncode == 0 else sys.stderr
+    if result != 'shown':
+      print(messages.get(result, result), file=stream)
+    if result not in ('released', 'broke', 'free') or lease['legacy']:
+      print(describe(name, lease), file=stream)
+  return OK if proc.returncode == 0 else REFUSED
+
+
+def status_command(options):
+  config = load_config()
+  name, entry = device(config, options.device)
+  _, grace, legacy = lease_policy(config)
+  script = STATUS_SCRIPT + LEASE_SCRIPT
+  proc = ssh(entry, script, ['show', '', '', 0, grace, '', *legacy])
+  if proc.returncode != 0:
+    raise Failure(UNREACHABLE, f'device script failed: {proc.stderr.strip()}')
+  values = parse(proc.stdout)
+  status = {'device': name}
+  for key in ('os_name', 'os_version', 'os_build', 'os_variant', 'channel',
+              'model', 'hostname', 'devkit_utils', 'battery_status'):
+    status[key] = values.get(key, '')
+  for key in ('free_bytes', 'uptime_seconds', 'battery_percent'):
+    status[key] = int(values[key]) if values.get(key, '').isdigit() else None
+  status['external_power'] = values.get('external_power') == 'yes'
+  status['lease'] = lease_summary(values)
+  if options.json:
+    print(json.dumps(status, indent=2))
+    return OK
+  free = status['free_bytes']
+  if status['battery_percent'] is None:
+    power = 'mains (no battery reported)'
+  else:
+    power = 'external power' if status['external_power'] else 'battery'
+    power += f', battery {status["battery_percent"]}%'
+  rows = [
+    ('Device', f'{name} ({status["hostname"]}, {status["model"]})'),
+    ('SteamOS', f'{status["os_version"] or "unknown"} build '
+                f'{status["os_build"] or "unknown"}, '
+                f'channel {status["channel"] or "unknown"}'),
+    ('Free space', f'{free / 2**30:.1f} GiB' if free else 'unknown'),
+    ('Power', power),
+    ('devkit-utils', status['devkit_utils']),
+  ]
+  for label, value in rows:
+    print(f'{label:<13} {value}')
+  print(describe(name, status['lease']))
+  return OK
+
+
+def main(argv=None):
+  parser = argparse.ArgumentParser(prog='steamos', description=__doc__)
+  parser.add_argument('--device', help='configured device name')
+  commands = parser.add_subparsers(dest='command', required=True)
+  status = commands.add_parser('status', help='device facts and its lease')
+  status.add_argument('--json', action='store_true')
+  lease = commands.add_parser('lease', help='share a device between agents')
+  actions = lease.add_subparsers(dest='action', required=True)
+  for action, text in (('take', 'take or renew the lease'),
+                       ('renew', 'extend a lease you hold'),
+                       ('show', 'who holds the lease'),
+                       ('check', 'succeed only if the lease is yours'),
+                       ('release', 'give up a lease you hold'),
+                       ('break', 'remove a lease you do not hold')):
+    sub = actions.add_parser(action, help=text)
+    if action == 'take':
+      sub.add_argument('purpose')
+    if action in ('take', 'renew'):
+      sub.add_argument('--hours', type=float)
+    if action == 'break':
+      sub.add_argument('--reason')
+    sub.add_argument('--json', action='store_true')
+  for sub in (status, lease):
+    sub.add_argument('--device', dest='device_sub', help=argparse.SUPPRESS)
+  options = parser.parse_args(argv)
+  options.device = options.device_sub or options.device
+  options.hours = getattr(options, 'hours', None)
+  try:
+    if options.command == 'status':
+      return status_command(options)
+    return lease_command(options)
+  except Failure as failure:
+    print(f'steamos: {failure}', file=sys.stderr)
+    return failure.code
+
+
+if __name__ == '__main__':
+  sys.exit(main())
