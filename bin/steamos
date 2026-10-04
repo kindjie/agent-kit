@@ -36,8 +36,8 @@ TITLE_NAME = re.compile(r'[A-Za-z0-9]+')
 # connected (and the command is not retried at another address).
 PREAMBLE = 'echo connected=1\n'
 
-# Runs on the device with HOME as its root. POSIX sh using only `date +%s`
-# and `find -mmin`, so it behaves the same on SteamOS and on the test host.
+# Runs on the device with HOME as its root. POSIX sh; Linux-only sleep
+# inhibition is optional so the lease also works on the macOS test host.
 # Prints key=value lines; exit 0 on success, 1 when refused.
 #
 # Every change to the lease happens while holding a mutex directory, so
@@ -47,8 +47,8 @@ PREAMBLE = 'echo connected=1\n'
 # return explicit statuses because `set -e` does not apply inside `if`.
 LEASE_SCRIPT = r'''
 set -eu
-action=$1 holder=$2 purpose=$3 seconds=$4 grace=$5 reason=$6
-shift 6
+action=$1 holder=$2 purpose=$3 seconds=$4 grace=$5 reason=$6 prevent_sleep=$7
+shift 7
 legacy_paths=$*
 lock=$HOME/.agent-kit-steamos-lease
 info=$lock/info
@@ -56,8 +56,12 @@ mutex=$lock.mutex
 log=$HOME/.agent-kit-steamos-lease.log
 now=$(date +%s)
 token=$$.$now
-fresh='' owned=''
+fresh='' owned='' pending_pid=''
 cleanup() {
+  if [ -n "$pending_pid" ]; then
+    inhibit_pid=$pending_pid inhibit_ticks=''
+    if inhibitor_matches; then kill "$pending_pid" 2>/dev/null || true; fi
+  fi
   if [ -n "$fresh" ]; then rm -rf -- "$lock"; fi
   if [ -n "$owned" ] && [ "$(cat "$mutex/owner" 2>/dev/null)" = "$token" ]
   then rm -rf -- "$mutex"
@@ -66,6 +70,82 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 field() { sed -n "s/^$1=//p" "$info" 2>/dev/null | head -n 1; }
+inhibit_field() {
+  sed -n "s/^$1=//p" "$lock/inhibit" 2>/dev/null | head -n 1
+}
+proc_ticks() {
+  # comm may contain spaces or parentheses; strip through its final ')'.
+  cat "/proc/$1/stat" 2>/dev/null | sed 's/.*) //' | awk '{print $20}'
+}
+inhibitor_matches() {
+  case $inhibit_pid in ''|*[!0-9]*|0|1) return 1 ;; esac
+  ticks=$(proc_ticks "$inhibit_pid")
+  [ -n "$ticks" ] || return 1
+  [ -z "$inhibit_ticks" ] || [ "$ticks" = "$inhibit_ticks" ] || return 1
+  # Exact argv entries, not a substring of an unrelated command. Start
+  # ticks prevent signalling a reused PID, even of another inhibitor.
+  cat "/proc/$inhibit_pid/cmdline" 2>/dev/null | tr '\000' '\n' |
+    awk '
+      NR == 1 && ($0 == "systemd-inhibit" || $0 ~ /\/systemd-inhibit$/) {cmd=1}
+      $0 == "--who=agent-kit-steamos" {who=1}
+      $0 == "--what=sleep:idle" {what=1}
+      $0 == "--mode=block" {mode=1}
+      /^--why=steamos lease: / {why=1}
+      END {exit !(cmd && who && what && mode && why)}'
+}
+recorded_inhibitor() {
+  inhibit_pid=$(inhibit_field pid) inhibit_ticks=$(inhibit_field ticks)
+  [ -n "$inhibit_ticks" ] && inhibitor_matches
+}
+stop_inhibitor() {
+  if recorded_inhibitor; then
+    kill "$inhibit_pid" 2>/dev/null || {
+      inhibitor_matches && return 1
+    }
+    attempts=0
+    while inhibitor_matches; do
+      [ "$attempts" -lt 3 ] || return 1
+      sleep 1
+      attempts=$((attempts + 1))
+    done
+  fi
+  rm -f -- "$lock/inhibit" || return 1
+  return 0
+}
+inhibit_available() {
+  command -v systemd-inhibit >/dev/null 2>&1 &&
+    command -v setsid >/dev/null 2>&1 &&
+    command -v nohup >/dev/null 2>&1 &&
+    [ -n "$(proc_ticks self)" ]
+}
+start_inhibitor() {
+  stop_inhibitor || return 1
+  [ "$prevent_sleep" = true ] || return 0
+  inhibit_available || return 0
+  left=$(( $(field expires) - $(date +%s) ))
+  [ "$left" -gt 0 ] || return 0
+  # nohup ignores ssh session SIGHUP; setsid leaves its process group and
+  # controlling terminal. Redirect all three streams so ssh can close.
+  # Noninteractive sh starts this child outside a new process group, so
+  # setsid execs without forking and $! remains systemd-inhibit's PID.
+  # This survives sshd's session hangup, but not logind KillUserProcesses
+  # or a reboot: check the device after ssh disconnect when validating.
+  nohup setsid systemd-inhibit --what=sleep:idle --who=agent-kit-steamos \
+    --why="steamos lease: $holder" --mode=block sleep "$left" \
+    </dev/null >/dev/null 2>&1 &
+  pending_pid=$!
+  inhibit_pid=$pending_pid inhibit_ticks=''
+  attempts=0
+  until inhibitor_matches; do
+    if [ "$attempts" -ge 3 ]; then return 1; fi
+    sleep 1
+    attempts=$((attempts + 1))
+  done
+  printf 'pid=%s\nstart=%s\nticks=%s\n' "$inhibit_pid" "$(date +%s)" \
+    "$ticks" >"$lock/inhibit" || return 1
+  pending_pid=''
+  return 0
+}
 # state: free, broken (a lock without info: being taken, or left behind),
 # active, expired (within grace) or reclaimable.
 state() {
@@ -95,6 +175,12 @@ emit() {
   printf 'state=%s\nnow=%s\n' "$(state)" "$now"
   # Reads without the mutex may race a removal; a vanished file is free.
   sed 's/^/lease_/' "$info" 2>/dev/null || true
+  if recorded_inhibitor; then echo inhibit=active
+  elif [ ! -d "$lock" ]; then echo inhibit=inactive
+  elif [ "$prevent_sleep" != true ]; then echo inhibit=disabled
+  elif ! inhibit_available; then echo inhibit=unavailable
+  else echo inhibit=inactive
+  fi
   for path in $legacy_paths; do
     if [ -e "$HOME/$path" ]; then
       printf 'legacy=%s\n' "$path"
@@ -134,6 +220,7 @@ lock_mutex() {
 # remove_lock EVENT DETAIL: moves the lock aside in one rename, logs its
 # info, then deletes it.
 remove_lock() {
+  stop_inhibitor || return 1
   aside=$lock.removed.$now.$$
   mv "$lock" "$aside" 2>/dev/null || return 1
   record "$1" "$2 $(tr '\n' ' ' <"$aside/info" 2>/dev/null || true)" ||
@@ -145,6 +232,8 @@ write() {
   printf 'holder=%s\npurpose=%s\nstart=%s\nexpires=%s\n' \
     "$holder" "$purpose" "$1" "$((now + seconds))" >"$new" || return 1
   mv -f "$new" "$info" || return 1
+  start_inhibitor || return 1
+  return 0
 }
 take_new() {
   mkdir "$lock" 2>/dev/null || return 1
@@ -373,6 +462,9 @@ def iso(epoch):
 
 def lease_summary(values):
   lease = {'state': values.get('state', 'unknown'),
+           'inhibit': values.get('inhibit', 'unavailable'),
+           'sleep_inhibited': {'active': True, 'inactive': False,
+                              'disabled': False}.get(values.get('inhibit')),
            'legacy': values.get('legacy', []),
            'legacy_info': values.get('legacy_info', [])}
   for key in ('holder', 'purpose', 'start', 'expires'):
@@ -401,6 +493,7 @@ def describe(name, lease):
              'remove it with that project\'s tool once it is not needed.')
   for info in lease.get('legacy_info', []):
     text += f'\n  {info.strip()}'
+  text += f'\ninhibit={lease["inhibit"]}'
   return text
 
 
@@ -416,6 +509,8 @@ def lease_policy(config):
   policy = config.get('lease', {})
   if not isinstance(policy, dict):
     raise Failure(USAGE, 'lease must be an object')
+  if not isinstance(policy.get('prevent_sleep', True), bool):
+    raise Failure(USAGE, 'prevent_sleep must be a boolean')
   number(policy.get('hours', 4), 'hours', 0, 72)
   grace = int(number(policy.get('grace_minutes', 30), 'grace_minutes', 0,
                      7 * 24 * 60))
@@ -447,6 +542,7 @@ def lease_command(options):
                     f'breakers: {", ".join(breakers)}')
   proc = ssh(entry, LEASE_SCRIPT, [
     options.action, who, purpose, int(hours * 3600), grace, reason,
+    str(policy.get('prevent_sleep', True)).lower(),
     *legacy])
   if proc.returncode not in (0, 1):
     raise Failure(UNREACHABLE, f'device script failed: {proc.stderr.strip()}')
@@ -581,9 +677,10 @@ def devkit_command(options):
 
 
 def require_lease(config, name, entry, purpose):
-  _, grace, legacy = lease_policy(config)
+  policy, grace, legacy = lease_policy(config)
   proc = ssh(entry, LEASE_SCRIPT,
-             ['check', holder(config), '', 0, grace, '', *legacy])
+             ['check', holder(config), '', 0, grace, '',
+              str(policy.get('prevent_sleep', True)).lower(), *legacy])
   if proc.returncode != 0:
     raise Failure(REFUSED, f'{purpose} needs the {name} lease: '
                   'run `steamos lease take PURPOSE` first')
@@ -850,9 +947,11 @@ def wake_command(options):
 def status_command(options):
   config = load_config()
   name, entry = device(config, options.device)
-  _, grace, legacy = lease_policy(config)
+  policy, grace, legacy = lease_policy(config)
   script = STATUS_SCRIPT + LEASE_SCRIPT
-  proc = ssh(entry, script, ['show', '', '', 0, grace, '', *legacy])
+  proc = ssh(entry, script, ['show', '', '', 0, grace, '',
+                           str(policy.get('prevent_sleep', True)).lower(),
+                           *legacy])
   if proc.returncode != 0:
     raise Failure(UNREACHABLE, f'device script failed: {proc.stderr.strip()}')
   values = parse(proc.stdout)

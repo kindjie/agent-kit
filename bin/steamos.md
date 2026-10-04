@@ -90,6 +90,7 @@ Policy, all optional:
   "lease": {
     "hours": 4,
     "grace_minutes": 30,
+    "prevent_sleep": true,
     "breakers": ["you@your-computer"],
     "legacy_locks": [".project-deck-lock"]
   }
@@ -101,6 +102,36 @@ anyone may. `legacy_locks` names lock paths, relative to the device's
 home, that older project tools create; while one exists, `take` refuses
 and `status` shows its record, so both kinds of lock are honoured until
 those tools move to this lease.
+
+`prevent_sleep` defaults to `true`. Taking, refreshing or renewing a lease
+starts `systemd-inhibit --what=sleep:idle --mode=block` for the seconds left
+until expiry, with `--who=agent-kit-steamos` and the holder in its reason.
+This prevents an idle sleep and the PIN screen on waking from interrupting
+display or performance work. Release, break and reclaim stop the recorded
+inhibitor before removing the lease; expiry ends its own `sleep`, with no
+watcher or cleanup command needed. Without a lease, normal sleep policy
+applies. Set `prevent_sleep` to `false` to opt out; a later take or renew
+also stops an existing inhibitor when this option is disabled.
+
+The inhibitor uses `nohup` and `setsid`, with stdin/stdout/stderr redirected,
+to survive ssh session hangup without keeping the connection open. Its PID,
+start epoch and Linux process start ticks live in
+`~/.agent-kit-steamos-lease/inhibit`. Before signalling it, the tool checks
+the recorded ticks and `/proc/PID/cmdline` for its exact inhibitor identity.
+An unrelated or stale PID is never intentionally signalled. Missing
+`systemd-inhibit`, detach tools or procfs are skipped without stderr warnings;
+output reports `inhibit=unavailable`. An installed inhibitor that fails to
+start makes take/renew fail; check the lease before retrying.
+
+`lease show --json` reports `sleep_inhibited`: `true` for a verified live
+inhibitor, `false` when absent, stopped, expired or disabled, and `null` when
+support is unavailable. `status --json` includes it under `lease`; text
+output includes `inhibit=active|inactive|disabled|unavailable`. These are
+process checks, not a query of logind's inhibitor table. During live
+validation, run `systemd-inhibit --list` on the device after the taking ssh
+connection has closed, and again after release or expiry. Session hangup is
+covered locally; logind configured with `KillUserProcesses=yes` can still
+kill detached session processes and requires device-side verification.
 
 ## Status
 

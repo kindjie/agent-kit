@@ -4,6 +4,8 @@ import base64
 import os
 from pathlib import Path
 import runpy
+import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -39,7 +41,14 @@ FAKE_SSH = textwrap.dedent('''\
   home = os.path.join(root, 'devices', host.split('@')[-1])
   os.makedirs(home, exist_ok=True)
   env = dict(os.environ, HOME=home)
-  code = subprocess.run(['sh', '-c', command], env=env, cwd=home).returncode
+  child = subprocess.Popen(['sh', '-c', command], env=env, cwd=home,
+                           start_new_session=True)
+  code = child.wait()
+  if os.environ.get('FAKE_SSH_HANGUP'):
+    try:
+      os.killpg(child.pid, 1)
+    except ProcessLookupError:
+      pass
   if host.split('@')[-1] in os.environ.get('FAKE_SSH_DROP', '').split():
     sys.exit(255)
   sys.exit(code)
@@ -103,6 +112,200 @@ class SteamosTest(unittest.TestCase):
     info.write_text('\n'.join(
       f'expires={expires - seconds}' if l.startswith('expires=') else l
       for l in lines) + '\n')
+
+  def inhibitor_fixture(self):
+    # macOS has no procfs/setsid. Emulate those interfaces only for the
+    # real detached fixture processes; production always reads Linux procfs.
+    self.env['FAKE_SSH_HANGUP'] = '1'
+    self.fixture_tool('setsid', '''
+      import os, sys
+      os.setsid()
+      os.execvp(sys.argv[1], sys.argv[1:])
+    ''')
+    self.fixture_tool('systemd-inhibit', '''
+      import json, os, pathlib, signal, subprocess, sys, time
+      home = pathlib.Path.home()
+      records = home / 'inhibitors'
+      records.mkdir(exist_ok=True)
+      args = sys.argv[1:]
+      stamp = str(time.monotonic_ns())
+      alive = records / (str(os.getpid()) + '.alive')
+      (records / str(os.getpid())).write_text(json.dumps({
+        'args': args, 'ticks': stamp, 'pgid': os.getpgrp()}))
+      child = subprocess.Popen(args[4:])
+      def stop(signum, frame):
+        child.terminate()
+        sys.exit(0)
+      signal.signal(signal.SIGTERM, stop)
+      alive.touch()
+      try:
+        child.wait()
+      finally:
+        child.wait()
+        alive.unlink(missing_ok=True)
+    ''')
+    self.fixture_tool('cat', '''
+      import json, os, pathlib, re, sys
+      if sys.argv[1:] == ['/proc/self/stat']:
+        sys.stdout.write('1 (sh) S ' + '0 ' * 18 + '123\\n')
+        sys.exit(0)
+      match = re.fullmatch(r'/proc/([0-9]+)/(cmdline|stat)',
+                           sys.argv[1] if len(sys.argv) == 2 else '')
+      if match:
+        pid, kind = match.groups()
+        path = pathlib.Path.home() / 'inhibitors' / pid
+        if path.exists() and path.with_suffix('.alive').exists():
+          record = json.loads(path.read_text())
+          if kind == 'cmdline':
+            sys.stdout.write('systemd-inhibit\\0' +
+                             '\\0'.join(record['args']) + '\\0')
+          else:
+            sys.stdout.write(pid + ' (systemd-inhibit) S ' +
+                             '0 ' * 18 + record['ticks'] + '\\n')
+          sys.exit(0)
+      os.execv('/bin/cat', ['/bin/cat', *sys.argv[1:]])
+    ''')
+    def cleanup():
+      for path in (self.device_home() / 'inhibitors').glob('*'):
+        if not path.name.isdigit():
+          continue
+        pid = int(path.name)
+        if self.process_alive(pid):
+          os.kill(pid, signal.SIGTERM)
+          self.wait_stopped(pid)
+    self.addCleanup(cleanup)
+
+  def process_alive(self, pid):
+    return (self.device_home() / 'inhibitors' / f'{pid}.alive').exists()
+
+  def wait_stopped(self, pid):
+    deadline = time.monotonic() + 3
+    while self.process_alive(pid) and time.monotonic() < deadline:
+      time.sleep(.02)
+    self.assertFalse(self.process_alive(pid), f'inhibitor {pid} still alive')
+
+  def inhibitor_pid(self):
+    record = self.device_home() / '.agent-kit-steamos-lease' / 'inhibit'
+    fields = dict(line.split('=', 1) for line in record.read_text().splitlines())
+    self.assertGreater(int(fields['start']), 0)
+    return int(fields['pid'])
+
+  def test_inhibitor_take_refresh_renew_survive_session_hangup(self):
+    self.inhibitor_fixture()
+    proc = self.run_cli('lease', 'take', 'bench', '--hours', '1')
+    self.assertIn('inhibit=active', proc.stdout)
+    pid = self.inhibitor_pid()
+    record = json.loads((self.device_home() / 'inhibitors' / str(pid))
+                        .read_text())
+    self.assertEqual(record['args'][:5], [
+      '--what=sleep:idle', '--who=agent-kit-steamos',
+      '--why=steamos lease: agent-a', '--mode=block', 'sleep'])
+    self.assertTrue(3590 <= int(record['args'][5]) <= 3600)
+    self.assertEqual(record['pgid'], pid)
+    self.assertTrue(self.process_alive(pid))
+    self.assertIs(self.lease_json()['sleep_inhibited'], True)
+    status = json.loads(self.run_cli('status', '--json').stdout)
+    self.assertIs(status['lease']['sleep_inhibited'], True)
+    for args in (('take', 'theirs'), ('renew',), ('release',)):
+      self.run_cli('lease', *args, holder='agent-b', code=1)
+      self.assertEqual(self.inhibitor_pid(), pid)
+      self.assertTrue(self.process_alive(pid))
+    for args in (('take', 'refresh'), ('renew', '--hours', '2')):
+      self.run_cli('lease', *args)
+      replacement = self.inhibitor_pid()
+      self.assertNotEqual(pid, replacement)
+      self.wait_stopped(pid)
+      pid = replacement
+    self.run_cli('lease', 'release')
+    self.wait_stopped(pid)
+    self.assertIs(self.lease_json()['sleep_inhibited'], False)
+
+  def test_inhibitor_break_and_reclaim_stop_previous_process(self):
+    self.inhibitor_fixture()
+    self.run_cli('lease', 'take', 'bench')
+    pid = self.inhibitor_pid()
+    self.run_cli('lease', 'break', '--reason', 'owner requested', holder='owner')
+    self.wait_stopped(pid)
+    self.run_cli('lease', 'take', 'bench')
+    pid = self.inhibitor_pid()
+    self.age_lease(5 * 3600)
+    self.run_cli('lease', 'take', 'new work', holder='agent-b')
+    self.wait_stopped(pid)
+    self.assertTrue(self.process_alive(self.inhibitor_pid()))
+    pid = self.inhibitor_pid()
+    lock = self.device_home() / '.agent-kit-steamos-lease'
+    (lock / 'info').unlink()
+    old = time.time() - 31 * 60
+    os.utime(lock, (old, old))
+    self.run_cli('lease', 'take', 'recover broken lease')
+    self.wait_stopped(pid)
+
+  def test_inhibitor_never_signals_unrelated_or_reused_pid(self):
+    self.inhibitor_fixture()
+    self.run_cli('lease', 'take', 'bench')
+    record = self.device_home() / '.agent-kit-steamos-lease' / 'inhibit'
+    original = record.read_text()
+    pid = self.inhibitor_pid()
+    unrelated = subprocess.Popen(['sleep', '30'])
+    self.addCleanup(unrelated.wait)
+    self.addCleanup(unrelated.terminate)
+    record.write_text(f'pid={unrelated.pid}\nstart=1\nticks=1\n')
+    self.assertIs(self.lease_json()['sleep_inhibited'], False)
+    self.run_cli('lease', 'release')
+    self.assertIsNone(unrelated.poll())
+    # Even another inhibitor with matching arguments is unsafe after PID
+    # reuse; the recorded kernel start ticks must match too.
+    self.run_cli('lease', 'take', 'bench')
+    newer = self.inhibitor_pid()
+    record.write_text(original.replace('ticks=', 'ticks=999'))
+    self.run_cli('lease', 'break', '--reason', 'stale record')
+    self.assertTrue(self.process_alive(pid))
+    self.assertTrue(self.process_alive(newer))
+
+  def test_inhibitor_disabled_and_unavailable(self):
+    self.inhibitor_fixture()
+    self.configure({'devices': {'unit': {'address': '10.0.0.5'}},
+                    'lease': {'prevent_sleep': False}})
+    proc = self.run_cli('lease', 'take', 'bench')
+    self.assertIn('inhibit=disabled', proc.stdout)
+    self.assertIs(self.lease_json()['sleep_inhibited'], False)
+    self.assertFalse((self.device_home() / 'inhibitors').exists())
+    self.configure({'devices': {'unit': {'address': '10.0.0.5'}}})
+    self.run_cli('lease', 'renew')
+    pid = self.inhibitor_pid()
+    self.configure({'devices': {'unit': {'address': '10.0.0.5'}},
+                    'lease': {'prevent_sleep': False}})
+    self.run_cli('lease', 'renew')
+    self.wait_stopped(pid)
+    # Force command lookup failure even on systemd test hosts.
+    (self.root / 'bin' / 'systemd-inhibit').unlink()
+    tools = self.root / 'portable-tools'
+    tools.mkdir()
+    for name in ('python3', 'sh', 'cat', 'sed', 'head', 'tr', 'awk', 'date',
+                 'find', 'mkdir', 'mv', 'rm', 'sleep', 'nohup'):
+      (tools / name).symlink_to(shutil.which(name))
+    self.env['PATH'] = str(self.root / 'bin') + os.pathsep + str(tools)
+    self.configure({'devices': {'unit': {'address': '10.0.0.5'}}})
+    proc = self.run_cli('lease', 'renew')
+    self.assertIn('inhibit=unavailable', proc.stdout)
+    self.assertEqual(proc.stderr, '')
+    self.assertIsNone(self.lease_json()['sleep_inhibited'])
+
+  def test_inhibitor_start_failure_cleans_fresh_lease_and_mutex(self):
+    self.inhibitor_fixture()
+    self.fixture_tool('systemd-inhibit', 'import sys; sys.exit(1)')
+    self.run_cli('lease', 'take', 'bench', code=1)
+    self.assertEqual(self.lease_json()['state'], 'free')
+    self.assert_no_leftovers()
+    self.assertFalse((self.device_home() / 'inhibitors').exists())
+
+  def test_inhibitor_expires_without_lease_cleanup(self):
+    self.inhibitor_fixture()
+    self.run_cli('lease', 'take', 'short', '--hours', str(2 / 3600))
+    pid = self.inhibitor_pid()
+    self.wait_stopped(pid)
+    self.assertIs(self.lease_json()['sleep_inhibited'], False)
+    self.assertTrue((self.device_home() / '.agent-kit-steamos-lease').exists())
 
   def test_take_show_check_release(self):
     self.assertEqual(self.lease_json()['state'], 'free')
@@ -172,6 +375,7 @@ class SteamosTest(unittest.TestCase):
                   {'legacy_locks': ['/absolute']},
                   {'legacy_locks': ['a b']},
                   {'hours': 'four'},
+                  {'prevent_sleep': 'false'},
                   {'grace_minutes': None},
                   {'grace_minutes': 0.5}):
       self.configure({'default': 'unit', 'devices': {'unit': {

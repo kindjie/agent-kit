@@ -7,6 +7,13 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_steamos
 ```
 
 Fake ssh runs remote commands locally with a separate HOME per host.
+Lease inhibition tests use a fake systemd-inhibit that records argv and
+runs its sleep command, a setsid shim and simulated Linux procfs reads on
+macOS. Fake ssh can hang up its session process group after the command
+exits. Tests verify detach survival, take/renew replacement, release/break/
+reclaim shutdown, expiry, unrelated/reused PID protection, opt-out and
+unavailable support. Fixture lifecycle markers avoid sandbox-restricted ps;
+they do not establish real logind acquisition or device sleep behavior.
 Valve helpers are small fixture scripts; title tests cover lease/pin/name
 refusals, exact shortcut arguments, exit-0 JSON errors, invalid leftovers,
 exact re-registration mirrors, unsafe remote-path refusal, scoped removal

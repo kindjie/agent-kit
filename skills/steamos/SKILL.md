@@ -32,6 +32,18 @@ or address rather than guessing.
    with `steamos lease renew`.
 4. `steamos lease release` when done, including when you stop early.
 
+Taking or renewing a lease prevents sleep/idle by default until its expiry.
+The detached `systemd-inhibit` is replaced on refresh/renew and stopped on
+release, break or reclaim; normal sleep policy applies afterwards. This
+avoids waking into a PIN screen during leased display/performance work.
+`lease.prevent_sleep: false` opts out in `steamos.json`. Missing Linux
+support is skipped with `inhibit=unavailable`; `lease show --json` and the
+`lease` object in `status --json` report `sleep_inhibited` as true, false
+or null (unavailable). A verified process does not prove logind acquired
+the lock: verify `systemd-inhibit --list` on the device after ssh closes,
+then after release/expiry. `nohup`/`setsid` survive session hangup, but a
+device's logind `KillUserProcesses` policy may still remove the process.
+
 Reading status needs no lease. When `status` says Valve's
 `devkit-utils` are missing or not at the pinned commit and the work needs
 them, run `steamos devkit install` while holding the lease; it replaces
