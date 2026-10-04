@@ -1036,7 +1036,9 @@ def close_task(root, changes, args, agent, push):
       target_body = append_log(target_body, agent,
                                "Transferred from " + args.task + ": " +
                                ", ".join(transferred) + "; reason: " +
-                               (args.reason or "superseded"))
+                               (args.reason or ("completed"
+                                                if args.state == "done"
+                                                else "superseded")))
       task_edits[str(target_path.relative_to(root))] = put_task(
         target, target_order, target_body)
   fields["status"] = args.state

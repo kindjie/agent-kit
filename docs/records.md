@@ -318,7 +318,9 @@ must be closed, mitigated or transferred before their last task closes.
 `--remove-task`, `--add-repo` and `--remove-repo` options. All requested edits
 are validated before writing; removing tasks from an open record must leave
 another live task. `agent-task close ... done --transfer TARGET` moves open
-records to a live target while closing the completed task. Without
+records to a live target while closing the completed task and logs the move
+on the target. The target's owner inherits them, even when another agent
+holds the target, so agree a transfer with that owner first. Without
 `--transfer`, close or transfer those records first. A failed
 single-repository mutation reports verified rollback when records are
 unchanged; resolve the reported error before retrying. The tool does not

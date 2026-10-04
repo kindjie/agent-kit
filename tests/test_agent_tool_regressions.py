@@ -82,8 +82,11 @@ class RecordToolRegressionTest(RecordsFixture):
       self.assertIn("tasks: " + target + "\n",
                     self.run_cmd("agent-changelog", "show", entry))
     self.assertIn("status: done", self.run_cmd("agent-task", "show", first))
-    self.assertIn("Transferred from " + first,
-                  self.run_cmd("agent-task", "show", target))
+    target_log = self.run_cmd("agent-task", "show", target)
+    self.assertIn("Transferred from " + first, target_log)
+    # A done close is not a supersession; the default reason says so.
+    self.assertIn("reason: completed", target_log)
+    self.assertNotIn("reason: superseded", target_log)
 
   def test_done_without_transfer_preserves_open_records(self):
     self.init()
