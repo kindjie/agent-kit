@@ -423,7 +423,7 @@ def other_account_lines(document: dict[str, Any]) -> list[str]:
         remaining += " (blocked)"
       lines.append(f"    {label}: last known {remaining}; {state}.")
   if lines:
-    lines.insert(0, "Other accounts (last checked; not verified now):")
+    lines.insert(0, "Other accounts (historical; unverified):")
   return lines
 
 
@@ -509,14 +509,6 @@ def render_brief(document: dict[str, Any], color: bool = False) -> str:
       notes.append(f"Token lookup failed: {usage['error']}")
 
   lines = ["Attention: " + "; ".join(alerts) + "."] if alerts else []
-  available = likely_available_line(document)
-  if available:
-    lines.append(available)
-  others = other_account_lines(document)
-  if others:
-    if lines:
-      lines.append("")
-    lines.extend(others)
   for service_id in ("claude_code", "codex"):
     if service_id in document.get("services", {}):
       if lines:
@@ -534,6 +526,13 @@ def render_brief(document: dict[str, Any], color: bool = False) -> str:
       ["Credits", "Balance", "Burn", "Until empty"], credit_rows,
       color=color,
     ))
+  available = likely_available_line(document)
+  others = other_account_lines(document)
+  if available or others:
+    lines.append("")
+    if available:
+      lines.append(highlight(available, color))
+    lines.extend(highlight(line, color) for line in others)
   if tokens:
     lines.extend(["", *tokens])
   if notes:

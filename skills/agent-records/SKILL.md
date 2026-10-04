@@ -73,7 +73,9 @@ so without its own ID it writes as you.
   the tool's blocking/yield interval are separate (see `delegation`).
 - **Finish:** tick the completion checks (`check T-NNNN merged --evidence
   ...`, or `--na 'reason'`), then `close T-NNNN done --reason ...`. The
-  review check wants a real review.
+  review check wants a real review. If open records must continue on another
+  live task, add `--transfer T-NNNN`; otherwise close or transfer those
+  records first.
 - **Stop without finishing:** `release T-NNNN --note ...`, or
   `handoff T-NNNN --to <id> --note ...` to pass the claim.
 

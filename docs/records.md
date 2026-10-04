@@ -314,6 +314,15 @@ Changelog entries are `entries/YYYY-MM-DD-HHMM-scope-slug.md`; mistakes are
 reason, cleanup plan, repository keys and associated task IDs. The `tasks:`
 field is the association authority: tasks do not duplicate it. Open records
 must be closed, mitigated or transferred before their last task closes.
+`agent-changelog update` and `mistake update` accept repeated `--add-task`,
+`--remove-task`, `--add-repo` and `--remove-repo` options. All requested edits
+are validated before writing; removing tasks from an open record must leave
+another live task. `agent-task close ... done --transfer TARGET` moves open
+records to a live target while closing the completed task. Without
+`--transfer`, close or transfer those records first. A failed
+single-repository mutation reports verified rollback when records are
+unchanged; resolve the reported error before retrying. The tool does not
+automatically retry failed commits.
 Records document state but never authorize deleting it.
 
 Give each writer an explicit identity. `agent-id show` derives one from a

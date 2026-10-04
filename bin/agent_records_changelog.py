@@ -118,14 +118,15 @@ def edit_associations(fields, args, tasks_root, is_open):
   if getattr(args, "from_task", None) and not getattr(args, "transfer", None):
     raise RecordsError("--from-task requires --transfer", 2)
   if getattr(args, "add_task", None):
-    task_ids(tasks_root, [args.add_task])
-    values.append(args.add_task)
+    task_ids(tasks_root, args.add_task)
+    values.extend(args.add_task)
   if getattr(args, "remove_task", None):
     if not args.reason:
       raise RecordsError("--reason required to remove task", 2)
-    if args.remove_task not in values:
-      raise RecordsError("task is not associated", 1)
-    values = [v for v in values if v != args.remove_task]
+    for task_id in args.remove_task:
+      if task_id not in values:
+        raise RecordsError("task is not associated: " + task_id, 1)
+    values = [v for v in values if v not in args.remove_task]
     if is_open:
       if not values:
         raise RecordsError("open record needs another live task", 1)
@@ -188,9 +189,9 @@ def update_record(root, tasks_root, args, agent, push, mistake=False):
       body += "\n" + value + "\n"
     repos = comma(fields.get("repos", ""))
     if args.add_repo:
-      repos.append(args.add_repo)
+      repos.extend(args.add_repo)
     if args.remove_repo:
-      repos = [r for r in repos if r != args.remove_repo]
+      repos = [r for r in repos if r not in args.remove_repo]
     fields["repos"] = joined(repos)
     edit_associations(
       fields, args, tasks_root,

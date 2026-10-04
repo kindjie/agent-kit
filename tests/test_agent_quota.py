@@ -1555,9 +1555,12 @@ class AgentQuotaTest(unittest.TestCase):
       for renderer in (AGENT_QUOTA.render_brief, AGENT_QUOTA.render_verbose):
         with self.subTest(live_reading=live_reading, renderer=renderer):
           output = renderer(document)
-          older, current = output.split(
-            "Codex account (last checked): same@example.test", 1)
-          self.assertIn("Other accounts", older)
+          if renderer is AGENT_QUOTA.render_brief:
+            current, older = output.split("Other accounts", 1)
+          else:
+            older, current = output.split(
+              "Codex account (last checked): same@example.test", 1)
+          self.assertIn("Other accounts", output)
           for percent in (82, 1):
             reading = f"last known {percent}% remaining"
             self.assertIn(reading, older)
@@ -1726,7 +1729,7 @@ class AgentQuotaTest(unittest.TestCase):
     )
     for renderer in (AGENT_QUOTA.render_brief, AGENT_QUOTA.render_verbose):
       output = renderer(later)
-      self.assertIn("Other accounts (last checked; not verified now)", output)
+      self.assertIn("Other accounts (historical; unverified)", output)
       self.assertIn("first@example.test", output)
       self.assertIn("(pro)", output)
       self.assertIn(
@@ -1743,7 +1746,11 @@ class AgentQuotaTest(unittest.TestCase):
       )
       self.assertEqual(output.count("second@example.test"), 1)
     brief = AGENT_QUOTA.render_brief(later).splitlines()
-    self.assertTrue(brief[0].startswith("Likely available"))
+    current = next(i for i, line in enumerate(brief)
+                   if line.startswith("Quota"))
+    available = next(i for i, line in enumerate(brief)
+                     if line.startswith("Likely available"))
+    self.assertLess(current, available)
 
   def test_account_still_exhausted_elsewhere_is_not_available(self):
     archived = {

@@ -259,7 +259,8 @@ def git(root, *args, timeout=GIT_TIMEOUT, check=True):
     proc.communicate()
     raise RecordsError("git timed out: " + " ".join(args), 5)
   if check and proc.returncode:
-    raise RecordsError("git " + " ".join(args) + ": " +
+    raise RecordsError("git " + " ".join(args) +
+                       " [exit " + str(proc.returncode) + "]: " +
                        err.decode(errors="replace").strip(), 1)
   return (proc.returncode, out.decode(errors="replace"),
           err.decode(errors="replace"))
@@ -778,11 +779,14 @@ def mutate(root, changes, operation, agent, push=False, git_timeout=GIT_TIMEOUT,
       committed = single_commit_exists(root, journal)
       recover_single(root, journal)
     except (RecordsError, OSError) as recovery_error:
-      raise RecordsError(str(recovery_error), 5)
+      raise RecordsError(str(exc) + "; recovery failed: " +
+                         str(recovery_error), 5)
     if not committed:
       if journal_path(root).exists() or snapshot(root) != before_status:
-        raise RecordsError("rollback could not be verified", 5)
-      raise RecordsError(str(exc), 1)
+        raise RecordsError(str(exc) + "; rollback could not be verified", 5)
+      raise RecordsError(
+        str(exc) + "; records unchanged; rollback verified. Safe to retry "
+        "after resolving the reported error.", 1)
     if snapshot(root) != before_status:
       raise RecordsError("unjournaled changes appeared after commit", 5)
   else:

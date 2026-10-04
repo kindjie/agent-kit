@@ -141,6 +141,32 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -t .
 `test_md_preview.py` skips unless its dependencies are importable by the
 interpreter running the suite; the recipe below supplies them.
 
+## Delegation Command Examples
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
+  tests.test_agent_instruction_commands
+```
+
+The delegation skill's inline `agent-quota` command examples are checked
+against the real argument parser. The check stops before account queries,
+cache writes or model calls. Regressions reject the retired `--for` option
+and ensure an empty set of examples cannot pass. This checks argument syntax,
+not quota availability or the semantics of option combinations.
+
+## Reported Tool Regressions
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_tool_regressions
+```
+
+These checks cover repeated task/repository association edits, atomic refusal
+of invalid removals, done transfer to a claimed live task, deduplication when
+the target is already associated, historical quota readings following current
+tables, and an injected commit-object failure with verified rollback and no
+automatic retry. Recovery-failure injection checks that both causes survive,
+the journal remains, and no retry advice is given.
+
 ## Quota Snapshot Identity
 
 ```bash
@@ -173,9 +199,10 @@ failures. Account-switch coverage includes A→B→A quota/credit isolation,
 same-account failure retention, legacy-cache migration, unknown identity, plan
 changes, bounded account snapshots, changes during collection, and a
 single-process RPC fixture with an optional usage timeout. Identity-upgrade
-regressions cover older 82%/1% readings labelled as other identities before
-the current heading in brief and verbose output, a new identity without
-quota readings, and fresh 100% readings without inherited history. Timeline
+regressions cover older 82%/1% readings labelled as historical identities
+after the current tables in brief output and before the heading in verbose
+output, a new identity without quota readings, and fresh 100% readings without
+inherited history. Timeline
 coverage distinguishes same-email plans and keys without changing JSON
 emails or merging archived identities' simultaneous resets. Archived accounts
 are covered for elapsed and live resets, newest-check ordering, exclusion of

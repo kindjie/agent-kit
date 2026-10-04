@@ -1002,9 +1002,10 @@ def close_task(root, changes, args, agent, push):
     raise RecordsError("--force does not apply to this action", 2)
   open_records = close_ready(fields, body, changes, args.task, args.state)
   target_id = args.transfer or args.by
-  if open_records and args.state == "done":
+  if open_records and args.state == "done" and not args.transfer:
     raise RecordsError("open associated records: " +
-                       ", ".join(p.name for p, _ in open_records), 1)
+                       ", ".join(p.name for p, _ in open_records) +
+                       "; transfer or close the records first", 1)
   if open_records and not target_id:
     raise RecordsError("open records require --transfer or closure", 1)
   task_edits = {}

@@ -150,8 +150,9 @@ def parser():
              if target == update else ())
     for name in names:
       target.add_argument("--" + name)
-    for name in ("add-repo", "remove-repo", "add-task", "remove-task",
-                 "transfer", "from-task", "reason"):
+    for name in ("add-repo", "remove-repo", "add-task", "remove-task"):
+      target.add_argument("--" + name, action="append")
+    for name in ("transfer", "from-task", "reason"):
       target.add_argument("--" + name)
   option_help = {
     "path": "dedicated changelog directory to initialize",
@@ -193,10 +194,11 @@ def parser():
     "discard": "discard this journal path; repeatable",
     "set_repos": "JSON mapping from record paths to repository keys",
     "write": "commit migration; default is dry run",
-    "add_repo": "add a repository key",
-    "remove_repo": "remove a repository key",
-    "add_task": "associate a live task ID",
-    "remove_task": "remove a task; open record needs another live task",
+    "add_repo": "add a repository key; repeatable",
+    "remove_repo": "remove a repository key; repeatable",
+    "add_task": "associate a live task ID; repeatable",
+    "remove_task": ("remove a task; open record needs another live task; "
+                    "repeatable"),
     "transfer": "replace an associated task with this live task",
     "from_task": "source task when record has multiple tasks",
     "reason": "reason logged with task association change",

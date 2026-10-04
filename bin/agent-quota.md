@@ -271,9 +271,11 @@ that file can still race with collection. This tool never switches accounts.
 
 `--brief` and `--verbose` list every archived snapshot whose account is not
 the one its service just checked, newest check first, under `Other accounts
-(last checked; not verified now)`, before the current account headings. Each
-account explicitly says `not current account` and shows its label, short key,
-plan, and check time; each of its buckets shows the last known remaining
+(historical; unverified)`. In `--brief`, these snapshots and reset-based
+availability estimates follow the current quota and credit tables. In
+`--verbose`, they precede the current account headings. Each account explicitly
+says `not current account` and shows its label, short key, plan, and check
+time; each of its buckets shows the last known remaining
 percentage and its recorded reset: `(in <duration>)` while it is ahead,
 `reset time UNKNOWN` when none was recorded, and, once the reset is behind
 the report's `generated_at`, `RESET <time> (<duration> ago)` followed by
