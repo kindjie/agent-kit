@@ -52,16 +52,29 @@ build overlays in `$XDG_CONFIG_HOME/agent-kit/steamos-projects/`. Local
 captures, frametime CSVs and benchmark copies go to the paths you choose.
 Keep private input paths in the overlay rather than a public project config.
 
-On each device, it uses a lease directory and lease log in the user's home.
-It records title launch times in `~/.agent-kit-steamos-launches`, benchmark
-runs in `~/.agent-kit-steamos-bench/`, Devkit titles under `~/devkit-game/`,
-and versioned deploys inside each managed title. Devkit helpers live in
-`~/devkit-utils/`. Bench runs are retained until later runs prune them
-according to the configured count; see the
+On each device, it uses a lease directory and
+`~/.agent-kit-steamos-lease.log` in the user's home. The lease holder identity
+(`agent-id` or `user@hostname` by default) is stored in the lease info,
+lease log and launch ledger, readable by anyone with device access. Set
+`STEAMOS_LEASE_HOLDER` or the config `holder` to override it. The device also
+stores title launch times in `~/.agent-kit-steamos-launches`, benchmark runs
+in `~/.agent-kit-steamos-bench/`, the capture lock at
+`~/.agent-kit-steamos-capture`, temporary capture files under
+`/tmp/steamos-capture-*` (removed after download), and MangoHud
+`~/mangoapp_*.csv` files when frametime logging is enabled. The user unit
+`agent-kit-steamos-lease-inhibit` inhibits sleep while a lease is held.
+Devkit titles live under `~/devkit-game/`, Devkit helpers and their
+`~/devkit-utils/.agent-kit-pin` marker under `~/devkit-utils/`, and versioned
+deploys inside each managed title. Each title has `deploys.log` and a
+`.steamos-deploy-lock`; lease recovery can leave
+`~/.agent-kit-steamos-lease.removed.*` or
+`~/.agent-kit-steamos-lease.mutex.stale.*` entries. Bench runs are retained
+until later runs prune them according to the configured count; see the
 [command reference](../bin/steamos.md#benchmarks).
 
 Device commands cross the network by ssh to your configured devices; wake
-uses a local-network UDP broadcast. The first Devkit helper install for a
+uses a local-network UDP broadcast, which may go to a configured directed
+broadcast address. The first Devkit helper install for a
 pin fetches Valve's GitLab repository at that commit, unless you configure
 a different source. The command sends no data to any other service. Your
 agent or build command may have its own network behaviour.

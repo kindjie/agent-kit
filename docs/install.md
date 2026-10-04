@@ -148,10 +148,16 @@ neither the dashboard nor shared task records. For Codex:
 mkdir -p "$HOME/bin" "$HOME/.agents/skills"
 command_target="$HOME/bin/steamos"
 skill_target="$HOME/.agents/skills/steamos"
-[ ! -e "$command_target" ] && [ ! -L "$command_target" ] && \
+if [ -e "$command_target" ] || [ -L "$command_target" ]; then
+  printf 'Already exists: %s\n' "$command_target"
+else
   ln -s "$PWD/bin/steamos" "$command_target"
-[ ! -e "$skill_target" ] && [ ! -L "$skill_target" ] && \
+fi
+if [ -e "$skill_target" ] || [ -L "$skill_target" ]; then
+  printf 'Already exists: %s\n' "$skill_target"
+else
   ln -s "$PWD/skills/steamos" "$skill_target"
+fi
 steamos --help
 ```
 

@@ -61,6 +61,9 @@ project locks and owner-directed breaks.
 
 ## Build and deploy a project
 
+`steamos build` runs the repository's build command with your environment.
+Use it only on projects you trust.
+
 Put `steamos.json` at the project root. It names the title, bundle,
 inventory and executable, plus optional arguments, runtime and retention.
 Keep machine-specific build input paths in the per-user overlay under
@@ -107,7 +110,9 @@ requires Steam running in Game Mode.
 
 `steamos logs Demo1` reads the latest recorded launch window from the user
 journal, with a Steam log fallback. The name selects a time window, so the
-output can include other services. `steamos capture --out ./capture.png`
+output can include other services. Use `--since EPOCH` and `--until EPOCH`
+to set the device-clock window; if no launch is recorded, `--since` is
+required. `steamos capture --out ./capture.png`
 copies a gamescope screenshot in Game Mode. Neither needs a lease.
 
 With the lease, use `steamos frametimes start` and `stop` around a MangoHud
