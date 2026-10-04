@@ -229,6 +229,42 @@ class SteamosDeployTest(unittest.TestCase):
         self.stage()
     self.assertFalse((self.root / 'hosts.log').exists())
 
+  def test_runtime_patterns_cannot_cover_inventory_or_its_parents(self):
+    self.project()
+    (self.bundle / 'lib').mkdir()
+    (self.bundle / 'lib/code.so').write_text('code')
+    self.seal()
+    for pattern in ('*', '*cache', 'run', 'bundle.json', 'lib',
+                    'lib/*', 'l?b', 'lib/code.so'):
+      with self.subTest(pattern=pattern):
+        self.settings['runtime_files'] = [pattern]
+        self.write_config()
+        self.assertIn('runtime_files', self.stage(code=2).stderr)
+    self.assertFalse((self.root / 'hosts.log').exists())
+
+  def test_large_manifest_request_uses_stdin(self):
+    self.project()
+    for index in range(1400):
+      (self.bundle / f'member-{index:04d}-long-file-name.txt').write_text('x')
+    version = self.seal()
+    self.assertGreater(len(json.dumps(self.manifest)), 128 * 1024)
+    self.title_helpers()
+    self.fixture_tool('rsync', '''
+      import pathlib, shutil, sys
+      source, remote = sys.argv[-2:]
+      shutil.copytree(source, pathlib.Path(remote.split(':', 1)[1]),
+                      dirs_exist_ok=True)
+    ''')
+    ssh = self.root / 'bin/ssh'
+    ssh.write_text(ssh.read_text().replace(
+      'args = sys.argv[1:]',
+      "if any(len(arg.encode()) >= 131072 for arg in sys.argv[1:]):\n"
+      "  sys.stderr.write('Linux MAX_ARG_STRLEN exceeded\\n')\n"
+      "  sys.exit(7)\nargs = sys.argv[1:]"))
+    self.run_cli('lease', 'take', 'fixture deploy')
+    self.title = self.device_home() / 'devkit-game/Demo1'
+    self.assertEqual(json.loads(self.deploy().stdout)['current'], version)
+
   def test_redeploy_runtime_cache_file_or_directory_skips_copy(self):
     version = self.fixture(runtime_files=['noise-cache'])
     self.deploy()
@@ -245,11 +281,13 @@ class SteamosDeployTest(unittest.TestCase):
         result = json.loads(self.deploy().stdout)
         self.assertTrue(result['skipped_copy'])
         self.assertEqual(result['current'], version)
+        self.assertTrue(any(path == 'noise-cache' or path.startswith(
+            'noise-cache/') for path in result['ignored_runtime_files']))
         self.assertTrue(cache.exists())
         self.assertEqual((self.device_home() / 'copies.log').read_text(), copies)
 
   def test_runtime_globs_do_not_hide_unlisted_or_inventory_files(self):
-    version = self.fixture(runtime_files=['cache-?', 'run', 'bundle.json'])
+    version = self.fixture(runtime_files=['cache-?'])
     self.deploy()
     deployed = self.title / f'versions/{version}'
     (deployed / 'cache-a').write_text('cache')
@@ -377,7 +415,39 @@ class SteamosDeployTest(unittest.TestCase):
     self.assertTrue((versions / third).is_dir())
     shutil.rmtree(self.bundle)  # rollback/list do not need a local build
     self.deploy('--list')
-    self.deploy('--rollback')
+    self.deploy('--rollback', code=1)
+
+  def test_repeated_rollback_walks_back_without_alternating(self):
+    first = self.fixture(keep_versions=3)
+    self.deploy()
+    second = self.change()
+    self.deploy()
+    third = self.change()
+    self.deploy()
+    self.assertEqual(json.loads(self.deploy('--rollback').stdout)['current'],
+                     second)
+    self.assertEqual(json.loads(self.deploy('--rollback').stdout)['current'],
+                     first)
+    self.deploy('--rollback', code=1)
+    self.assertEqual(json.loads(self.deploy('--list').stdout)['deploy_order'],
+                     [first, second, third, second, first])
+    records = [json.loads(line) for line in
+               (self.title / 'deploys.log').read_text().splitlines()]
+    self.assertEqual([record.get('action') for record in records[-2:]],
+                     ['rollback', 'rollback'])
+
+  def test_retention_ignores_logged_version_without_directory(self):
+    first = self.fixture(keep_versions=2)
+    self.deploy()
+    phantom = 'f' * 12
+    with (self.title / 'deploys.log').open('a') as stream:
+      stream.write(json.dumps({'version': phantom, 'inventory': 'bundle.json',
+                               'start': 'run', 'device_time': time.time()}) +
+                   '\n')
+    second = self.change()
+    self.deploy()
+    self.assertTrue((self.title / f'versions/{first}').is_dir())
+    self.assertTrue((self.title / f'versions/{second}').is_dir())
 
   def test_rollback_refuses_missing_previous_or_corrupt_target(self):
     first = self.fixture()
@@ -421,7 +491,7 @@ class SteamosDeployTest(unittest.TestCase):
     ssh = test_steamos.FAKE_SSH.replace(
       'env = dict(os.environ, HOME=home)',
       '''env = dict(os.environ, HOME=home)
-if '"action": "switch"' in command:
+if command.endswith(' switch'):
   with open(os.path.join(home, '.agent-kit-steamos-lease/info'), 'w') as f:
     f.write('holder=agent-a\\nexpires=1\\n')''')
     (self.root / 'bin/ssh').write_text(ssh)
@@ -434,7 +504,7 @@ if '"action": "switch"' in command:
     self.fixture()
     ssh = test_steamos.FAKE_SSH.replace(
       'sys.exit(code)',
-      '''if '"action": "prepare"' in command:
+      '''if command.endswith(' prepare'):
   sys.exit(255)
 sys.exit(code)''')
     (self.root / 'bin/ssh').write_text(ssh)
@@ -511,7 +581,9 @@ def unlink(path, *args, **kwargs):
   return original_unlink(path, *args, **kwargs)
 os.replace, os.unlink = replace, unlink
 sys.argv.pop(0)
-if sys.argv[0] == '-':
+if sys.argv[0] == '-c':
+  exec(sys.argv[1])
+elif sys.argv[0] == '-':
   exec(compile(sys.stdin.read(), '<device>', 'exec'))
 else:
   runpy.run_path(sys.argv[0], run_name='__main__')
@@ -539,7 +611,9 @@ def glob(path, pattern):
   return original(path, pattern)
 pathlib.Path.glob = glob
 sys.argv.pop(0)
-if sys.argv[0] == '-':
+if sys.argv[0] == '-c':
+  exec(sys.argv[1])
+elif sys.argv[0] == '-':
   exec(compile(sys.stdin.read(), '<device>', 'exec'))
 else:
   runpy.run_path(sys.argv[0], run_name='__main__')
@@ -570,6 +644,38 @@ else:
     self.deploy(code=1)
     self.assertEqual((lock / 'owner').read_text(), 'another invocation')
     self.assertEqual((partial / 'keep').read_text(), 'unknown operation')
+
+  def test_stale_lock_and_partial_list_and_guarded_cleanup(self):
+    version = self.fixture()
+    versions = self.title / 'versions'
+    versions.mkdir(parents=True)
+    partial = versions / (version + '.partial')
+    partial.mkdir()
+    (partial / 'keep').write_text('partial')
+    outside = self.device_home() / 'outside'
+    outside.mkdir()
+    (outside / 'keep').write_text('outside')
+    (versions / ('f' * 12 + '.partial')).symlink_to(outside)
+    lock = self.title / '.steamos-deploy-lock'
+    lock.mkdir()
+    (lock / 'owner').write_text('old-token')
+    (lock / 'holder').write_text('gone-holder')
+    (lock / 'timestamp').write_text(str(time.time()))
+    self.assertIn('active or has unknown owner',
+                  self.deploy('--abort-stale', code=1).stderr)
+    self.assertTrue(partial.is_dir())
+    (lock / 'timestamp').write_text(str(time.time() - 700))
+    listed = json.loads(self.deploy('--list').stdout)
+    self.assertIn(version + '.partial', listed['partials'])
+    self.assertIn('f' * 12 + '.partial', listed['partials'])
+    self.assertIn('lock', listed)
+    self.assertTrue(listed['lock']['stale'])
+    cleaned = json.loads(self.deploy('--abort-stale').stdout)
+    self.assertIn(version + '.partial', cleaned['removed_partials'])
+    self.assertFalse(lock.exists())
+    self.assertFalse(partial.exists())
+    self.assertTrue((versions / ('f' * 12 + '.partial')).is_symlink())
+    self.assertEqual((outside / 'keep').read_text(), 'outside')
 
   def test_lease_expiring_during_copy_aborts_before_switch(self):
     old = self.fixture()
@@ -646,7 +752,9 @@ def replace(source, target, *args, **kwargs):
   return original_replace(source, target, *args, **kwargs)
 pathlib.Path.open, os.fsync, os.replace = open, sync, replace
 sys.argv.pop(0)
-if sys.argv[0] == '-':
+if sys.argv[0] == '-c':
+  exec(sys.argv[1])
+elif sys.argv[0] == '-':
   exec(compile(sys.stdin.read(), '<device>', 'exec'))
 else:
   runpy.run_path(sys.argv[0], run_name='__main__')

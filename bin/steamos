@@ -376,9 +376,10 @@ def ssh_options(entry):
   return options
 
 
-def ssh(entry, script, args, timeout=None):
+def ssh(entry, script, args, timeout=None, remote=None, stdin=None):
   options = ssh_options(entry)
-  remote = 'sh -s -- ' + ' '.join(shlex.quote(str(a)) for a in args)
+  if remote is None:
+    remote = 'sh -s -- ' + ' '.join(shlex.quote(str(a)) for a in args)
   errors = []
   deadline = time.monotonic() + timeout if timeout is not None else None
   for address in targets(entry):
@@ -386,7 +387,8 @@ def ssh(entry, script, args, timeout=None):
     try:
       proc = subprocess.run(
         ['ssh', *options, f'{entry["user"]}@{address}', remote],
-        input=PREAMBLE + script, capture_output=True, text=True,
+        input=stdin if stdin is not None else PREAMBLE + script,
+        capture_output=True, text=True,
         timeout=remaining)
     except subprocess.TimeoutExpired:
       errors.append(f'{address}: ssh timed out')
@@ -921,11 +923,17 @@ def stage_command(options):
 
 def project_remote(entry, request, action):
   # Use exactly the local verifier on the device, without installing a
-  # project script or inferring a private format. Arguments remain literal.
+  # project script or inferring a private format. Length-frame its source
+  # and then send the request on stdin; neither becomes a large argv item.
   source = Path(publication.__file__).read_text()
-  script = 'python3 - "$@" <<\'STEAMOS_PROJECT_PY\'\n' + source + \
-           '\nSTEAMOS_PROJECT_PY\n'
-  proc = ssh(entry, script, [json.dumps(dict(request, action=action))])
+  loader = ('import sys; n=int(sys.stdin.buffer.readline()); '
+            'exec(compile(sys.stdin.buffer.read(n), "<steamos-deploy>", '
+            '"exec"))')
+  payload = (str(len(source.encode('utf-8'))) + '\n' + source +
+             json.dumps(dict(request, action=action)))
+  proc = ssh(entry, '', [], remote='echo connected=1; python3 -c ' +
+             shlex.quote(loader) + ' ' + shlex.quote(action),
+             stdin=payload)
   return last_json(proc, 'project ' + action)
 
 
@@ -960,7 +968,7 @@ def deploy_command(options):
     result = project_remote(entry, request, 'list')
   else:
     bundle = manifest = version = None
-    if not options.rollback:
+    if not options.rollback and not options.abort_stale:
       bundle, manifest, version = local_stage(root, project_config)
     require_lease(config, name, entry, 'deploy')
     _, commit = devkit_pin(config)
@@ -970,6 +978,15 @@ def deploy_command(options):
     if parse(facts.stdout).get('devkit_commit') != commit:
       raise Failure(REFUSED, 'the device needs pinned devkit-utils; '
                     'run `steamos devkit install`')
+    if options.abort_stale:
+      _, _, legacy = lease_policy(config)
+      request.update(holder=holder(config), pin=commit, legacy=legacy)
+      result = project_remote(entry, request, 'abort_stale')
+      result.update(device=name, title=project_config['title'])
+      print(json.dumps(result, indent=2) if options.json else
+            f'{name}: removed stale lock and '
+            f'{len(result["removed_partials"])} partial directories')
+      return OK
     inventory = last_json(ssh(entry, TITLE_INVENTORY, []), 'title inventory')
     if inventory['invalid_leftovers']:
       raise Failure(REFUSED, 'invalid title leftovers block Steam re-sync: ' +
@@ -1995,6 +2012,8 @@ def main(argv=None):
   mode = deploy.add_mutually_exclusive_group()
   mode.add_argument('--rollback', action='store_true')
   mode.add_argument('--list', action='store_true')
+  mode.add_argument('--abort-stale', action='store_true',
+                    help='remove an abandoned deploy lock and partials')
   lease = commands.add_parser('lease', help='share a device between agents')
   actions = lease.add_subparsers(dest='action', required=True)
   for action, text in (('take', 'take or renew the lease'),

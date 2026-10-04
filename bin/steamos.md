@@ -16,6 +16,7 @@ steamos devkit install              # Valve's helpers, at a pinned commit
 steamos stage [--project PATH] [--json]  # local inventory verification
 steamos deploy [--project PATH] [--json] # versioned project publication
 steamos deploy --rollback [--project PATH] [--json]
+steamos deploy --abort-stale [--project PATH] [--json]
 steamos deploy --list [--project PATH] [--json]  # read-only
 steamos title register Demo1 ./build --start ./run.sh --arg=--verbose
 steamos title launch Demo1 --json
@@ -193,10 +194,13 @@ characters. Config, bundle paths and bundle contents cannot be symlinks.
 3). Unknown fields, duplicate JSON keys and incorrect types are refused.
 `runtime_files` is an optional array (default `[]`) of safe relative paths
 or simple globs (`*`, `?`, `[seq]`; no `**`). Globs match individual path
-components; a matching directory covers its descendants. These declarations
+components; a matching directory covers its descendants. A pattern cannot
+start with `*` or match an inventory member, the inventory file, or any
+parent directory of one. For example, `cache/*.bin` matches direct `.bin`
+files in `cache`; `cache` matches that whole directory. These declarations
 allow unlisted regular files only when verifying an existing device version.
-Inventory-listed files are always required and hash-checked, even when they
-match. Symlinks and special files remain refused, including in runtime
+The result's `ignored_runtime_files` lists every skipped runtime path.
+Symlinks and special files remain refused, including in runtime
 paths. Local staging and new uploads remain strict. Runtime declarations do
 not affect version IDs, retention or rollback selection.
 No build is run and no checkout provenance is inferred by these commands.
@@ -248,8 +252,8 @@ switch; failed ledger I/O or replacement restores its prior length and leaves
 current untouched. Authority is rechecked after the ledger sync. If restoring
 the log fails, the refusal explicitly requires log inspection. Abrupt device
 loss can leave a recorded intent whose switch did not finish; inspect both
-current and the log before proceeding. Retention keeps the newest
-`keep_versions` distinct
+current and the log before proceeding. Retention ignores logged versions
+whose directories are absent and keeps the newest `keep_versions` distinct
 published IDs, current, and detected running versions. Only logged, direct
 12-hex version directories inside `versions/` are pruned. Symlinks, other
 entries and external targets are preserved; nested symlinks are not followed.
@@ -259,10 +263,11 @@ permissions or disappearing processes can limit that observation.
 `deploy --rollback` needs the lease and pin but no local bundle. It verifies
 the previous retained version in `deploys.log`, atomically switches current,
 and registers its recorded start with the current project's args/runtime.
-Rollback is itself a publication, so a second rollback returns to the version
-just left. `deploy --list` needs neither the lease nor pinned helpers and
-does not mutate the device. JSON includes `versions`, `current`, `running`
-(version to PID array), and `deploy_order`.
+Rollback records its action and history position; a second rollback walks
+farther back through retained versions. `deploy --list` needs neither the
+lease nor pinned helpers and does not mutate the device. JSON includes
+`versions`, `current`, `running`
+(version to PID array), `deploy_order`, `partials`, and lock details.
 
 Before publication, failures clean up only the invocation's partial and lock;
 current is preserved. A completed version can remain after a switch
@@ -271,8 +276,12 @@ refusal and will be verified/reused on retry. Pre-existing partials, locks and
 prevent cleanup or hide a completed switch; a lost prepare reply still
 triggers best-effort cleanup authorized by its invocation token. Inspect
 `deploy --list`,
-`deploys.log` and the named partial/lock before retrying. Never delete unknown
-leftovers or another title to bypass a refusal. Retention errors after
+`deploys.log` and the named partial/lock before retrying. With an active
+lease, `deploy --abort-stale` removes direct `versions/<12-hex>.partial`
+directories and removes the deploy lock only after ten minutes when its
+recorded lease holder is gone. A live or unknown lock is refused, and symlinks
+are never followed. Never delete unknown leftovers or another title to bypass
+a refusal. Retention errors after
 publication are reported as warnings without undoing current.
 
 Inventory-listed files in published directories must remain immutable.

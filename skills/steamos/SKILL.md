@@ -68,10 +68,17 @@ the helpers another agent's title may be using.
   `steamos deploy --list` is read-only and reports current/retained/running
   versions. `steamos status` in the project compares current with local stage.
   `steamos deploy --rollback` needs the lease and pin, verifies the previous
-  retained version and publishes it. Neither list nor rollback needs a build.
-  Put runtime caches/saves outside version directories: unlisted files make
-  subsequent verification fail. Inspect unknown partials/locks after a dropped
-  connection; they are preserved, not automatically adopted or removed.
+  retained version and publishes it. Repeated rollback walks farther back
+  through retained history. Neither list nor rollback needs a build.
+  `runtime_files` permits named runtime paths in existing device versions;
+  globs match path components, and a matched directory covers descendants.
+  Patterns cannot cover inventory members or their parents, or start with `*`.
+  Check `ignored_runtime_files` in deployment JSON for paths skipped by
+  verification. Other unlisted files make verification fail. After a crash,
+  inspect `deploy --list` for locks and partials. With the lease,
+  `deploy --abort-stale` removes direct partial directories and only a lock
+  older than ten minutes whose recorded lease holder is gone. It refuses
+  live or unknown locks and preserves symlinks.
 - Benchmark-only projects use `steamos bench` and need no deploy config.
 - For ad-hoc titles, with the lease, use
   `steamos title register Demo1 DIR --start ./run.sh`. This

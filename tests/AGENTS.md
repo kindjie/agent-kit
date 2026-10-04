@@ -54,7 +54,10 @@ restoration explicitly requires inspection.
 Runtime-file regressions cover safe path/glob configuration, same-version
 reuse with cache files/directories, strict stage/upload checks, inventory
 hash/missing-file enforcement, unlisted-file refusals and normal rollback
-and retention. Error diagnostics, including benchmark JSON errors, strip
+and retention. Include inventory-parent pattern refusal, ignored runtime
+path reporting, a request over Linux's per-argument limit, repeated rollback,
+phantom ledger retention, and guarded stale lock/partial cleanup. Error
+diagnostics, including benchmark JSON errors, strip
 the transport connection marker.
 Real host HUP/INT/TERM during a fake partial transfer check bounded cleanup,
 preservation of current and removal of only the invocation's partial/lock.

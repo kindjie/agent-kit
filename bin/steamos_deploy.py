@@ -96,6 +96,25 @@ def project_config(location=None, optional=False):
     relative(pattern)
     if '**' in pattern:
       raise ValueError('runtime_files globs cannot use **: ' + pattern)
+    if pattern.startswith('*'):
+      raise ValueError('runtime_files cannot start with *: ' + pattern)
+  try:
+    inventory_path = no_links(root, config['bundle'] + '/' +
+                              config['inventory'])
+    manifest = read_json(inventory_path)
+  except (OSError, ValueError):
+    manifest = None  # Stage reports malformed or inaccessible inventories.
+  if isinstance(manifest, dict) and isinstance(manifest.get('files'), dict):
+    members = manifest['files']
+    if all(isinstance(name, str) for name in members):
+      try:
+        for name in members:
+          relative(name)
+      except ValueError:
+        pass  # Leave invalid inventory diagnostics to stage verification.
+      else:
+        check_runtime_patterns(members, config['inventory'],
+                               config['runtime_files'])
   config.setdefault('runtime', 'slr4')
   if config['runtime'] not in ('slr4', 'none'):
     raise ValueError('runtime must be slr4 or none')
@@ -135,7 +154,17 @@ def runtime_member(name, patterns):
   return False
 
 
-def verify(bundle, inventory, start, runtime_files=()):
+def check_runtime_patterns(files, inventory, patterns):
+  for member in (*files, inventory):
+    relative(member)
+    parts = member.split('/')
+    for end in range(1, len(parts) + 1):
+      parent = '/'.join(parts[:end])
+      if runtime_member(parent, patterns):
+        raise ValueError('runtime_files covers inventory path: ' + parent)
+
+
+def verify(bundle, inventory, start, runtime_files=(), ignored=None):
   if bundle.is_symlink() or not bundle.is_dir():
     raise ValueError('Bundle must be a directory without symlinks')
   manifest = read_json(no_links(bundle, inventory))
@@ -145,6 +174,7 @@ def verify(bundle, inventory, start, runtime_files=()):
       not isinstance(manifest.get('files'), dict) or not manifest['files']):
     raise ValueError('Invalid or empty version-1 inventory')
   files = manifest['files']
+  check_runtime_patterns(files, inventory, runtime_files)
   for name, expected in files.items():
     relative(name)
     if name == inventory or not isinstance(expected, str) or not re.fullmatch(
@@ -168,11 +198,18 @@ def verify(bundle, inventory, start, runtime_files=()):
       mode = path.lstat().st_mode
       if stat.S_ISLNK(mode) or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
         raise ValueError('Symlink or special bundle member: ' + str(path))
+      if stat.S_ISDIR(mode) and ignored is not None:
+        member = str(path.relative_to(bundle))
+        if runtime_member(member, runtime_files):
+          ignored.append(member)
       if stat.S_ISREG(mode):
         member = str(path.relative_to(bundle))
         # Inventory members always remain mandatory and hash-checked above.
-        if member in files or member == inventory or not runtime_member(
-            member, runtime_files):
+        allowed = member not in files and member != inventory and \
+                  runtime_member(member, runtime_files)
+        if allowed and ignored is not None:
+          ignored.append(member)
+        if not allowed:
           actual.add(member)
   if actual != set(files) | {inventory}:
     raise ValueError('Unlisted or missing bundle files')
@@ -247,9 +284,40 @@ def running_versions(root):
 
 
 def list_result(root):
+  versions = no_links(root, 'versions')
+  partials = sorted(p.name for p in versions.iterdir()
+                    if re.fullmatch(r'[0-9a-f]{12}\.partial', p.name)) \
+             if versions.is_dir() else []
   return {'current': current_version(root), 'versions': versions_list(root),
           'running': running_versions(root),
-          'deploy_order': [r['version'] for r in history(root)]}
+          'deploy_order': [r['version'] for r in history(root)],
+          'partials': partials, 'lock': lock_info(root)}
+
+
+def lock_info(root):
+  lock = no_links(root, '.steamos-deploy-lock')
+  if not lock.exists():
+    return None
+  if not lock.is_dir():
+    raise ValueError('Deployment lock is not a directory; inspect it')
+  try:
+    holder = no_links(lock, 'holder').read_text()
+    created = float(no_links(lock, 'timestamp').read_text())
+    token = no_links(lock, 'owner').read_text()
+  except (OSError, ValueError):
+    return {'stale': False, 'reason': 'unknown lock metadata; inspect it'}
+  lease = Path.home() / '.agent-kit-steamos-lease/info'
+  try:
+    values = dict(line.split('=', 1) for line in lease.read_text().splitlines()
+                  if '=' in line)
+    owner_gone = values.get('holder') != holder or \
+                 int(values.get('expires', '0')) <= time.time()
+  except (OSError, ValueError):
+    owner_gone = True
+  age = time.time() - created
+  return {'holder': holder, 'created': created, 'age_seconds': age,
+          'stale': bool(token and age > 600 and owner_gone),
+          'owner_gone': owner_gone}
 
 
 def check_authority(request):
@@ -279,17 +347,24 @@ def previous_version(root, runtime_files):
   current = current_version(root)
   available = set(versions_list(root))
   records = history(root)
-  seen_current = False
-  for record in reversed(records):
+  anchor = None
+  for index in range(len(records) - 1, -1, -1):
+    record = records[index]
+    if record['version'] == current and record['version'] in available:
+      anchor = record.get('rollback_anchor', index)
+      break
+  if anchor is None or type(anchor) is not int or not 0 <= anchor < len(records):
+    raise ValueError('No recorded current version for rollback')
+  for index in range(anchor - 1, -1, -1):
+    record = records[index]
     version = record['version']
-    if version == current:
-      seen_current = True
-    elif seen_current and version in available:
+    if record.get('action') != 'rollback' and version != current and \
+        version in available:
       manifest = verify(root / 'versions' / version,
                         record['inventory'], record['start'], runtime_files)
       if version_id(manifest) != version:
         raise ValueError('Rollback inventory does not match its version')
-      return record
+      return dict(record, rollback_anchor=index)
   raise ValueError('No previous retained version for rollback')
 
 
@@ -303,16 +378,23 @@ def prepare(root, request):
   if (root / 'current.new').exists() or (root / 'current.new').is_symlink():
     raise ValueError('current.new already exists; inspect before deployment')
   lock = no_links(root, '.steamos-deploy-lock')
-  lock.mkdir()  # Same-holder deployments cannot interleave either.
+  try:
+    lock.mkdir()  # Same-holder deployments cannot interleave either.
+  except FileExistsError as error:
+    raise ValueError('Deployment lock exists; run `steamos deploy --list` '
+                     'and `steamos deploy --abort-stale` if eligible') from error
   try:
     (lock / 'owner').write_text(request['token'])
+    (lock / 'holder').write_text(request['holder'])
+    (lock / 'timestamp').write_text(str(time.time()))
     if request['rollback']:
       return previous_version(root, config['runtime_files'])
     version = request['version']
     final = no_links(versions, version)
     partial = no_links(versions, version + '.partial')
     if partial.exists():
-      raise ValueError('Partial directory already exists; inspect before retry')
+      raise ValueError('Partial directory already exists; inspect with '
+                       '`steamos deploy --list`, then `--abort-stale`')
     if final.exists():
       manifest = verify(final, config['inventory'], config['start'],
                         config['runtime_files'])
@@ -324,6 +406,8 @@ def prepare(root, request):
   except BaseException:
     # An existing partial is never adopted or removed here.
     (lock / 'owner').unlink(missing_ok=True)
+    (lock / 'holder').unlink(missing_ok=True)
+    (lock / 'timestamp').unlink(missing_ok=True)
     lock.rmdir()
     raise
 
@@ -348,8 +432,9 @@ def switch(root, request):
   config = request['config']
   version = request['version']
   final = no_links(root, 'versions/' + version)
+  ignored = []
   manifest = verify(final, request['inventory'], request['start'],
-                    config['runtime_files'])
+                    config['runtime_files'], ignored)
   if version_id(manifest) != version:
     raise ValueError('Version inventory hash does not match directory name')
   current_version(root)
@@ -364,6 +449,12 @@ def switch(root, request):
     offset = log.tell()
     record = {'version': version, 'inventory': request['inventory'],
               'start': request['start'], 'device_time': time.time()}
+    if request['rollback']:
+      target = previous_version(root, config['runtime_files'])
+      if target['version'] != version:
+        raise ValueError('Rollback target changed; retry from deploy --list')
+      record.update(action='rollback',
+                    rollback_anchor=target['rollback_anchor'])
     # Finish this bounded commit section despite SSH hangup or Ctrl-C.
     previous = {s: signal.signal(s, signal.SIG_IGN)
                 for s in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)}
@@ -397,7 +488,9 @@ def switch(root, request):
         signal.signal(s, handler)
   records.append(record)
   # Retention failure after publication is reported without undoing current.
-  recent = list(dict.fromkeys(r['version'] for r in reversed(records)))
+  available = set(versions_list(root))
+  recent = list(dict.fromkeys(r['version'] for r in reversed(records)
+                              if r['version'] in available))
   keep = set(recent[:config['keep_versions']]) | {version}
   keep.update(running_versions(root))
   removed, warnings = [], []
@@ -411,7 +504,8 @@ def switch(root, request):
         removed.append(old)
       except (OSError, ValueError) as error:
         warnings.append(str(error))
-  return dict(list_result(root), removed=removed, warnings=warnings)
+  return dict(list_result(root), removed=removed, warnings=warnings,
+              ignored_runtime_files=sorted(set(ignored)))
 
 
 def abort(root, request):
@@ -424,13 +518,38 @@ def abort(root, request):
     if partial.is_dir():
       shutil.rmtree(partial)
   (lock / 'owner').unlink()
+  (lock / 'holder').unlink()
+  (lock / 'timestamp').unlink()
   lock.rmdir()
   return {}
 
 
+def abort_stale(root, request):
+  check_authority(request)
+  info = lock_info(root)
+  if info is not None and not info['stale']:
+    raise ValueError('Deployment lock is active or has unknown owner; '
+                     'inspect `steamos deploy --list`')
+  versions = no_links(root, 'versions')
+  removed = []
+  if versions.is_dir():
+    for path in versions.iterdir():
+      if re.fullmatch(r'[0-9a-f]{12}\.partial', path.name) and \
+          path.is_dir() and not path.is_symlink():
+        no_links(versions, path.name)
+        shutil.rmtree(path)
+        removed.append(path.name)
+  if info is not None:
+    lock = no_links(root, '.steamos-deploy-lock')
+    for name in ('owner', 'holder', 'timestamp'):
+      no_links(lock, name).unlink()
+    lock.rmdir()
+  return dict(list_result(root), removed_partials=removed)
+
+
 def device_main():
   try:
-    request = json.loads(sys.argv[1])
+    request = json.load(sys.stdin)
     action = request['action']
     config = request['config']
     if not TITLE.fullmatch(config['title']):
@@ -442,6 +561,8 @@ def device_main():
       result = list_result(root)
     elif action == 'abort':
       result = abort(root, request)
+    elif action == 'abort_stale':
+      result = abort_stale(root, request)
     else:
       check_authority(request)
       if action == 'prepare':
