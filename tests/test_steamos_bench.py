@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import runpy
 import subprocess
 import sys
 import time
@@ -51,7 +52,8 @@ class SteamosBenchTest(unittest.TestCase):
       home = pathlib.Path.home()
       with (home / 'sudo.log').open('a') as f:
         f.write(json.dumps(args) + '\\n')
-      assert args[:2] == ['-n', '/usr/local/sbin/steamos-governor'], args
+      assert args[:2] == ['-n', os.environ.get('FAKE_HELPER',
+        '/etc/agent-kit/steamos-governor')], args
       if os.environ.get('FAKE_SUDO_REFUSE'):
         print('sudo: a password is required', file=sys.stderr)
         sys.exit(1)
@@ -59,7 +61,9 @@ class SteamosBenchTest(unittest.TestCase):
       if os.environ.get('FAKE_PIN_FAIL') and cpu == 'cpu1' and \
           governor == 'performance':
         sys.exit(1)
-      if os.environ.get('FAKE_RESTORE_FAIL') and governor != 'performance':
+      if (os.environ.get('FAKE_RESTORE_FAIL') or
+          os.environ.get('FAKE_RESTORE_CPU') == cpu) and \
+          governor != 'performance':
         log = (home / 'sudo.log').read_text()
         if 'performance' in log:
           sys.exit(1)
@@ -115,6 +119,120 @@ class SteamosBenchTest(unittest.TestCase):
     self.assertEqual(self.governors(),
                      {'cpu0': 'schedutil', 'cpu1': 'powersave'})
 
+  def bench_config(self, **settings):
+    self.configure({'default': 'unit', 'devices': {
+      'unit': {'address': '10.0.0.5', 'name': 'unit'}}, 'bench': settings})
+
+  def test_custom_helper_and_invalid_config_before_ssh(self):
+    self.fixture()
+    self.env['FAKE_HELPER'] = '/etc/custom/governor'
+    self.bench_config(governor_helper=self.env['FAKE_HELPER'])
+    self.bench('--pin-governor')
+    self.assert_restored()
+    (self.root / 'hosts.log').unlink(missing_ok=True)
+    for settings in ({'governor_helper': 'relative/helper'},
+                     {'governor_helper': 7}, {'keep_runs': 0},
+                     {'keep_runs': -1}, {'keep_runs': True},
+                     {'keep_runs': 1.5}, {'keep_runs': '20'}):
+      with self.subTest(settings=settings):
+        self.bench_config(**settings)
+        self.run_cli('bench', 'run', '--', 'true', code=2)
+    self.assertFalse((self.root / 'hosts.log').exists())
+
+  def test_retention_default_and_custom_never_follow_symlinks(self):
+    self.fixture()
+    root = self.device_home() / '.agent-kit-steamos-bench'
+    root.mkdir()
+    outside = self.device_home() / 'outside'
+    outside.mkdir()
+    (outside / 'keep').write_text('preserved')
+    (root / 'run-link').symlink_to(outside, target_is_directory=True)
+    (root / 'run-file').write_text('preserved')
+    (root / 'other').mkdir()
+    for number in range(23):
+      path = root / f'run-old-{number:02d}'
+      path.mkdir()
+      (path / 'nested-link').symlink_to(outside, target_is_directory=True)
+      os.utime(path, (number + 1, number + 1))
+    self.bench()
+    def runs():
+      return sorted(p.name for p in root.glob('run-*')
+                    if p.is_dir() and not p.is_symlink())
+    self.assertEqual(len(runs()), 20)
+    self.assertNotIn('run-old-03', runs())
+    self.assertIn('run-old-04', runs())
+    self.bench_config(keep_runs=2)
+    self.bench()
+    self.assertEqual(len(runs()), 2)
+    self.assertTrue((root / 'run-link').is_symlink())
+    self.assertEqual((outside / 'keep').read_text(), 'preserved')
+    self.assertEqual((root / 'run-file').read_text(), 'preserved')
+    self.assertTrue((root / 'other').is_dir())
+
+  def test_stdout_and_stderr_bounded_with_truncation_note(self):
+    self.fixture()
+    out, result, _ = self.bench(command=['python3', '-c',
+      'import os; block = b"x" * (1024 * 1024); '
+      '[(os.write(1, block), os.write(2, block)) for _ in range(65)]'])
+    self.assertEqual(result['exit_status'], 0)
+    for name in ('stdout.log', 'stderr.log'):
+      path = out / name
+      self.assertEqual(path.stat().st_size, 64 * 1024 * 1024)
+      with path.open('rb') as stream:
+        stream.seek(-100, 2)
+        self.assertIn(b'truncated', stream.read())
+
+  def test_restore_failure_part_way_still_restores_later_cpu(self):
+    self.fixture()
+    self.env['FAKE_RESTORE_CPU'] = 'cpu0'
+    _, result, proc = self.bench('--pin-governor', code=1)
+    self.assertFalse(result['restoration_ok'])
+    self.assertEqual(self.governors(),
+                     {'cpu0': 'performance', 'cpu1': 'powersave'})
+    self.assertIn('failed to restore', proc.stderr)
+    self.assertEqual(result['governors']['after'], self.governors())
+
+  def test_heartbeat_timeout_and_closed_stdin_restore(self):
+    self.fixture()
+    script = runpy.run_path(str(BIN))['BENCH_SCRIPT']
+    for close in (False, True):
+      with self.subTest(closed_stdin=close):
+        marker = self.device_home() / 'heartbeat-started'
+        marker.unlink(missing_ok=True)
+        request = dict(command=['python3', '-c',
+          'from pathlib import Path; import time; '
+          'Path("heartbeat-started").touch(); time.sleep(30)'],
+          pin_governor=True, require_power=False, cpus=None,
+          perf_stat=False, thermals=None, keep_runs=20,
+          governor_helper='/etc/agent-kit/steamos-governor')
+        proc = subprocess.Popen([sys.executable, '-c', script],
+          cwd=self.device_home(),
+          env=dict(self.env, HOME=str(self.device_home())),
+          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+          stderr=subprocess.PIPE, text=True)
+        try:
+          proc.stdin.write(json.dumps(request) + '\n')
+          proc.stdin.flush()
+          deadline = time.monotonic() + 5
+          while not marker.exists():
+            if time.monotonic() > deadline or proc.poll() is not None:
+              self.fail('heartbeat command never started')
+            time.sleep(.02)
+          if close:
+            proc.stdin.close()
+            proc.stdin = None
+          proc.wait(timeout=8)
+          stdout, stderr = proc.communicate(timeout=2)
+          self.assertEqual(proc.returncode, 0, stderr)
+          result = json.loads(stdout.splitlines()[-1])
+          self.assertEqual(result['exit_status'], 128 + signal.SIGHUP)
+          self.assertTrue(result['restoration_ok'])
+          self.assert_restored()
+        finally:
+          if proc.poll() is None:
+            proc.kill()
+            proc.communicate(timeout=8)
+
   def test_restore_success_and_artifacts(self):
     self.fixture()
     out, result, _ = self.bench('--pin-governor', '--require-power',
@@ -157,9 +275,10 @@ class SteamosBenchTest(unittest.TestCase):
     self.fixture()
     self.env['FAKE_SUDO_REFUSE'] = '1'
     _, result, proc = self.bench('--pin-governor', code=1)
-    self.assertIn('sudo -n /usr/local/sbin/steamos-governor cpu0 schedutil',
+    self.assertIn('sudo -n /etc/agent-kit/steamos-governor cpu0 schedutil',
                   proc.stderr)
     self.assertIn('steamos.md', proc.stderr)
+    self.assertIn('sudo: a password is required', proc.stderr)
     self.assertIsNone(result['exit_status'])
     self.assert_restored()
 
@@ -312,8 +431,13 @@ class SteamosBenchTest(unittest.TestCase):
         if time.monotonic() > deadline or proc.poll() is not None:
           self.fail('first benchmark did not start')
         time.sleep(.02)
-      _, result, second = self.bench('--pin-governor', code=1)
-      self.assertIsNone(result['exit_status'])
+      root = self.device_home() / '.agent-kit-steamos-bench'
+      directories = list(root.glob('run-*'))
+      refused = self.root / 'refused'
+      second = self.run_cli('bench', 'run', '--out', str(refused),
+                            '--pin-governor', '--', 'true', code=1)
+      self.assertEqual(list(root.glob('run-*')), directories)
+      self.assertFalse(refused.exists())
       self.assertIn('another bench run', second.stderr)
       self.assertEqual(self.governors(),
                        {'cpu0': 'performance', 'cpu1': 'performance'})

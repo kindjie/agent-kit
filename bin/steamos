@@ -1354,14 +1354,11 @@ if os.environ.get('STEAMOS_TEST_SYSFS'):
   if home not in sysfs.parents or sysfs.name != '.steamos-test-sysfs':
     sys.exit('invalid test sysfs: expected HOME/.steamos-test-sysfs')
 root = home / '.agent-kit-steamos-bench'
+if root.is_symlink():
+  sys.exit('bench root must not be a symlink')
 root.mkdir(mode=0o700, exist_ok=True)
-directory = root / ('run-' + time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
-                    + '-' + uuid.uuid4().hex)
-directory.mkdir(mode=0o700)
-(directory / 'stdout.log').touch()
-(directory / 'stderr.log').touch()
-print(json.dumps({'remote_directory': str(directory)}), flush=True)
-helper = '/usr/local/sbin/steamos-governor'
+directory = None
+helper = request['governor_helper']
 cancel = threading.Event()
 interruption = 0
 last_heartbeat = time.monotonic()
@@ -1478,6 +1475,19 @@ try:
     fcntl.flock(bench_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
   except BlockingIOError:
     raise RuntimeError('another bench run is active; wait for its cleanup')
+  directory = root / ('run-' + time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+                      + '-' + uuid.uuid4().hex)
+  directory.mkdir(mode=0o700)
+  # Only direct run directories are candidates; rmtree never traverses
+  # nested symlinks. Keep the current run even if old mtimes are in future.
+  runs = sorted((p for p in root.glob('run-*')
+                 if not p.is_symlink() and p.is_dir() and p != directory),
+                key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True)
+  for old in runs[request['keep_runs'] - 1:]:
+    shutil.rmtree(old)
+  (directory / 'stdout.log').touch()
+  (directory / 'stderr.log').touch()
+  print(json.dumps({'remote_directory': str(directory)}), flush=True)
   before = governors()
   save('governors-before.json', before)
   power_before = power()
@@ -1522,12 +1532,41 @@ try:
     sample()
     try:
       child = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
-                               stdout=stdout, stderr=stderr,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                start_new_session=True)
     except OSError as exc:
       stderr.write((str(exc) + '\n').encode())
       status = 127 if isinstance(exc, FileNotFoundError) else 126
+    # Drain both pipes without blocking heartbeat/signal handling. Discard
+    # excess bytes so a noisy command can finish without growing its logs.
+    streams = []
+    if child is not None:
+      for pipe, log in ((child.stdout, stdout), (child.stderr, stderr)):
+        os.set_blocking(pipe.fileno(), False)
+        streams.append([pipe, log, 0, False])
+    limit = 64 * 1024 * 1024
+    note = b'\n[steamos: log truncated at 64 MiB]\n'
+    def drain():
+      for stream in streams:
+        pipe, log, size, truncated = stream
+        for _ in range(16):
+          try:
+            data = os.read(pipe.fileno(), 65536)
+          except BlockingIOError:
+            break
+          if not data:
+            break
+          if not truncated:
+            kept = data[:max(0, limit - size)]
+            log.write(kept)
+            size += len(kept)
+            if len(kept) < len(data):
+              log.seek(limit - len(note))
+              log.write(note)
+              truncated = True
+        stream[2:] = [size, truncated]
     while child is not None and child.poll() is None:
+      drain()
       if cancel.is_set() or time.monotonic() - last_heartbeat > 5:
         stop_command()
         status = 128 + (interruption or signal.SIGHUP)
@@ -1538,10 +1577,17 @@ try:
       status = child.returncode
       if status < 0:
         status = 128 - status
+    stop_command()
+    drain()
+    for pipe, _, _, _ in streams:
+      pipe.close()
     ended = time.time()
 except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
   error = str(exc)
 finally:
+  if directory is None:
+    print(json.dumps({'error': error}), flush=True)
+    sys.exit(0)
   # Ignore further signals only during bounded cleanup. Restoration tries
   # every CPU even when an earlier write failed; its read-back is evidence.
   for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
@@ -1680,6 +1726,15 @@ def bench_command(options):
     raise Failure(USAGE, '--thermals must be a finite interval above zero')
   config = load_config()
   name, entry = device(config, options.device)
+  bench = config.get('bench', {})
+  if not isinstance(bench, dict):
+    raise Failure(USAGE, 'bench configuration must be an object')
+  keep_runs = bench.get('keep_runs', 20)
+  helper = bench.get('governor_helper', '/etc/agent-kit/steamos-governor')
+  if type(keep_runs) is not int or keep_runs < 1:
+    raise Failure(USAGE, 'bench.keep_runs must be a positive integer')
+  if not isinstance(helper, str) or not helper.startswith('/') or '\0' in helper:
+    raise Failure(USAGE, 'bench.governor_helper must be an absolute path')
   output = output_path(options.out or (
     './steamos-bench-' + name + '-' +
     time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())))
@@ -1692,7 +1747,8 @@ def bench_command(options):
   require_lease(config, name, entry, 'bench run')
   request = {'command': command, 'pin_governor': options.pin_governor,
              'require_power': options.require_power, 'cpus': options.cpus,
-             'perf_stat': options.perf_stat, 'thermals': options.thermals}
+             'perf_stat': options.perf_stat, 'thermals': options.thermals,
+             'keep_runs': keep_runs, 'governor_helper': helper}
   proc = bench_ssh(entry, request)
   if proc.returncode != 0:
     raise Failure(UNREACHABLE, 'device benchmark supervisor failed: ' +
@@ -1703,6 +1759,8 @@ def bench_command(options):
     raise Failure(UNREACHABLE, 'bench returned no final summary')
   if not isinstance(reply, dict):
     raise Failure(UNREACHABLE, 'bench returned an invalid summary')
+  if set(reply) == {'error'} and isinstance(reply['error'], str):
+    raise Failure(REFUSED, reply['error'])
   remote = reply.get('remote_directory', '')
   files = reply.pop('files', [])
   allowed = {'summary.json', 'stdout.log', 'stderr.log', 'perf-stat.csv',

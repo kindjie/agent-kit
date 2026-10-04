@@ -347,6 +347,8 @@ when a lease expires during a run.
 The device supervisor receives a host heartbeat every half-second. EOF,
 device signals or five seconds without a heartbeat stop COMMAND's process
 group (TERM, then KILL after a bounded wait) before restoring governors.
+A COMMAND that leaves its process group (for example with `setsid` or
+`systemd-run`) survives a stop; manage such workloads separately.
 Host SIGINT/SIGTERM/SIGHUP close the transport input and wait for the receipt.
 After a dropped connection the device cleans up independently; the CLI returns
 3, names the device run directory when available, and never reruns COMMAND at
@@ -356,12 +358,28 @@ device failure cannot run cleanup; no software trap can guarantee restoration
 in those cases.
 
 Runs remain in `~/.agent-kit-steamos-bench/run-<utc>-<unique-id>/` on the device.
+A run directory is created only after acquiring the account's bench lock;
+an overlapping refusal leaves no run directory. Under that lock, each new run
+keeps the newest 20 run directories, including itself, and deletes older ones.
+Only direct `run-*` directories beneath that root are eligible; symlinks and
+other entries are preserved, and nested symlinks are never followed. Old runs
+are ordered by directory modification time, with their name breaking ties.
+`bench.keep_runs` configures a positive integer count. `stdout.log` and
+`stderr.log` are each capped at 64 MiB, including a truncation note when output
+exceeds the limit; excess output is drained and discarded.
+
+```json
+{"bench": {"keep_runs": 20,
+  "governor_helper": "/etc/agent-kit/steamos-governor"}}
+```
+
+`bench.governor_helper` configures an absolute device path.
 The tool copies run files with scp to `--out`, defaulting to
 `./steamos-bench-<device>-<utc>`. The destination must be new and its parent
 must exist; existing results are never overwritten. Device paths must be
 absolute paths containing letters, digits, `.`, `_`, `-` and `/` for the
 shared download mechanism. Device results are retained after download or a
-transfer failure; inspect them before deleting anything.
+transfer failure until later runs prune them; copy important results elsewhere.
 
 `summary.json` records the exact argv, COMMAND exit status (null if refused
 before launch), start/end device epochs, per-CPU governors before/during/after,
@@ -381,18 +399,27 @@ acceptance; inspect the workload, thermals and quiet-device conditions.
 Pinning calls exactly:
 
 ```sh
-sudo -n /usr/local/sbin/steamos-governor cpu0 performance
-sudo -n /usr/local/sbin/steamos-governor cpu0 schedutil
+sudo -n /etc/agent-kit/steamos-governor cpu0 performance
+sudo -n /etc/agent-kit/steamos-governor cpu0 schedutil
 ```
 
 CPU names and saved governors vary by device. A refusal names the actual
 command needing permission. The owner may choose to install this small helper
-as `/usr/local/sbin/steamos-governor`, owned by root with mode 0755, with all
-parent directories root-owned and not writable by the benchmark user. Its
+as `/etc/agent-kit/steamos-governor`, owned by root with mode 0755, in a
+root-owned `/etc/agent-kit` directory with mode 0755. All parent directories
+must be root-owned and not writable by the benchmark user. SteamOS's root is
+read-only and image-updated; `/usr/local/sbin` would need unlocking and would
+be lost on update. `/etc` is a persistent overlay: this helper and
+`/etc/sudoers.d` survive SteamOS updates (verified on a SteamOS 3.8 device). Its
 fixed interpreter uses isolated mode; it ignores all environment overrides
 and only writes the named CPU's sysfs `scaling_governor` file.
 
-```python
+Install on the device as user `deck` (sudo may prompt during installation):
+
+```sh
+sudo install -d -o root -g root -m 0755 /etc/agent-kit
+sudo install -o root -g root -m 0755 /dev/stdin \
+  /etc/agent-kit/steamos-governor <<'PY'
 #!/usr/bin/python3 -I
 import re
 import sys
@@ -409,19 +436,27 @@ available = (root / 'scaling_available_governors').read_text().split()
 if governor not in available:
   sys.exit('governor unavailable on this CPU')
 (root / 'scaling_governor').write_text(governor + '\n')
+PY
 ```
 
-An OPTIONAL sudoers entry, edited and checked by the owner with `visudo`, is:
+The helper permits any governor the kernel lists for the selected CPU,
+including `userspace`; it does not restrict the choice to `performance`.
+Bench itself pins to `performance` and restores each CPU's saved value.
 
-```sudoers
-# Replace benchuser with the device user. The root-owned helper validates
-# exactly two arguments and permits only scaling_governor writes.
-benchuser ALL=(root) NOPASSWD: /usr/local/sbin/steamos-governor cpu[0-9]* *
+Install the OPTIONAL sudoers rule through `visudo`, which validates it before
+saving (the editor below takes the rule from stdin):
+
+```sh
+sudo env SUDO_EDITOR=/usr/bin/tee visudo -f /etc/sudoers.d/agent-kit-steamos <<'RULE'
+deck ALL=(root) NOPASSWD: /etc/agent-kit/steamos-governor cpu[0-9]* *
+RULE
 ```
 
-Do not grant `sudo sh`, unrestricted `tee`, or a user-writable helper. SteamOS
-updates may reset this optional system configuration. No rule is needed to
-run unpinned benchmarks.
+The root-owned helper validates exactly two arguments and permits only
+`scaling_governor` writes. Change `deck` for another device user; if configuring
+a different helper path, use the same absolute path in the sudoers rule.
+Do not grant `sudo sh`, unrestricted `tee`, or a user-writable helper.
+No rule is needed to run unpinned benchmarks.
 
 ## Wake
 
