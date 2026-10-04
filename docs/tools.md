@@ -39,6 +39,7 @@
 | `design-documents` | Deciding whether a design document is warranted |
 | `preview-markdown` | Previewing and visually validating Markdown |
 | `profiling` | Collecting or reading a performance profile, CPU, GPU or Wasm |
+| `steamos` | Working on a shared Steam Deck or Steam Machine: status, the device lease, and owner hand-offs |
 | `pull-requests` | Taking a change through a pull-request workflow |
 | `agent-records` | Tracking work and lasting machine state with `agent-task` and `agent-changelog` |
 | `estimate-agent-work` | Sizing tracked work and identifying useful decomposition |
