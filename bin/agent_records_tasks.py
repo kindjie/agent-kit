@@ -518,20 +518,30 @@ def checklist(body):
                  if line.startswith("- [")]
 
 
+def check_text(line):
+  """Checklist text without evidence or n/a appended to a checked item."""
+  content = line[6:]
+  if line.startswith("- [x] "):
+    end = max(content.rfind(" -- evidence: "),
+              content.rfind(": n/a -- "))
+    if end >= 0:
+      return content[:end]
+  return content
+
+
 def checklist_item(body, item):
   """(index, line, fixed (key, label) or None, key) of a checklist item."""
   _, lines = checklist(body)
   index = (int(item) - 1 if re.fullmatch(r"[0-9]+", item) else next(
-    (i for i, line in enumerate(lines) if line.startswith(
-      "- [ ] " + item + ":") or line.startswith("- [x] " + item + ":")), -1))
+    (i for i, line in enumerate(lines) if check_text(line) == item or
+     check_text(line).startswith(item + ":")), -1))
   if not 0 <= index < len(lines):
     raise RecordsError("checklist item not found", 1)
   line = lines[index]
   content = line[6:]
   fixed = (FIXED[index] if index < len(FIXED) and
            content.startswith(FIXED[index][0] + ":") else None)
-  key = (fixed[0] if fixed else
-         content.split(" -- evidence: ", 1)[0].split(": n/a -- ", 1)[0])
+  key = fixed[0] if fixed else check_text(line)
   return index, line, fixed, key
 
 
@@ -850,6 +860,8 @@ def alter_task(root, args, agent, push, changes=None):
       "Rechecked " if line.startswith("- [x] ") else "Checked ") + key +
       (": " + one_line(args.reason) if args.reason else ""))
   elif command == "uncheck":
+    if not args.reason.strip():
+      raise RecordsError("--reason required", 2)
     forced_action = permission(fields, agent, command, force)
     index, line, fixed, key = checklist_item(body, args.item)
     if not line.startswith("- [x] "):
@@ -954,6 +966,8 @@ def alter_task(root, args, agent, push, changes=None):
                   [owner] if args.request == "helper" and owner else None)
     body = append_log(body, agent, text, recipients)
   elif command == "reopen":
+    if not args.reason.strip():
+      raise RecordsError("--reason required", 2)
     if fields["status"] not in CLOSED:
       raise RecordsError("task is already live", 1)
     old = fields["closed"]

@@ -204,6 +204,66 @@ class TransitionTest(RecordsFixture):
                   shown)
     self.run_cmd("agent-task", "lint")
 
+  def test_added_check_keeps_embedded_evidence_marker(self):
+    self.init()
+    item = "review -- evidence: draft text"
+    task = self.task("Evidence marker", "--check", item)
+    self.run_task("agent-a", "claim", task)
+    self.run_task("agent-a", "check", task, item, "--evidence", "approved")
+    self.assertIn("- [x] " + item + " -- evidence: approved",
+                  self.run_cmd("agent-task", "show", task))
+    self.run_task("agent-a", "uncheck", task, item, "--reason", "retry")
+    self.assertIn("- [ ] " + item + "\n",
+                  self.run_cmd("agent-task", "show", task))
+
+  def test_added_check_keeps_embedded_na_marker(self):
+    self.init()
+    item = "review: n/a -- draft text"
+    task = self.task("N/A marker", "--check", item)
+    self.run_task("agent-a", "claim", task)
+    self.run_task("agent-a", "check", task, item, "--na", "deferred")
+    self.assertIn("- [x] " + item + ": n/a -- deferred",
+                  self.run_cmd("agent-task", "show", task))
+    self.run_task("agent-a", "uncheck", task, item, "--reason", "retry")
+    self.assertIn("- [ ] " + item + "\n",
+                  self.run_cmd("agent-task", "show", task))
+
+  def test_added_check_without_colon_is_findable_by_text(self):
+    self.init()
+    task = self.task("Plain check")
+    self.run_task("agent-a", "claim", task)
+    self.run_task("agent-a", "set", task, "--add-check", "plain item")
+    self.run_task("agent-a", "check", task, "plain item", "--evidence",
+                  "done")
+    self.run_task("agent-a", "uncheck", task, "plain item", "--reason",
+                  "retry")
+    self.assertIn("- [ ] plain item\n",
+                  self.run_cmd("agent-task", "show", task))
+
+  def test_uncheck_rejects_empty_reason_without_writing(self):
+    self.init()
+    task = self.task("Uncheck reason")
+    self.run_task("agent-a", "claim", task)
+    self.run_task("agent-a", "check", task, "docs", "--evidence", "done")
+    head = self.git_head()
+    self.run_task("agent-a", "uncheck", task, "docs", "--reason", "",
+                  code=2)
+    self.assertEqual(self.git_head(), head)
+    self.run_task("agent-a", "uncheck", task, "docs", "--reason", "  ",
+                  code=2)
+    self.assertEqual(self.git_head(), head)
+
+  def test_reopen_rejects_empty_reason_without_writing(self):
+    self.init()
+    task = self.task("Reopen reason")
+    self.run_task("agent-a", "claim", task)
+    self.run_task("agent-a", "close", task, "cancelled", "--reason", "done")
+    head = self.git_head()
+    self.run_task("agent-b", "reopen", task, "--reason", "", code=2)
+    self.assertEqual(self.git_head(), head)
+    self.run_task("agent-b", "reopen", task, "--reason", "  ", code=2)
+    self.assertEqual(self.git_head(), head)
+
   def test_unowned_set_and_block_force(self):
     self.init()
     task = self.task()
