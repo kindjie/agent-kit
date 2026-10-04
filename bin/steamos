@@ -22,6 +22,9 @@ import tempfile
 import threading
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import steamos_deploy as publication
+
 OK, REFUSED, USAGE, UNREACHABLE = 0, 1, 2, 3
 BENCH_FAILED = 4
 DEFAULT_KEY = Path('~/.config/steamos-devkit/devkit_rsa')
@@ -884,6 +887,158 @@ def remote_output(proc):
                    not line.startswith('device_time='))
 
 
+def project(options, optional=False):
+  try:
+    return publication.project_config(getattr(options, 'project', None),
+                                      optional=optional)
+  except (OSError, ValueError) as error:
+    raise Failure(USAGE, f'project configuration: {error}')
+
+
+def local_stage(root, config):
+  try:
+    bundle = publication.no_links(root, config['bundle'])
+    manifest = publication.verify(bundle, config['inventory'], config['start'])
+  except (OSError, ValueError) as error:
+    raise Failure(REFUSED, f'stage verification: {error}')
+  return bundle, manifest, publication.version_id(manifest)
+
+
+def stage_command(options):
+  root, config = project(options)
+  _, _, version = local_stage(root, config)
+  result = {'title': config['title'], 'version': version}
+  print(json.dumps(result, indent=2) if options.json else version)
+  return OK
+
+
+def project_remote(entry, request, action):
+  # Use exactly the local verifier on the device, without installing a
+  # project script or inferring a private format. Arguments remain literal.
+  source = Path(publication.__file__).read_text()
+  script = 'python3 - "$@" <<\'STEAMOS_PROJECT_PY\'\n' + source + \
+           '\nSTEAMOS_PROJECT_PY\n'
+  proc = ssh(entry, script, [json.dumps(dict(request, action=action))])
+  return last_json(proc, 'project ' + action)
+
+
+def register_project(config, name, entry, project_config, destination, start):
+  require_lease(config, name, entry, 'registering the project')
+  settings = {'steam_play': '0', 'compat_tool': (
+    'SteamLinuxRuntime_4' if project_config['runtime'] == 'slr4' else '')}
+  parms = {'gameid': project_config['title'], 'directory': destination,
+           'argv': ['./current/' + start, *project_config['args']], 'env': {},
+           'settings': settings, 'clear_settings': True,
+           'force_appid': None, 'lepton_args': ''}
+  reply = last_json(helper(entry, 'steam-client-create-shortcut',
+                           ['--parms', json.dumps(parms)]), 'title register')
+  if 'success' not in reply:
+    raise Failure(UNREACHABLE, 'title register returned no success result')
+  if not reply['success']:
+    raise Failure(REFUSED, 'title register reported failure')
+  return reply
+
+
+def deploy_command(options):
+  import uuid
+  root, project_config = project(options)
+  config = load_config()
+  name, entry = device(config, options.device)
+  request = {'config': project_config}
+  if options.list:
+    result = project_remote(entry, request, 'list')
+  else:
+    bundle = manifest = version = None
+    if not options.rollback:
+      bundle, manifest, version = local_stage(root, project_config)
+    require_lease(config, name, entry, 'deploy')
+    _, commit = devkit_pin(config)
+    facts = ssh(entry, STATUS_SCRIPT, [])
+    if facts.returncode != 0:
+      raise Failure(UNREACHABLE, 'device status failed: ' + facts.stderr.strip())
+    if parse(facts.stdout).get('devkit_commit') != commit:
+      raise Failure(REFUSED, 'the device needs pinned devkit-utils; '
+                    'run `steamos devkit install`')
+    inventory = last_json(ssh(entry, TITLE_INVENTORY, []), 'title inventory')
+    if inventory['invalid_leftovers']:
+      raise Failure(REFUSED, 'invalid title leftovers block Steam re-sync: ' +
+                    ', '.join(repr(n) for n in inventory['invalid_leftovers']))
+    gameid = project_config['title']
+    require_lease(config, name, entry, 'preparing the project title')
+    prepared = last_json(ssh(entry, TITLE_PREPARE, [gameid]), 'title prepare')
+    destination = str(Path(inventory['root']) / gameid)
+    if prepared.get('directory') != destination:
+      raise Failure(REFUSED, 'title prepare returned an unexpected directory')
+    _, _, legacy = lease_policy(config)
+    request.update(holder=holder(config), pin=commit, legacy=legacy,
+                   token=uuid.uuid4().hex, rollback=options.rollback)
+    if version is not None:
+      request.update(version=version, manifest=manifest)
+    # A successful prepare owns a lock and (when needed) one partial.
+    # Failed prepare never adopts a pre-existing lock or partial.
+    acquired = False
+    attempted = False
+    previous = {}
+
+    def interrupted(signum, _frame):
+      raise Failure(REFUSED, f'deployment interrupted by signal {signum}')
+
+    try:
+      for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+        previous[signum] = signal.signal(signum, interrupted)
+      attempted = True
+      state = project_remote(entry, request, 'prepare')
+      acquired = True
+      if options.rollback:
+        request.update(version=state['version'], inventory=state['inventory'],
+                       start=state['start'])
+      else:
+        request.update(inventory=project_config['inventory'],
+                       start=project_config['start'])
+        if not state['skipped_copy']:
+          require_lease(config, name, entry, 'copying the project')
+          partial = destination + '/versions/' + version + '.partial/'
+          copy_directory(entry, bundle, partial, 'the project bundle',
+                         delete=True)
+          project_remote(entry, request, 'finish_copy')
+      result = project_remote(entry, request, 'switch')
+      # Do not alter the existing shortcut until publication succeeds. A
+      # changed start/args/runtime must not break the previous deployment
+      # when the switch is refused (for example after lease expiry).
+      try:
+        reply = register_project(config, name, entry, project_config,
+                                 destination, request['start'])
+      except Failure as error:
+        raise Failure(error.code, f'published version {request["version"]}; '
+                      f'shortcut registration failed: {error}; inspect '
+                      '`steamos deploy --list` before retrying or rollback')
+      result.update(rollback=options.rollback, reply=reply,
+                    skipped_copy=state.get('skipped_copy', False))
+    finally:
+      # Cleanup is token-authorized even if the lease expires. Preserve the
+      # primary error if the connection also prevents bounded cleanup.
+      for signum in previous:
+        signal.signal(signum, signal.SIG_IGN)
+      if attempted:
+        try:
+          project_remote(entry, request, 'abort')
+        except Failure as error:
+          if acquired or error.code == UNREACHABLE:
+            print('steamos: cleanup unconfirmed; inspect the partial/lock: '
+                  + str(error), file=sys.stderr)
+      for signum, handler in previous.items():
+        signal.signal(signum, handler)
+  result.update(device=name, title=project_config['title'])
+  for warning in result.get('warnings', []):
+    print('steamos: published, retention warning: ' + warning, file=sys.stderr)
+  print(json.dumps(result, indent=2) if options.json else
+        f'{project_config["title"]} on {name}: current '
+        f'{result["current"] or "none"}; versions '
+        f'{", ".join(result["versions"]) or "none"}; running '
+        f'{json.dumps(result["running"])}')
+  return OK
+
+
 def wake_command(options):
   config = load_config()
   name, entry = device(config, options.device)
@@ -929,6 +1084,7 @@ def wake_command(options):
 
 
 def status_command(options):
+  selected_project = project(options, optional=True)
   config = load_config()
   name, entry = device(config, options.device)
   policy, grace, legacy = lease_policy(config)
@@ -953,6 +1109,15 @@ def status_command(options):
     status[key] = int(values[key]) if values.get(key, '').isdigit() else None
   status['external_power'] = values.get('external_power') == 'yes'
   status['lease'] = lease_summary(values)
+  if selected_project is not None:
+    root, project_config = selected_project
+    deployed = project_remote(entry, {'config': project_config}, 'list')
+    deployed['title'] = project_config['title']
+    try:
+      deployed['local_version'] = local_stage(root, project_config)[2]
+    except Failure as error:
+      deployed.update(local_version=None, stage_error=str(error))
+    status['project'] = deployed
   if options.json:
     print(json.dumps(status, indent=2))
     return OK
@@ -974,6 +1139,12 @@ def status_command(options):
   for label, value in rows:
     print(f'{label:<13} {value}')
   print(describe(name, status['lease']))
+  if 'project' in status:
+    deployed = status['project']
+    print(f'{deployed["title"]}: current={deployed["current"] or "none"} '
+          f'local={deployed["local_version"] or "unverified"}')
+    if 'stage_error' in deployed:
+      print(deployed['stage_error'])
   return OK
 
 
@@ -1801,6 +1972,14 @@ def main(argv=None):
   parser.add_argument('--json', action='store_true')
   commands = parser.add_subparsers(dest='command', required=True)
   status = commands.add_parser('status', help='device facts and its lease')
+  status.add_argument('--project', help='project directory (default: from cwd)')
+  stage = commands.add_parser('stage', help='verify a project bundle locally')
+  stage.add_argument('--project', help='project directory (default: from cwd)')
+  deploy = commands.add_parser('deploy', help='publish a verified version')
+  deploy.add_argument('--project', help='project directory (default: from cwd)')
+  mode = deploy.add_mutually_exclusive_group()
+  mode.add_argument('--rollback', action='store_true')
+  mode.add_argument('--list', action='store_true')
   lease = commands.add_parser('lease', help='share a device between agents')
   actions = lease.add_subparsers(dest='action', required=True)
   for action, text in (('take', 'take or renew the lease'),
@@ -1864,11 +2043,15 @@ def main(argv=None):
                        help='allow a session without its summary CSV')
     common_options(sub)
   for sub in (status, lease, devkit, install, title, wake, logs, capture,
-              frametimes, bench):
+              frametimes, bench, stage, deploy):
     common_options(sub)
   options = parser.parse_args(argv)
   options.hours = getattr(options, 'hours', None)
   try:
+    if options.command == 'stage':
+      return stage_command(options)
+    if options.command == 'deploy':
+      return deploy_command(options)
     if options.command == 'status':
       return status_command(options)
     if options.command == 'devkit':

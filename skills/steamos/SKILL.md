@@ -39,7 +39,8 @@ unit before starting another; release, break and reclaim stop it with
 `systemctl --user stop`. Its timed sleep ends at expiry. Normal sleep
 policy applies afterwards. This avoids waking into a PIN screen during
 leased display/performance work. `lease.prevent_sleep: false` opts out in
-`steamos.json`. Missing `systemd-run`, `systemd-inhibit` or a user manager
+the machine's device config. Missing `systemd-run`, `systemd-inhibit` or
+a user manager
 is skipped with `inhibit=unavailable`; `lease show --json` and the `lease`
 object in `status --json` report `sleep_inhibited` as true, false or null
 (unavailable). Active requires both an active unit and its
@@ -56,10 +57,29 @@ the helpers another agent's title may be using.
 
 ## Titles and wake
 
-- With the lease, `steamos title register Demo1 DIR --start ./run.sh`
+- For projects with a root `steamos.json`, use `steamos stage` to verify
+  the built bundle locally, then `steamos deploy` with the lease and pinned
+  helpers. Use `--project PATH` from another directory. The config describes
+  title, bundle, inventory, executable, args, runtime and retention; see
+  `bin/steamos.md`. Version-1 SHA256 inventories accept a `required` list
+  directly. Never infer inventory contents from the checkout.
+- Deploy uploads and verifies every hash in a new version, then atomically
+  replaces `current`; it preserves current on pre-publication failure.
+  `steamos deploy --list` is read-only and reports current/retained/running
+  versions. `steamos status` in the project compares current with local stage.
+  `steamos deploy --rollback` needs the lease and pin, verifies the previous
+  retained version and publishes it. Neither list nor rollback needs a build.
+  Put runtime caches/saves outside version directories: unlisted files make
+  subsequent verification fail. Inspect unknown partials/locks after a dropped
+  connection; they are preserved, not automatically adopted or removed.
+- Benchmark-only projects use `steamos bench` and need no deploy config.
+- For ad-hoc titles, with the lease, use
+  `steamos title register Demo1 DIR --start ./run.sh`. This
   uploads DIR and registers a Steam shortcut. Names must contain only ASCII
   letters and digits. Repeat `--arg ARG` (use `--arg=--flag` for flags).
   Runtime defaults to `slr4`; `--runtime none` clears the compatibility tool.
+  Never use title register on a versioned deploy title: it mirrors the whole
+  title directory and would remove versions and their publication record.
 - `steamos title list` is read-only and needs no lease. It also reports
   invalid leftovers that block registration and Steam re-sync. Never delete
   another title to work around these; refer the named leftovers to the owner.

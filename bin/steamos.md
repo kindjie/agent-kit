@@ -13,6 +13,10 @@ steamos lease renew [--hours N]
 steamos lease show | check | release
 steamos lease break --reason 'why'
 steamos devkit install              # Valve's helpers, at a pinned commit
+steamos stage [--project PATH] [--json]  # local inventory verification
+steamos deploy [--project PATH] [--json] # versioned project publication
+steamos deploy --rollback [--project PATH] [--json]
+steamos deploy --list [--project PATH] [--json]  # read-only
 steamos title register Demo1 ./build --start ./run.sh --arg=--verbose
 steamos title launch Demo1 --json
 steamos title list
@@ -145,6 +149,126 @@ Valve's `devkit-utils` are present, and the lease. Devices may run
 different SteamOS channels and versions; `status` reports each device's
 rather than assuming one. Valve's `steamos-get-status` is not used,
 because on a Steam Deck it also turns off wireless power management.
+Inside a configured project, or with `--project PATH`, it also reports
+`project.current`, `project.local_version`, retained versions and running
+version/PID mappings. An invalid or absent local bundle reports
+`local_version: null` and `stage_error`; device facts remain available.
+
+## Project stage and deploy
+
+For projects with a bundle inventory, use `stage` and `deploy` as the
+recommended upload path. Keep `title register` for ad-hoc uploads; it
+mirrors the whole title directory and must not be used on a title managed
+by `deploy`. Benchmark-only projects use `steamos bench` and need no
+project deployment configuration. The tess Deck flow uses `steamos bench`;
+no project deploy config is supplied for it.
+
+Put `steamos.json` at the repository root, separate from the machine's
+device configuration under `$XDG_CONFIG_HOME/agent-kit/`. Commands find it
+from cwd upward, stopping at the nearest Git checkout/worktree boundary.
+`--project PATH` starts the same search from another directory. Nested
+configs cannot override the repository root; exported source trees can
+use the nearest config without a Git marker.
+
+```json
+{
+  "title": "Demo1",
+  "bundle": "build/bundle",
+  "inventory": "bundle.json",
+  "start": "run",
+  "args": ["--verbose"],
+  "runtime": "slr4",
+  "keep_versions": 3
+}
+```
+
+`title`, `bundle` and `start` are required. Title names contain only ASCII
+letters and digits. `bundle` is relative to the project root; `inventory`
+and `start` are relative to the bundle. Paths must be canonical, nonempty
+relative paths without `..`, `.`, empty components, backslashes or control
+characters. Config, bundle paths and bundle contents cannot be symlinks.
+`args` is a literal string array without NUL (default `[]`); `runtime` is
+`slr4` (default) or `none`; `keep_versions` is a positive integer (default
+3). Unknown fields, duplicate JSON keys and incorrect types are refused.
+No build is run and no checkout provenance is inferred by these commands.
+
+The default inventory filename is `bundle.json`, containing:
+
+```json
+{"version": 1, "files": {"run": "<64 lowercase SHA256 hex digits>"}}
+```
+
+Version 1 also accepts an optional `required` extension: a nonempty array
+of canonical file paths, each present in `files`. Build inventories using
+that extension work directly, without adapters or format guessing. Other
+inventory fields and versions are refused; `inventory_format` is not
+needed or accepted for these compatible formats. The build remains
+responsible for selecting and emitting all runtime inputs.
+
+`stage` needs neither a device config nor a connection. It refuses an
+empty inventory, missing or extra files, incorrect hashes, links and
+special files. Only the inventory itself may be unlisted, and it cannot
+list itself. `start` must be listed and executable. JSON reports `title`
+and `version`; plain output is the version ID: the first 12 hex digits of
+SHA256 over the **entire** inventory serialized as sorted-key JSON,
+without whitespace (`separators=(',', ':')`, `ensure_ascii=True`, UTF-8).
+Formatting and key order therefore do not change the ID; `required` does.
+
+`deploy` needs your lease, rsync, and the configured pinned Valve helpers.
+It validates the local bundle first and uses `steamos-prepare-upload` to
+obtain exactly `~/devkit-game/NAME`. Only
+`versions/<id>.partial/` receives rsync `--delete`. The same verifier checks
+every uploaded hash, inventory contents, executable permission and extra
+file on the device, then renames partial to `versions/<id>`. An existing
+version is fully verified against the staged inventory and skips the copy.
+A corrupt existing version is refused, never overwritten.
+
+`current.new` is created as a relative symlink and atomically renamed over
+`current`, which never disappears during replacement. The device rechecks
+the lease and helper pin before mutation and immediately before publication.
+The operation lock also excludes overlapping invocations by the same holder.
+After publication the shortcut is registered with argv
+`["./current/<start>", *args]` and the configured runtime. Exit-zero JSON
+helper errors still fail. A failed switch never changes the prior shortcut.
+A registration failure after the switch reports the published version
+explicitly; current remains published for inspection, retry or rollback.
+
+`deploys.log` records publication order as JSON lines (version, inventory,
+start and device epoch). The record is written and synced before the atomic
+switch; failed ledger I/O or replacement restores its prior length and leaves
+current untouched. Authority is rechecked after the ledger sync. If restoring
+the log fails, the refusal explicitly requires log inspection. Abrupt device
+loss can leave a recorded intent whose switch did not finish; inspect both
+current and the log before proceeding. Retention keeps the newest
+`keep_versions` distinct
+published IDs, current, and detected running versions. Only logged, direct
+12-hex version directories inside `versions/` are pruned. Symlinks, other
+entries and external targets are preserved; nested symlinks are not followed.
+Running versions are identified by `/proc/<pid>/exe` paths below `versions/`;
+permissions or disappearing processes can limit that observation.
+
+`deploy --rollback` needs the lease and pin but no local bundle. It verifies
+the previous retained version in `deploys.log`, atomically switches current,
+and registers its recorded start with the current project's args/runtime.
+Rollback is itself a publication, so a second rollback returns to the version
+just left. `deploy --list` needs neither the lease nor pinned helpers and
+does not mutate the device. JSON includes `versions`, `current`, `running`
+(version to PID array), and `deploy_order`.
+
+Before publication, failures clean up only the invocation's partial and lock;
+current is preserved. A completed version can remain after a switch
+refusal and will be verified/reused on retry. Pre-existing partials, locks and
+`current.new` are refused and preserved for inspection. Lost transport may
+prevent cleanup or hide a completed switch; a lost prepare reply still
+triggers best-effort cleanup authorized by its invocation token. Inspect
+`deploy --list`,
+`deploys.log` and the named partial/lock before retrying. Never delete unknown
+leftovers or another title to bypass a refusal. Retention errors after
+publication are reported as warnings without undoing current.
+
+Published directories must remain immutable for repeat verification. Put
+generated caches and saves outside them; a game that creates unlisted files
+beside its executable makes same-version redeploy/rollback verification fail.
 
 ## Valve's device helpers
 
@@ -176,6 +300,8 @@ Facts found while proving this path, which these helpers do not check:
   makes that whole step fail.
 
 ## Titles
+
+Use `deploy` for configured projects; these commands remain for ad-hoc titles.
 
 `title register NAME DIR --start PATH [--arg ARG ...]
 [--runtime slr4|none]` uploads the contents of DIR and registers a Steam
