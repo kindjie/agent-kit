@@ -103,16 +103,14 @@ raw token totals and tool counts do not establish cost or avoidable overhead.
 
 ### Cleanup after delegated work
 
-Tell a delegate which state it may create and that it should remove what it
-no longer needs before handing back. When the work returns, the delegating
-agent owns what is left: worktrees, branches, scratch output, temporary
-assets, traces or test deployments. Once the result is verified (landed on
-the default branch, nothing unique or uncommitted left, nothing running or
-recorded as still needed), remove exactly that state and close its
-changelog entry with what was verified, under the always-loaded records
-rule. A later agent on the same task or entry inherits the same duty. Leave
-anything uncertain in place and say why; do not leave verified-disposable
-state for the user to clear.
+Tell a delegate which state it may create and that it should remove what it no
+longer needs before handing back. When the work returns, the delegating agent
+owns what is left: worktrees, branches, scratch output, temporary assets, traces
+or test deployments. Once the result and that state pass the always-loaded
+records rule's cleanup checks, remove exactly that state and close its changelog
+entry with what was verified. A later agent on the same task or entry inherits
+the same duty. Leave anything uncertain in place and say why; do not leave
+verified-disposable state for the user to clear.
 
 ## Routing between Codex and Claude Code
 

@@ -35,9 +35,10 @@ does not mean "not landed".
 ## Coordination
 
 Send actionable changes and milestone results to affected agents; avoid
-acknowledgment loops and unchanged status relays. Prefer completion notifications
-or task watches during known waits. The delegation skill covers monitoring
-cadence and compact handoffs; required reviews and validation still apply.
+acknowledgment loops and unchanged status relays. Prefer completion
+notifications or task watches during known waits. The delegation skill covers
+monitoring cadence and compact handoffs; required reviews and validation still
+apply.
 
 ## Session plans
 
@@ -76,14 +77,15 @@ commands. Pass `--agent $(agent-id show)` on every call that writes.
   publication) with `agent-changelog mistake new` at once.
 - Before cleaning anything up, read `agent-changelog list --open
   --machine`; entries never authorize deletion.
-- Clean up worktrees, branches, stashes, temporary files and folders,
-  generated assets, traces and test deployments once they have served their
-  purpose: the creator, else the delegating agent, else the next agent on the
-  task or entry. First verify the work landed on the default branch, nothing
-  unique or uncommitted remains, nothing running or no open entry needs it,
-  and that every file named by an open entry inside a directory is preserved
-  or accounted for; then remove exactly that state and close its entry with
-  what you verified. Unless the user requires approval, verified cleanup needs
-  none; if any check is uncertain, leave it and say why.
+- Clean up worktrees, branches, stashes, temporary files and folders, generated
+  assets, traces and test deployments once they have served their purpose: the
+  creator, else the delegating agent, else the next agent on the task or entry.
+  First verify the work landed on the default branch (searched for, not
+  inferred), nothing uncommitted, unpushed, untracked or otherwise unique
+  remains, nothing running uses it, no open entry or active agent still needs
+  it, and that every file named by an open entry inside a directory is preserved
+  or accounted for; then remove exactly that state and close its entry with what
+  you verified. Unless the user requires approval, verified cleanup needs none;
+  if any check is uncertain, leave it and say why.
 <!-- /agent-kit:records -->
 <!-- END agent-kit -->

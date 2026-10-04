@@ -32,23 +32,22 @@ or address rather than guessing.
    with `steamos lease renew`.
 4. `steamos lease release` when done, including when you stop early.
 
-Taking or renewing a lease prevents sleep/idle by default until its expiry.
-The transient user unit `agent-kit-steamos-lease-inhibit` runs
-`systemd-inhibit` outside the ssh session scope. Take/renew stop the old
-unit before starting another; release, break and reclaim stop it with
-`systemctl --user stop`. Its timed sleep ends at expiry. Normal sleep
-policy applies afterwards. This avoids waking into a PIN screen during
-leased display/performance work. `lease.prevent_sleep: false` opts out in
-the machine's device config. Missing `systemd-run`, `systemd-inhibit` or
-a user manager
-is skipped with `inhibit=unavailable`; `lease show --json` and the `lease`
-object in `status --json` report `sleep_inhibited` as true, false or null
-(unavailable). Active requires both an active unit and its
-`agent-kit-steamos` logind entry; startup checks both after 0.5 seconds. Inhibition failure is
-best-effort: take/renew/reclaim still succeed, with `inhibit=failed`, a
-stderr warning and `sleep_inhibited: false`. Inspect `systemd-inhibit --list`
-after ssh closes and after release/expiry when validating device behavior.
-No inhibitor PID files or PID signalling are used.
+Taking or renewing a lease prevents sleep/idle by default until its expiry. The
+transient user unit `agent-kit-steamos-lease-inhibit` runs `systemd-inhibit`
+outside the ssh session scope. Take/renew stop the old unit before starting
+another; release, break and reclaim stop it with `systemctl --user stop`. Its
+timed sleep ends at expiry. Normal sleep policy applies afterwards. This avoids
+waking into a PIN screen during leased display/performance work.
+`lease.prevent_sleep: false` opts out in the machine's device config. Missing
+`systemd-run`, `systemd-inhibit` or a user manager is skipped with
+`inhibit=unavailable`; `lease show --json` and the `lease` object in `status
+--json` report `sleep_inhibited` as true, false or null (unavailable). Active
+requires both an active unit and its `agent-kit-steamos` logind entry; startup
+checks both after 0.5 seconds. Inhibition failure is best-effort:
+take/renew/reclaim still succeed, with `inhibit=failed`, a stderr warning and
+`sleep_inhibited: false`. Inspect `systemd-inhibit --list` after ssh closes and
+after release/expiry when validating device behavior. No inhibitor PID files or
+PID signalling are used.
 
 Reading status needs no lease. When `status` says Valve's
 `devkit-utils` are missing or not at the pinned commit and the work needs
@@ -138,14 +137,15 @@ the helpers another agent's title may be using.
 - A device woken over the network shows its lock screen; a title launched
   behind it may never be displayed. Ask the user to unlock it before
   visual or performance work, and check with `steamos capture`.
-- `steamos frametimes pull --out ./frametimes` needs no lease and copies
-  the newest session from the device home, using either member's mtime.
-  It pulls `mangoapp_<stamp>.csv` and its `_summary.csv` companion even
-  when their mtimes differ. A missing summary refuses the pull: logging
-  may still be active, so run `frametimes stop` first. Use `--partial`
-  explicitly to allow a base-only session; a missing base is always refused.
-  It preserves device logs and ignores symlinks and unsafe names. Inspect the CSV and measured scenario before reporting
-  performance; no quiet-machine or hardware acceptance is implied.
+- `steamos frametimes pull --out ./frametimes` needs no lease and copies the
+  newest session from the device home, using either member's mtime. It pulls
+  `mangoapp_<stamp>.csv` and its `_summary.csv` companion even when their mtimes
+  differ. A missing summary refuses the pull: logging may still be active, so
+  run `frametimes stop` first. Use `--partial` explicitly to allow a base-only
+  session; a missing base is always refused. It preserves device logs and
+  ignores symlinks and unsafe names. Inspect the CSV and measured scenario
+  before reporting performance; no quiet-machine or hardware acceptance is
+  implied.
 
 Logs, capture and frametimes do not require pinned Valve helpers. Downloads
 use the configured ssh key/options and address fallback; scp is needed
