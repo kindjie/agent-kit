@@ -271,6 +271,17 @@ class SteamosBenchTest(unittest.TestCase):
     self.assert_restored()
     self.assertFalse((self.device_home() / 'sudo.log').exists())
 
+  def test_benchmark_error_json_strips_connection_marker(self):
+    self.fixture()
+    self.env['FAKE_SUDO_REFUSE'] = '1'
+    sudo = self.root / 'bin/sudo'
+    sudo.write_text(sudo.read_text().replace(
+      'sudo: a password is required', 'connected=1 sudo: password required'))
+    _, result, proc = self.bench('--pin-governor', code=1)
+    self.assertIn('password required', result['error'])
+    self.assertNotIn('connected=1', result['error'])
+    self.assertNotIn('connected=1', proc.stderr)
+
   def test_sudo_refusal_exact_command_and_no_command_run(self):
     self.fixture()
     self.env['FAKE_SUDO_REFUSE'] = '1'

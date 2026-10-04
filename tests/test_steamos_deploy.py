@@ -213,6 +213,119 @@ class SteamosDeployTest(unittest.TestCase):
                                      '--json').stdout)['project']
     self.assertNotEqual(status['current'], status['local_version'])
 
+  def test_runtime_files_validation_before_ssh(self):
+    self.project()
+    for paths in (None, 'cache', {}, [1], [''], ['/absolute'],
+                  ['../escape'], ['a/../cache'], ['./cache'], ['a//cache'],
+                  ['a\\b'], ['cache\nname'], ['cache\0name'], ['**/cache']):
+      with self.subTest(paths=paths):
+        self.settings['runtime_files'] = paths
+        self.write_config()
+        self.stage(code=2)
+    for paths in ([], ['noise-cache'], ['cache/*.bin', 'scratch-?']):
+      with self.subTest(paths=paths):
+        self.settings['runtime_files'] = paths
+        self.write_config()
+        self.stage()
+    self.assertFalse((self.root / 'hosts.log').exists())
+
+  def test_redeploy_runtime_cache_file_or_directory_skips_copy(self):
+    version = self.fixture(runtime_files=['noise-cache'])
+    self.deploy()
+    cache = self.title / f'versions/{version}/noise-cache'
+    copies = (self.device_home() / 'copies.log').read_text()
+    for directory in (False, True):
+      with self.subTest(directory=directory):
+        if directory:
+          cache.unlink()
+          (cache / 'nested').mkdir(parents=True)
+          (cache / 'nested/noise.bin').write_text('runtime data')
+        else:
+          cache.write_text('runtime data')
+        result = json.loads(self.deploy().stdout)
+        self.assertTrue(result['skipped_copy'])
+        self.assertEqual(result['current'], version)
+        self.assertTrue(cache.exists())
+        self.assertEqual((self.device_home() / 'copies.log').read_text(), copies)
+
+  def test_runtime_globs_do_not_hide_unlisted_or_inventory_files(self):
+    version = self.fixture(runtime_files=['cache-?', 'run', 'bundle.json'])
+    self.deploy()
+    deployed = self.title / f'versions/{version}'
+    (deployed / 'cache-a').write_text('cache')
+    self.assertTrue(json.loads(self.deploy().stdout)['skipped_copy'])
+    copies = (self.device_home() / 'copies.log').read_text()
+    extra = deployed / 'unlisted'
+    extra.write_text('unexpected')
+    proc = self.deploy(code=1)
+    self.assertIn('Unlisted or missing bundle files', proc.stderr)
+    self.assertNotIn('connected=1', proc.stderr)
+    extra.unlink()
+    (deployed / 'run').write_text('corrupt')
+    self.assertIn('Missing or changed bundle member: run',
+                  self.deploy(code=1).stderr)
+    (deployed / 'run').unlink()
+    self.assertIn('Missing or changed bundle member: run',
+                  self.deploy(code=1).stderr)
+    self.assertEqual((self.device_home() / 'copies.log').read_text(), copies)
+
+  def test_runtime_globs_respect_components_and_reject_links(self):
+    version = self.fixture(runtime_files=['cache/*.bin', 'scratch-[ab]'])
+    self.deploy()
+    deployed = self.title / f'versions/{version}'
+    (deployed / 'cache').mkdir()
+    (deployed / 'cache/noise.bin').write_text('cache')
+    (deployed / 'scratch-a').mkdir()
+    (deployed / 'scratch-a/data').write_text('cache')
+    self.assertTrue(json.loads(self.deploy().stdout)['skipped_copy'])
+    (deployed / 'cache/deeper').mkdir()
+    extra = deployed / 'cache/deeper/noise.bin'
+    extra.write_text('unlisted')
+    self.assertIn('Unlisted or missing bundle files', self.deploy(code=1).stderr)
+    extra.unlink()
+    link = deployed / 'cache/link.bin'
+    link.symlink_to(self.bundle / 'run')
+    self.assertIn('Symlink or special bundle member', self.deploy(code=1).stderr)
+    link.unlink()
+    os.mkfifo(link)
+    self.assertIn('Symlink or special bundle member', self.deploy(code=1).stderr)
+
+  def test_runtime_files_do_not_relax_stage_or_upload_verification(self):
+    self.fixture(runtime_files=['cache*'])
+    cache = self.bundle / 'cache.bin'
+    cache.write_text('cache')
+    self.assertIn('Unlisted or missing bundle files', self.stage(code=1).stderr)
+    cache.unlink()
+    rsync = self.root / 'bin/rsync'
+    rsync.write_text(rsync.read_text() +
+                     "\n(destination / 'cache.bin').write_text('cache')\n")
+    self.assertIn('Unlisted or missing bundle files', self.deploy(code=1).stderr)
+    self.assertFalse((self.title / 'current').exists())
+
+  def test_runtime_cache_rollback_and_retention_use_normal_versions(self):
+    first = self.fixture(runtime_files=['cache*'], keep_versions=2)
+    self.deploy()
+    (self.title / f'versions/{first}/cache.bin').write_text('cache')
+    second = self.change()
+    self.deploy()
+    self.assertEqual(json.loads(self.deploy('--rollback').stdout)['current'],
+                     first)
+    self.deploy()  # Publish second again before the third version.
+    third = self.change()
+    self.deploy()
+    self.assertFalse((self.title / f'versions/{first}').exists())
+    self.assertTrue((self.title / f'versions/{second}').is_dir())
+    self.assertEqual(os.readlink(self.title / 'current'), 'versions/' + third)
+
+  def test_project_prepare_error_omits_connection_preamble(self):
+    version = self.fixture()
+    self.deploy()
+    (self.title / f'versions/{version}/unlisted').write_text('unexpected')
+    proc = self.deploy(code=1)
+    self.assertIn('project prepare failed:', proc.stderr)
+    self.assertIn('Unlisted or missing bundle files', proc.stderr)
+    self.assertNotIn('connected=1', proc.stderr)
+
   def test_copy_failure_and_device_hash_mismatch_preserve_current(self):
     old = self.fixture()
     self.deploy()

@@ -1178,6 +1178,25 @@ class SteamosTest(unittest.TestCase):
                  ('frametimes', 'pull')):
       self.run_cli(*args, code=3)
 
+  def test_all_failures_strip_connection_marker(self):
+    module = runpy.run_path(str(BIN))
+    for message in ('connected=1\nrefused', 'failed: connected=1',
+                    'refused\nconnected=1\nmore detail'):
+      with self.subTest(message=message):
+        failure = module['Failure'](1, message)
+        self.assertNotIn('connected=1', str(failure))
+        self.assertEqual(failure.code, 1)
+    for code, stdout, stderr in (
+        (1, 'connected=1\n{"error":"refused"}', 'diagnostic'),
+        (1, 'connected=1', 'connected=1\nrefused'),
+        (0, 'connected=1\n{"error":"connected=1 refused"}', '')):
+      with self.subTest(code=code, stdout=stdout, stderr=stderr):
+        proc = subprocess.CompletedProcess([], code, stdout, stderr)
+        with self.assertRaises(module['Failure']) as caught:
+          module['last_json'](proc, 'fixture')
+        self.assertNotIn('connected=1', str(caught.exception))
+        self.assertIn('refused', str(caught.exception))
+
   def test_wake_packet_and_ssh_wait_are_offline(self):
     module = runpy.run_path(str(BIN))
     self.configure({'devices': {'unit': {

@@ -302,9 +302,14 @@ fi
 ''' + POWER_SCRIPT
 
 
+def error_text(message):
+  """Keep the transport marker out of all user-facing diagnostics."""
+  return str(message).replace('connected=1', '').strip()
+
+
 class Failure(Exception):
   def __init__(self, code, message):
-    super().__init__(message)
+    super().__init__(error_text(message))
     self.code = code
 
 
@@ -387,6 +392,7 @@ def ssh(entry, script, args, timeout=None):
       errors.append(f'{address}: ssh timed out')
       continue
     if proc.returncode != 255:
+      proc.stderr = error_text(proc.stderr)
       return proc
     if 'connected=1' in proc.stdout.splitlines():
       raise Failure(UNREACHABLE, f'the connection to {address} dropped '
@@ -701,8 +707,9 @@ def copy_directory(entry, directory, destination, label, delete=False):
 def last_json(proc, label, kind=dict):
   """Valve helpers may print progress before their final JSON reply."""
   if proc.returncode != 0:
-    raise Failure(REFUSED, f'{label} failed: {proc.stderr.strip()} '
-                  f'{proc.stdout.strip()}')
+    detail = ' '.join(part for part in (
+      error_text(proc.stderr), error_text(proc.stdout)) if part)
+    raise Failure(REFUSED, f'{label} failed: {detail}')
   try:
     reply = json.loads(proc.stdout.strip().splitlines()[-1])
   except (ValueError, IndexError):
@@ -1033,6 +1040,8 @@ def deploy_command(options):
       for signum, handler in previous.items():
         signal.signal(signum, handler)
   result.update(device=name, title=project_config['title'])
+  if 'warnings' in result:
+    result['warnings'] = [error_text(w) for w in result['warnings']]
   for warning in result.get('warnings', []):
     print('steamos: published, retention warning: ' + warning, file=sys.stderr)
   print(json.dumps(result, indent=2) if options.json else
@@ -1420,7 +1429,8 @@ def capture_command(options):
                       + cleanup.stderr.strip())
     except Failure as error:
       if download_failed:
-        print(f'Warning: capture cleanup failed: {error}', file=sys.stderr)
+        print('Warning: capture cleanup failed: ' + error_text(error),
+              file=sys.stderr)
       else:
         raise
   if options.json:
@@ -1955,6 +1965,7 @@ def bench_command(options):
     pull_file(entry, remote + '/' + filename, output / filename)
   reply.update(device=name, output=str(output))
   if reply.get('error'):
+    reply['error'] = error_text(reply['error'])
     print('steamos: ' + reply['error'], file=sys.stderr)
   if options.perf_stat and not reply.get('perf_stat'):
     print('steamos: perf is unavailable; ran without perf stat', file=sys.stderr)

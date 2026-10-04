@@ -3,6 +3,7 @@
 The same verifier runs locally and on the device. This module uses only
 Python's standard library and has no device effects when imported.
 """
+import fnmatch
 import hashlib
 import json
 import os
@@ -74,7 +75,7 @@ def project_config(location=None, optional=False):
     raise ValueError('No project steamos.json found')
   config = read_json(no_links(root, 'steamos.json'))
   allowed = {'title', 'bundle', 'inventory', 'start', 'args', 'runtime',
-             'keep_versions'}
+             'keep_versions', 'runtime_files'}
   if not isinstance(config, dict) or set(config) - allowed:
     raise ValueError('Unknown project configuration fields')
   if not isinstance(config.get('title'), str) or not TITLE.fullmatch(
@@ -88,6 +89,13 @@ def project_config(location=None, optional=False):
   if not isinstance(config['args'], list) or any(
       not isinstance(a, str) or '\0' in a for a in config['args']):
     raise ValueError('args must be an array of strings without NUL')
+  config.setdefault('runtime_files', [])
+  if not isinstance(config['runtime_files'], list):
+    raise ValueError('runtime_files must be an array of safe relative paths')
+  for pattern in config['runtime_files']:
+    relative(pattern)
+    if '**' in pattern:
+      raise ValueError('runtime_files globs cannot use **: ' + pattern)
   config.setdefault('runtime', 'slr4')
   if config['runtime'] not in ('slr4', 'none'):
     raise ValueError('runtime must be slr4 or none')
@@ -114,7 +122,20 @@ def digest(path):
   return result.hexdigest()
 
 
-def verify(bundle, inventory, start):
+def runtime_member(name, patterns):
+  # Match one component at a time so * cannot cross a directory boundary.
+  # A matching directory declaration also covers its descendants.
+  parts = name.split('/')
+  for pattern in patterns:
+    components = pattern.split('/')
+    if len(components) <= len(parts) and all(
+        fnmatch.fnmatchcase(part, glob)
+        for part, glob in zip(parts, components)):
+      return True
+  return False
+
+
+def verify(bundle, inventory, start, runtime_files=()):
   if bundle.is_symlink() or not bundle.is_dir():
     raise ValueError('Bundle must be a directory without symlinks')
   manifest = read_json(no_links(bundle, inventory))
@@ -148,7 +169,11 @@ def verify(bundle, inventory, start):
       if stat.S_ISLNK(mode) or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
         raise ValueError('Symlink or special bundle member: ' + str(path))
       if stat.S_ISREG(mode):
-        actual.add(str(path.relative_to(bundle)))
+        member = str(path.relative_to(bundle))
+        # Inventory members always remain mandatory and hash-checked above.
+        if member in files or member == inventory or not runtime_member(
+            member, runtime_files):
+          actual.add(member)
   if actual != set(files) | {inventory}:
     raise ValueError('Unlisted or missing bundle files')
   if start not in files or not os.access(no_links(bundle, start), os.X_OK):
@@ -250,7 +275,7 @@ def locked(root, request):
   return lock
 
 
-def previous_version(root):
+def previous_version(root, runtime_files):
   current = current_version(root)
   available = set(versions_list(root))
   records = history(root)
@@ -261,7 +286,7 @@ def previous_version(root):
       seen_current = True
     elif seen_current and version in available:
       manifest = verify(root / 'versions' / version,
-                        record['inventory'], record['start'])
+                        record['inventory'], record['start'], runtime_files)
       if version_id(manifest) != version:
         raise ValueError('Rollback inventory does not match its version')
       return record
@@ -282,14 +307,15 @@ def prepare(root, request):
   try:
     (lock / 'owner').write_text(request['token'])
     if request['rollback']:
-      return previous_version(root)
+      return previous_version(root, config['runtime_files'])
     version = request['version']
     final = no_links(versions, version)
     partial = no_links(versions, version + '.partial')
     if partial.exists():
       raise ValueError('Partial directory already exists; inspect before retry')
     if final.exists():
-      manifest = verify(final, config['inventory'], config['start'])
+      manifest = verify(final, config['inventory'], config['start'],
+                        config['runtime_files'])
       if canonical(manifest) != canonical(request['manifest']):
         raise ValueError('Existing version has a different inventory')
       return {'skipped_copy': True}
@@ -322,7 +348,8 @@ def switch(root, request):
   config = request['config']
   version = request['version']
   final = no_links(root, 'versions/' + version)
-  manifest = verify(final, request['inventory'], request['start'])
+  manifest = verify(final, request['inventory'], request['start'],
+                    config['runtime_files'])
   if version_id(manifest) != version:
     raise ValueError('Version inventory hash does not match directory name')
   current_version(root)

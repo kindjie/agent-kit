@@ -51,6 +51,11 @@ a lost prepare reply with a working cleanup connection.
 Ledger write/flush/fsync and replacement failures preserve current/history;
 expiry during ledger sync is rechecked before publication. Failed log
 restoration explicitly requires inspection.
+Runtime-file regressions cover safe path/glob configuration, same-version
+reuse with cache files/directories, strict stage/upload checks, inventory
+hash/missing-file enforcement, unlisted-file refusals and normal rollback
+and retention. Error diagnostics, including benchmark JSON errors, strip
+the transport connection marker.
 Real host HUP/INT/TERM during a fake partial transfer check bounded cleanup,
 preservation of current and removal of only the invocation's partial/lock.
 Wake tests stub sockets and ssh to check packet bytes, broadcast targeting,

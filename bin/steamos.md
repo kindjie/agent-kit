@@ -178,7 +178,8 @@ use the nearest config without a Git marker.
   "start": "run",
   "args": ["--verbose"],
   "runtime": "slr4",
-  "keep_versions": 3
+  "keep_versions": 3,
+  "runtime_files": ["noise-cache", "cache/*.bin"]
 }
 ```
 
@@ -190,6 +191,14 @@ characters. Config, bundle paths and bundle contents cannot be symlinks.
 `args` is a literal string array without NUL (default `[]`); `runtime` is
 `slr4` (default) or `none`; `keep_versions` is a positive integer (default
 3). Unknown fields, duplicate JSON keys and incorrect types are refused.
+`runtime_files` is an optional array (default `[]`) of safe relative paths
+or simple globs (`*`, `?`, `[seq]`; no `**`). Globs match individual path
+components; a matching directory covers its descendants. These declarations
+allow unlisted regular files only when verifying an existing device version.
+Inventory-listed files are always required and hash-checked, even when they
+match. Symlinks and special files remain refused, including in runtime
+paths. Local staging and new uploads remain strict. Runtime declarations do
+not affect version IDs, retention or rollback selection.
 No build is run and no checkout provenance is inferred by these commands.
 
 The default inventory filename is `bundle.json`, containing:
@@ -266,9 +275,12 @@ triggers best-effort cleanup authorized by its invocation token. Inspect
 leftovers or another title to bypass a refusal. Retention errors after
 publication are reported as warnings without undoing current.
 
-Published directories must remain immutable for repeat verification. Put
-generated caches and saves outside them; a game that creates unlisted files
-beside its executable makes same-version redeploy/rollback verification fail.
+Inventory-listed files in published directories must remain immutable.
+Prefer generated caches and saves outside version directories. When a game
+writes inside its version, declare those paths in `runtime_files` so repeat
+verification (including rollback) tolerates them. Other unlisted files still
+make verification fail. Retention removes whole old versions with their
+runtime files; rollback preserves and verifies the selected version in place.
 
 ## Valve's device helpers
 
