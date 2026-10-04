@@ -4,3 +4,4 @@ __pycache__/
 build/
 .venv-docs/
 docs/assets/javascripts/mermaid.min.js
+tests/node_modules/

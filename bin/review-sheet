@@ -1,0 +1,704 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.9"
+# dependencies = []
+# ///
+"""Build a local review page and validate exported answers.
+
+See review-sheet.md. Stage 1 supports built-in components only.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import copy
+import hashlib
+import html
+import json
+import mimetypes
+import math
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+
+ROOT = Path(__file__).resolve().parent
+COMPONENTS = ROOT / 'review_sheet_components'
+KINDS = ('image', 'animated', 'video', 'audio', 'text', 'link')
+DECISIONS = ('choice', 'boolean', 'flags', 'text', 'number')
+LIMITS = {'items': 5000, 'component_file': 2 * 1024 * 1024,
+          'component': 8 * 1024 * 1024,
+          'embedded_file': 16 * 1024 * 1024,
+          'embedded_total': 128 * 1024 * 1024,
+          'page': 256 * 1024 * 1024,
+          'text_answer': 64 * 1024,
+          'results': 16 * 1024 * 1024}
+
+
+class ReviewError(Exception):
+  pass
+
+
+def keys_only(value, allowed, label):
+  if not isinstance(value, dict):
+    raise ReviewError(f'{label} must be an object')
+  unknown = set(value) - set(allowed)
+  if unknown:
+    fields = ', '.join(sorted(unknown))
+    raise ReviewError(f'{label}: unsupported fields: {fields}')
+
+
+def identifier(value, label):
+  if not isinstance(value, str) or not value or ':' in value:
+    raise ReviewError(f'{label} must be nonempty and cannot contain :')
+
+
+def canonical(value):
+  return json.dumps(value, sort_keys=True, ensure_ascii=False,
+                    separators=(',', ':'), allow_nan=False).encode('utf-8')
+
+
+def digest(value):
+  return hashlib.sha256(canonical(value)).hexdigest()
+
+
+def file_hash(path):
+  hash_ = hashlib.sha256()
+  with path.open('rb') as stream:
+    for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+      hash_.update(chunk)
+  return hash_.hexdigest()
+
+
+def read_json(path, limit):
+  if path.stat().st_size > limit:
+    raise ReviewError(f'{path}: exceeds {limit} bytes')
+  try:
+    return json.loads(path.read_text(encoding='utf-8'))
+  except (UnicodeError, ValueError) as exc:
+    raise ReviewError(f'{path}: invalid JSON: {exc}') from exc
+
+
+def confined(base, name):
+  if not isinstance(name, str) or not name or name.startswith('/'):
+    raise ReviewError('media src must be a relative path')
+  source = Path(name)
+  if '..' in source.parts or source.is_absolute():
+    raise ReviewError(f'path escape refused: {name}')
+  path = base / source
+  if not path.resolve().is_relative_to(base.resolve()):
+    raise ReviewError(f'symlink escape refused: {name}')
+  if not path.is_file():
+    raise ReviewError(f'missing media: {name}')
+  return path
+
+
+def check_definition(name, definition):
+  identifier(name, 'decision name')
+  if not isinstance(definition, dict):
+    raise ReviewError(f'{name}: decision must be an object')
+  keys_only(definition, ('kind', 'question', 'required', 'authority',
+                         'options', 'keys', 'unit', 'min', 'max'), name)
+  kind = definition.get('kind')
+  if kind not in DECISIONS:
+    raise ReviewError(f'{name}: unsupported decision kind: {kind}')
+  if not isinstance(definition.get('required', False), bool):
+    raise ReviewError(f'{name}: required must be boolean')
+  if not isinstance(definition.get('authority', False), bool):
+    raise ReviewError(f'{name}: authority must be boolean')
+  if 'question' in definition and not isinstance(definition['question'], str):
+    raise ReviewError(f'{name}: question must be text')
+  if 'unit' in definition and not isinstance(definition['unit'], str):
+    raise ReviewError(f'{name}: unit must be text')
+  if kind in ('choice', 'flags'):
+    options = definition.get('options')
+    if (not isinstance(options, list) or not options or
+        any(not isinstance(x, str) or not x for x in options) or
+        len(set(options)) != len(options)):
+      raise ReviewError(f'{name}: options must be unique strings')
+    keys = definition.get('keys', '')
+    if (not isinstance(keys, str) or
+        (keys and (len(keys) != len(options) or len(set(keys)) != len(keys)))):
+      raise ReviewError(f'{name}: keys must map one-to-one to options')
+    if definition.get('authority') and keys:
+      raise ReviewError(f'{name}: authority decisions cannot use hotkeys')
+  if kind == 'number':
+    for bound in ('min', 'max'):
+      if bound in definition and (isinstance(definition[bound], bool) or
+                                  not isinstance(definition[bound],
+                                                 (int, float))):
+        raise ReviewError(f'{name}: {bound} must be a number')
+    if definition.get('min', float('-inf')) > definition.get('max',
+                                                            float('inf')):
+      raise ReviewError(f'{name}: min exceeds max')
+
+
+def check_value(definition, value, limits):
+  kind = definition['kind']
+  if kind == 'choice':
+    return isinstance(value, str) and value in definition['options']
+  if kind == 'boolean':
+    return isinstance(value, bool)
+  if kind == 'flags':
+    return (isinstance(value, list) and len(set(map(str, value))) ==
+            len(value) and all(isinstance(x, str) and
+                               x in definition['options'] for x in value))
+  if kind == 'text':
+    return isinstance(value, str) and len(value.encode('utf-8')) <= limits[
+      'text_answer']
+  return (not isinstance(value, bool) and isinstance(value, (int, float))
+          and math.isfinite(value)
+          and definition.get('min', float('-inf')) <= value <=
+          definition.get('max', float('inf')))
+
+
+def check_hotkeys(description, groups, items):
+  reserved = set('jkJKnfu?/')
+  for item in items:
+    definitions = dict(description.get('decisions_review', {}))
+    for group in groups:
+      if item in group['items']:
+        definitions.update(group.get('decisions', {}))
+    definitions.update(description.get('decisions', {}))
+    definitions.update(item.get('decisions', {}))
+    used = {}
+    for name, definition in definitions.items():
+      kind = definition['kind']
+      if kind not in ('choice', 'flags') or definition.get('authority'):
+        continue
+      keys = definition.get('keys', '')
+      if kind == 'flags' and not keys:
+        keys = ''.join(str(i + 1) for i in
+                       range(min(9, len(definition['options']))))
+      for key in keys:
+        if key in reserved:
+          raise ReviewError(f'{name}: hotkey {key} is reserved for navigation')
+        if key in used:
+          raise ReviewError(f'hotkey {key} conflicts between {used[key]} '
+                            f'and {name} on item {item["id"]}')
+        used[key] = name
+
+
+def component_files(limits):
+  files = {}
+  scripts = []
+  for kind in KINDS:
+    folder = COMPONENTS / kind
+    size = 0
+    for name in ('component.json', 'component.js', 'README.md'):
+      path = folder / name
+      if path.is_symlink() or not path.is_file():
+        raise ReviewError(f'missing or linked built-in component: {path}')
+      length = path.stat().st_size
+      if length > limits['component_file']:
+        raise ReviewError(f'component file too large: {path}')
+      size += length
+      files[str(path)] = file_hash(path)
+    if size > limits['component']:
+      raise ReviewError(f'component too large: {kind}')
+    manifest = read_json(folder / 'component.json', limits['component_file'])
+    if manifest.get('kind') != kind:
+      raise ReviewError(f'component manifest mismatch: {kind}')
+    scripts.append((kind, (folder / 'component.js').read_text()))
+  return files, scripts
+
+
+def scopes_for(description, component_hashes):
+  scopes = {}
+  groups = description.get('groups', [])
+  members = [item for group in groups for item in group['items']]
+  top_items = description.get('items', [])
+  members += top_items
+
+  def media_context(items):
+    return [{'id': item['id'], 'title': item.get('title'),
+             'fields': item.get('fields', {}),
+             'evidence': item.get('evidence', {}),
+             'media': [{'kind': m['kind'], 'src': m.get('src'),
+                        'alt': m.get('alt'),
+                        'sha256': m.get('sha256'), 'mode': m.get('mode')}
+                       for m in item.get('media', [])]}
+            for item in items]
+
+  def add(scope_kind, scope_id, decisions, items, group=None):
+    for name, definition in decisions.items():
+      payload = {'review': description['review'],
+                 'scope': {'kind': scope_kind, 'id': scope_id},
+                 'decision': {'name': name, 'definition': definition},
+                 'instructions': description.get('instructions', ''),
+                 'caveats': description.get('caveats', []),
+                 'items': media_context(items),
+                 'components': {kind: component_hashes[kind] for kind in
+                                sorted({m['kind'] for item in items for m in
+                                        item.get('media', [])})},
+                 'layout': (
+                   [{'group': g['id'], 'title': g.get('title'),
+                     'layout': g.get('layout', 'list'),
+                     'members': [i['id'] for i in g['items']]}
+                    for g in groups] if scope_kind == 'review' else
+                   None if group is None else {
+                     'group': group['id'], 'title': group.get('title'),
+                     'layout': group.get('layout', 'list'),
+                     'members': [i['id'] for i in group['items']]})}
+      key = f'{scope_kind}:{scope_id}:{name}'
+      scopes[key] = {'digest': digest(payload), 'definition': definition,
+                     'authority': bool(definition.get('authority')),
+                     'media': {m['src']: m['sha256'] for item in items
+                               for m in item.get('media', [])
+                               if m.get('src') and m.get('mode') == 'embed'}}
+
+  add('review', description['review'], description.get('decisions_review', {}),
+      members)
+  for group in groups:
+    decisions = group.get('decisions', {}).copy()
+    if 'pick' in group:
+      decisions['pick'] = {'kind': 'choice',
+                           'options': [item['id'] for item in group['items']],
+                           'required': group['pick'].get('required', False)}
+    add('group', group['id'], decisions, group['items'], group)
+    for item in group['items']:
+      item_decisions = description.get('decisions', {}).copy()
+      item_decisions.update(item.get('decisions', {}))
+      add('item', item['id'], item_decisions, [item], group)
+  for item in top_items:
+    item_decisions = description.get('decisions', {}).copy()
+    item_decisions.update(item.get('decisions', {}))
+    add('item', item['id'], item_decisions, [item])
+  return scopes
+
+
+def resolve(path, limits):
+  source = read_json(path, limits['page'])
+  if not isinstance(source, dict):
+    raise ReviewError('description must be an object')
+  if 'extends' in source:
+    raise ReviewError('extends is unsupported in stage 1')
+  keys_only(source, ('review', 'title', 'instructions', 'caveats',
+                     'privacy', 'context', 'decisions', 'decisions_review',
+                     'groups', 'items'), 'description')
+  description = copy.deepcopy(source)
+  identifier(description.get('review'), 'review')
+  for name in ('title', 'instructions'):
+    if name in description and not isinstance(description[name], str):
+      raise ReviewError(f'{name} must be text')
+  if (not isinstance(description.get('caveats', []), list) or
+      any(not isinstance(x, str) for x in description.get('caveats', []))):
+    raise ReviewError('caveats must be text array')
+  if not isinstance(description.get('context', {}), dict):
+    raise ReviewError('context must be an object')
+  description.setdefault('privacy', 'private')
+  if description['privacy'] not in ('private', 'shareable'):
+    raise ReviewError('privacy must be private or shareable')
+  for name in ('decisions', 'decisions_review'):
+    definitions = description.get(name, {})
+    if not isinstance(definitions, dict):
+      raise ReviewError(f'{name} must be an object')
+    for key, value in definitions.items():
+      check_definition(key, value)
+  groups = description.get('groups', [])
+  top_items = description.get('items', [])
+  if not isinstance(groups, list) or not isinstance(top_items, list):
+    raise ReviewError('groups and items must be arrays')
+  ids = set()
+  group_ids = set()
+  for group in groups:
+    keys_only(group, ('id', 'title', 'layout', 'items', 'decisions', 'pick'),
+              'group')
+    identifier(group.get('id'), 'group id')
+    if 'title' in group and not isinstance(group['title'], str):
+      raise ReviewError('group title must be text')
+    if group['id'] in group_ids:
+      raise ReviewError(f'duplicate group id: {group["id"]}')
+    group_ids.add(group['id'])
+    if group.get('layout', 'list') not in ('list', 'grid'):
+      raise ReviewError('only list and grid layouts are supported')
+    if not isinstance(group.get('items'), list):
+      raise ReviewError('group items must be an array')
+    if 'pick' in group:
+      keys_only(group['pick'], ('kind', 'required'), 'pick')
+      if group['pick'].get('kind') != 'best':
+        raise ReviewError('only pick best is supported')
+      if not isinstance(group['pick'].get('required', False), bool):
+        raise ReviewError('pick required must be boolean')
+    overlap = set(description.get('decisions_review', {})) & (
+      set(group.get('decisions', {})) |
+      ({'pick'} if 'pick' in group else set()))
+    if overlap:
+      raise ReviewError('decision name appears at review and group scope: '
+                        + ', '.join(sorted(overlap)))
+    if not isinstance(group.get('decisions', {}), dict):
+      raise ReviewError('group decisions must be an object')
+    for key, value in group.get('decisions', {}).items():
+      if key == 'pick' and 'pick' in group:
+        raise ReviewError('duplicate group pick decision')
+      check_definition(key, value)
+  items = top_items + [i for g in groups for i in g['items']]
+  if len(items) > limits['items']:
+    raise ReviewError('item count exceeds limit')
+  files, scripts = component_files(limits)
+  component_hashes = {kind: files[str(COMPONENTS / kind / 'component.js')]
+                      for kind in KINDS}
+  embedded_total = 0
+  for item in items:
+    keys_only(item, ('id', 'title', 'fields', 'evidence', 'decisions',
+                     'media', 'prefill'), 'item')
+    identifier(item.get('id'), 'item id')
+    if 'title' in item and not isinstance(item['title'], str):
+      raise ReviewError('item title must be text')
+    if item['id'] in ids:
+      raise ReviewError(f'duplicate item id: {item["id"]}')
+    ids.add(item['id'])
+    if not isinstance(item.get('fields', {}), dict):
+      raise ReviewError('item fields must be an object')
+    if any(not isinstance(value, (str, int, float, bool, type(None)))
+           for value in item.get('fields', {}).values()):
+      raise ReviewError('item fields must contain scalar values')
+    if not isinstance(item.get('evidence', {}), dict):
+      raise ReviewError('item evidence must be an object')
+    if not isinstance(item.get('decisions', {}), dict):
+      raise ReviewError('item decisions must be an object')
+    if 'prefill' in item:
+      keys_only(item['prefill'], ('source', 'values'), 'prefill')
+      if (not isinstance(item['prefill'].get('source'), str) or
+          not isinstance(item['prefill'].get('values'), dict)):
+        raise ReviewError('prefill needs source text and values object')
+    for key, value in item.get('decisions', {}).items():
+      check_definition(key, value)
+    for group in groups:
+      if item in group['items']:
+        overlap = (set(group.get('decisions', {})) |
+                   ({'pick'} if 'pick' in group else set())) & (
+                     set(description.get('decisions', {})) |
+                     set(item.get('decisions', {})))
+        if overlap:
+          raise ReviewError('decision name appears at group and item scope: '
+                            + ', '.join(sorted(overlap)))
+    overlap = set(description.get('decisions_review', {})) & (
+      set(description.get('decisions', {})) | set(item.get('decisions', {})))
+    if overlap:
+      raise ReviewError('decision name appears at review and item scope: '
+                        + ', '.join(sorted(overlap)))
+    if not isinstance(item.get('media', []), list):
+      raise ReviewError('media must be an array')
+    authoritative = any(d.get('authority') for d in {
+      **description.get('decisions', {}), **item.get('decisions', {})
+    }.values())
+    for group in groups:
+      if item in group['items']:
+        authoritative |= any(d.get('authority') for d in
+                             group.get('decisions', {}).values())
+    authoritative |= any(d.get('authority') for d in
+                         description.get('decisions_review', {}).values())
+    for media in item.get('media', []):
+      keys_only(media, ('kind', 'src', 'alt', 'fps', 'sha256'), 'media')
+      kind = media.get('kind')
+      if kind not in KINDS:
+        raise ReviewError(f'unsupported media kind: {kind}')
+      if 'alt' in media and not isinstance(media['alt'], str):
+        raise ReviewError('media alt must be text')
+      if 'fps' in media and (isinstance(media['fps'], bool) or
+                             not isinstance(media['fps'], (int, float)) or
+                             not math.isfinite(media['fps']) or
+                             media['fps'] <= 0):
+        raise ReviewError('media fps must be a positive number')
+      if kind == 'link':
+        if not isinstance(media.get('src'), str):
+          raise ReviewError('link src must be text')
+        media['mode'] = 'display'
+        continue
+      source_file = confined(path.parent, media.get('src'))
+      hash_ = file_hash(source_file)
+      if 'sha256' in media and media['sha256'] != hash_:
+        raise ReviewError(f'media hash differs from supplied sha256: '
+                          f'{media["src"]}')
+      media['sha256'] = hash_
+      media['mode'] = ('embed' if authoritative or kind == 'text'
+                       else 'reference')
+      if media['mode'] == 'embed':
+        size = source_file.stat().st_size
+        if size > limits['embedded_file']:
+          raise ReviewError(f'embedded media file too large: {source_file}')
+        embedded_total += size
+        if embedded_total > limits['embedded_total']:
+          raise ReviewError('embedded media total exceeds limit')
+  check_hotkeys(description, groups, items)
+  scopes = scopes_for(description, component_hashes)
+  return {'schema_version': 1, 'description': description,
+          'files': files, 'scopes': scopes}, scripts
+
+
+def git_risk(path):
+  try:
+    directory = path.parent
+    while not directory.exists() and directory != directory.parent:
+      directory = directory.parent
+    result = subprocess.run(['git', '-C', str(directory), 'rev-parse',
+                             '--show-toplevel'], capture_output=True,
+                            text=True, check=False)
+    if result.returncode:
+      return False
+    ignored = subprocess.run(['git', '-C', str(directory), 'check-ignore',
+                              '-q', str(path)], check=False)
+    return ignored.returncode != 0
+  except OSError:
+    return False
+
+
+def build(args):
+  path = args.description.resolve()
+  output = args.output.resolve()
+  resolved_path = output.with_name('review.resolved.json')
+  if not args.allow_tracked and (git_risk(output) or git_risk(resolved_path)):
+    raise ReviewError('output is in a Git worktree and is not ignored; '
+                      'use an ignored path or --allow-tracked')
+  limits = limits_from(args)
+  resolved, scripts = resolve(path, limits)
+  description = resolved['description']
+  page_desc = copy.deepcopy(description)
+  page_items = page_desc.get('items', []) + [
+    i for g in page_desc.get('groups', []) for i in g['items']]
+  for item in page_items:
+    for media in item.get('media', []):
+      if media['mode'] == 'embed':
+        raw = confined(path.parent, media['src']).read_bytes()
+        media['data'] = base64.b64encode(raw).decode('ascii')
+      elif media['mode'] == 'reference':
+        media['src'] = os.path.relpath(path.parent / media['src'],
+                                       output.parent)
+      if media['kind'] != 'link':
+        media['mime'] = mimetypes.guess_type(media['src'])[0] or \
+          'application/octet-stream'
+  resolved_bytes = canonical(resolved) + b'\n'
+  page = make_page(page_desc, resolved['scopes'],
+                   hashlib.sha256(resolved_bytes).hexdigest(), scripts,
+                   limits, output)
+  if len(page) > limits['page']:
+    raise ReviewError('page exceeds size limit')
+  output.parent.mkdir(parents=True, exist_ok=True)
+  output.write_bytes(page)
+  resolved_path.write_bytes(resolved_bytes)
+  print(f'{output}\n{resolved_path}')
+
+
+def make_page(description, scopes, resolved_hash, scripts, limits, output):
+  css = (ROOT / 'review_sheet_page.css').read_text()
+  core = (ROOT / 'review_sheet_page.js').read_text()
+  data = {'description': description, 'scopes': scopes,
+          'resolved_sha256': resolved_hash, 'limits': limits}
+  payload = json.dumps(data, ensure_ascii=False).replace('<', '\\u003c')
+  script = 'window.REVIEW_SHEET_DATA=' + payload + ';\n' + core + '\n'
+  script += '\n'.join(code for _, code in scripts)
+  script += '\nReviewSheet.start();\n'
+  css_hash = base64.b64encode(hashlib.sha256(css.encode()).digest()).decode()
+  js_hash = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+  csp = ("default-src 'none'; script-src 'sha256-" + js_hash +
+         "'; style-src 'sha256-" + css_hash +
+         "'; img-src blob: data: 'self'; media-src blob: data: 'self'; "
+         "worker-src blob:; connect-src 'none'; form-action 'none'; "
+         "base-uri 'none'")
+  title = html.escape(description.get('title', description['review']),
+                      quote=True)
+  markup = ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width\">"
+            f"<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">"
+            f"<title>{title}</title><style>{css}</style></head><body>"
+            "<main id=\"app\"></main><script>" + script +
+            "</script></body></html>")
+  return markup.encode('utf-8')
+
+
+def limits_from(args):
+  values = {name: getattr(args, 'max_' + name)
+            for name in LIMITS}
+  if any(value < 0 for value in values.values()):
+    raise ReviewError('limits cannot be negative')
+  return values
+
+
+def result_import(args):
+  limits = limits_from(args)
+  current, _ = resolve(args.description.resolve(), limits)
+  scopes = current['scopes']
+  review = current['description']['review']
+  frozen = None
+  frozen_hash = None
+  if args.resolved:
+    frozen_bytes = args.resolved.read_bytes()
+    if len(frozen_bytes) > limits['page']:
+      raise ReviewError('resolved description exceeds size limit')
+    frozen_hash = hashlib.sha256(frozen_bytes).hexdigest()
+    try:
+      frozen = json.loads(frozen_bytes)
+    except ValueError as exc:
+      raise ReviewError(f'invalid resolved description: {exc}') from exc
+    if (not isinstance(frozen, dict) or frozen.get('schema_version') != 1 or
+        not isinstance(frozen.get('description'), dict) or
+        frozen['description'].get('review') != review or
+        not isinstance(frozen.get('scopes'), dict)):
+      raise ReviewError('resolved description does not match review')
+  answers = {}
+  bad = False
+  stale = False
+  conflicts = []
+  orphaned = []
+  invalid_entries = []
+  reviewers = set()
+  current_items = {item['id'] for item in
+                   current['description'].get('items', [])}
+  current_items.update(item['id'] for group in
+                       current['description'].get('groups', [])
+                       for item in group['items'])
+  for path in args.results:
+    if git_risk(path.resolve()):
+      print(f'review-sheet: warning: results path is in a Git worktree: '
+            f'{path}', file=sys.stderr)
+    sync_names = {'Dropbox', 'OneDrive', 'Google Drive', 'iCloud Drive'}
+    if sync_names.intersection(path.resolve().parts):
+      print(f'review-sheet: warning: results may be in a synced location: '
+            f'{path}', file=sys.stderr)
+    packet = read_json(path, limits['results'])
+    if (not isinstance(packet, dict) or packet.get('schema_version') != 1 or
+        packet.get('review') != review or
+        not isinstance(packet.get('resolved_sha256'), str) or
+        len(packet['resolved_sha256']) != 64 or
+        not isinstance(packet.get('reviewer', ''), str) or
+        not isinstance(packet.get('answers'), dict)):
+      raise ReviewError(f'{path}: invalid results header')
+    if frozen_hash and packet['resolved_sha256'] != frozen_hash:
+      raise ReviewError(f'{path}: resolved description hash mismatch')
+    reviewers.add(packet.get('reviewer') or None)
+    for key, entry in packet['answers'].items():
+      if key not in scopes:
+        parts = key.split(':')
+        if len(parts) == 3 and parts[0] == 'item' and parts[1] not in \
+            current_items:
+          orphaned.append(key)
+        else:
+          invalid_entries.append(key)
+        bad = True
+        continue
+      if frozen and (not isinstance(entry, dict) or
+                     key not in frozen['scopes'] or
+                     not isinstance(frozen['scopes'][key], dict) or
+                     entry.get('digest') !=
+                     frozen['scopes'][key].get('digest')):
+        entry = {'state': 'invalid'}
+      if not isinstance(entry, dict):
+        entry = {'state': 'invalid'}
+      earlier = answers.get(key)
+      if earlier:
+        same = all(earlier.get(field) == entry.get(field) for field in
+                   ('state', 'value', 'digest', 'media_hashes'))
+        if same:
+          continue
+        if (earlier.get('state') == 'answered' and
+            entry.get('state') == 'answered'):
+          conflicts.append(key)
+          stale = True
+          continue
+        if earlier.get('state') == 'answered':
+          continue
+      answers[key] = entry
+  if len(reviewers) > 1:
+    conflicts.append('reviewer')
+    stale = True
+  normalized = {}
+  missing = []
+  for key, scope in scopes.items():
+    entry = answers.get(key)
+    if entry is None:
+      normalized[key] = {'state': 'unanswered'}
+      missing.append(key)
+      continue
+    state = entry.get('state')
+    if state not in ('answered', 'unanswered', 'inherited', 'stale', 'invalid'):
+      state = 'invalid'
+    if state == 'answered':
+      if entry.get('digest') != scope['digest']:
+        state = 'stale'
+      elif (not check_value(scope['definition'], entry.get('value'), limits) or
+            (scope['authority'] and entry.get('media_hashes') !=
+             scope['media'])):
+        state = 'invalid'
+    if state == 'inherited' and not check_value(
+        scope['definition'], entry.get('value'), limits):
+      state = 'invalid'
+    if state == 'invalid':
+      bad = True
+    if state == 'stale':
+      stale = True
+    normalized[key] = {'state': state}
+    if state == 'answered':
+      normalized[key]['value'] = entry['value']
+      normalized[key]['digest'] = entry['digest']
+      if 'time' in entry:
+        normalized[key]['time'] = entry['time']
+  incomplete = [key for key, scope in scopes.items()
+                if scope['definition'].get('required') and
+                normalized[key]['state'] != 'answered']
+  result = {'schema_version': 1, 'review': review, 'answers': normalized,
+            'missing': missing, 'orphaned': sorted(set(orphaned)),
+            'invalid_entries': sorted(set(invalid_entries)),
+            'conflicts': sorted(set(conflicts)), 'incomplete': incomplete}
+  rendered = json.dumps(result, indent=2, ensure_ascii=False) + '\n'
+  if args.output:
+    args.output.write_text(rendered, encoding='utf-8')
+  else:
+    print(rendered, end='')
+  return 2 if bad else 3 if stale or (args.require_complete and incomplete) \
+    else 0
+
+
+def status(args):
+  packet = read_json(args.results, LIMITS['results'])
+  answers = packet.get('answers', {})
+  counts = {name: 0 for name in
+            ('answered', 'unanswered', 'inherited', 'stale', 'invalid')}
+  for entry in answers.values():
+    counts[entry.get('state', 'invalid')] = counts.get(
+      entry.get('state', 'invalid'), 0) + 1
+  print(f"{packet.get('review', 'unknown')}: " + ', '.join(
+    f'{name} {count}' for name, count in counts.items()))
+
+
+def main(argv=None):
+  parser = argparse.ArgumentParser(description=__doc__)
+  sub = parser.add_subparsers(dest='command', required=True)
+  build_parser = sub.add_parser('build', help='build a local review page')
+  build_parser.add_argument('description', type=Path)
+  build_parser.add_argument('--output', type=Path, required=True)
+  build_parser.add_argument('--allow-tracked', action='store_true')
+  import_parser = sub.add_parser('import', help='validate downloaded answers')
+  import_parser.add_argument('results', nargs='+', type=Path)
+  import_parser.add_argument('--description', type=Path, required=True)
+  import_parser.add_argument('--resolved', type=Path,
+                             help='frozen review.resolved.json from build')
+  import_parser.add_argument('--output', type=Path)
+  import_parser.add_argument('--require-complete', action='store_true')
+  status_parser = sub.add_parser('status', help='summarize result states')
+  status_parser.add_argument('results', type=Path)
+  sub.add_parser('schema', help='print description JSON Schema')
+  for command in (build_parser, import_parser):
+    for name, default in LIMITS.items():
+      command.add_argument('--max-' + name.replace('_', '-'), type=int,
+                           default=default)
+  args = parser.parse_args(argv)
+  try:
+    if args.command == 'build':
+      build(args)
+      return 0
+    if args.command == 'import':
+      return result_import(args)
+    if args.command == 'status':
+      status(args)
+      return 0
+    print((ROOT / 'review-sheet.schema.json').read_text(), end='')
+    return 0
+  except (ReviewError, OSError, ValueError, TypeError) as exc:
+    print(f'review-sheet: {exc}', file=sys.stderr)
+    return 2
+
+
+if __name__ == '__main__':
+  sys.exit(main())

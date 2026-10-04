@@ -17,6 +17,7 @@
 | `agent-speak.sh` | Spoken attention notification, with mute control |
 | `agent-attention` | Explicit tmux attention badges and prompt reset hook |
 | `md-preview` | Local GitHub-style Markdown preview served on loopback |
+| [`review-sheet`](../bin/review-sheet.md) | Builds a local human review page and validates its exported decisions |
 | [`steamos`](../bin/steamos.md) | Inspects and leases SteamOS devices; installs pinned Devkit helpers, manages titles and versioned deploys, and collects logs, captures, frametimes and benchmarks |
 | `agent-id` | Derives or mints agent IDs and manages repository keys |
 | `agent-task` | Creates, claims, hands off and closes task records |
@@ -38,6 +39,7 @@
 | `delivery-evidence` | Deciding what CI evidence should gate delivery |
 | `design-documents` | Deciding whether a design document is warranted |
 | `preview-markdown` | Previewing and visually validating Markdown |
+| [`review-sheet`](../skills/review-sheet/SKILL.md) | Requesting and processing a person's structured review of many items |
 | `profiling` | Collecting or reading a performance profile, CPU, GPU or Wasm |
 | [`steamos`](../skills/steamos/SKILL.md) | Sharing a SteamOS device for builds, deploys, title runs and performance work, with lease and owner hand-offs |
 | `pull-requests` | Taking a change through a pull-request workflow |

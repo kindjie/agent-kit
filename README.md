@@ -427,6 +427,7 @@ no private projects or measured profiling results.
 <a id="coordination-and-efficiency"></a>
 
 - [Command and skill catalogue](docs/tools.md)
+- [Local review sheets for human decisions](bin/review-sheet.md)
 - [Installation, rules, hooks, and status lines](docs/install.md)
 - [Shared task records and live controls](docs/records.md)
 - [Coordination and efficiency](docs/coordination.md)

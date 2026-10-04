@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kindjie/agent-kit/blob/main/bin/review-sheet.schema.json",
+  "title": "Review sheet description, stage 1",
+  "type": "object",
+  "required": ["review"],
+  "properties": {
+    "review": {"type": "string", "minLength": 1},
+    "title": {"type": "string"},
+    "instructions": {"type": "string"},
+    "caveats": {"type": "array", "items": {"type": "string"}},
+    "privacy": {"enum": ["private", "shareable"]},
+    "context": {"type": "object"},
+    "decisions": {"$ref": "#/$defs/decisions"},
+    "decisions_review": {"$ref": "#/$defs/decisions"},
+    "items": {"type": "array", "items": {"$ref": "#/$defs/item"}},
+    "groups": {"type": "array", "items": {"$ref": "#/$defs/group"}}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "decisions": {
+      "type": "object", "additionalProperties": {"$ref": "#/$defs/decision"}
+    },
+    "decision": {
+      "type": "object", "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["choice", "boolean", "flags", "text", "number"]},
+        "question": {"type": "string"},
+        "required": {"type": "boolean"},
+        "authority": {"type": "boolean"},
+        "options": {"type": "array", "minItems": 1,
+          "items": {"type": "string"}, "uniqueItems": true},
+        "keys": {"type": "string"},
+        "unit": {"type": "string"},
+        "min": {"type": "number"},
+        "max": {"type": "number"}
+      },
+      "additionalProperties": false
+    },
+    "media": {
+      "type": "object", "required": ["kind", "src"],
+      "properties": {
+        "kind": {"enum": ["image", "animated", "video", "audio",
+                         "text", "link"]},
+        "src": {"type": "string"},
+        "alt": {"type": "string"},
+        "fps": {"type": "number", "exclusiveMinimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "item": {
+      "type": "object", "required": ["id"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "title": {"type": "string"},
+        "media": {"type": "array", "items": {"$ref": "#/$defs/media"}},
+        "fields": {"type": "object", "additionalProperties":
+          {"type": ["string", "number", "boolean", "null"]}},
+        "evidence": {"type": "object"},
+        "decisions": {"$ref": "#/$defs/decisions"},
+        "prefill": {"type": "object", "required": ["source", "values"],
+          "properties": {"source": {"type": "string"},
+                         "values": {"type": "object"}},
+          "additionalProperties": false}
+      },
+      "additionalProperties": false
+    },
+    "group": {
+      "type": "object", "required": ["id", "items"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "title": {"type": "string"},
+        "layout": {"enum": ["list", "grid"]},
+        "items": {"type": "array", "items": {"$ref": "#/$defs/item"}},
+        "decisions": {"$ref": "#/$defs/decisions"},
+        "pick": {"type": "object", "required": ["kind"],
+          "properties": {"kind": {"const": "best"},
+                         "required": {"type": "boolean"}},
+          "additionalProperties": false}
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,5 +1,21 @@
 # Focused Tests
 
+## Review sheet
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
+  tests.test_review_sheet tests.test_review_sheet_browser
+```
+
+The Python cases use fictional files and temporary Git repositories to check
+build, import, scope digests, bounds and output privacy. The browser case
+drives Chromium and Firefox from `file://` using Playwright pinned by
+`tests/package-lock.json`. Install with `npm ci --prefix tests` and
+`tests/node_modules/.bin/playwright install chromium firefox`. It reports a
+clear skip when Node, Playwright or a launchable browser is unavailable; a
+publishable browser result needs both browsers to pass. Safari is best
+effort. The harness uses no remote media or services.
+
 ## SteamOS
 
 ```sh

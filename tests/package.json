@@ -1,0 +1,7 @@
+{
+  "name": "review-sheet-browser-tests",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pinned browser harness for review-sheet",
+  "dependencies": {"playwright": "1.63.0"}
+}

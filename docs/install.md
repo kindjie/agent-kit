@@ -78,6 +78,8 @@ cd ~/src/agent-kit
 through the path they were invoked by, so a partial link fails at runtime
 rather than at install time. The records commands also work when linked
 individually because they resolve their Python modules through real paths.
+`review-sheet` resolves its page and component files through its real path
+in the checkout, so retain the complete `bin/` tree when linking it.
 
 ```sh
 mkdir -p ~/bin/agent-kit
