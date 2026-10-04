@@ -1037,15 +1037,18 @@ class AgentViewTest(unittest.TestCase):
     running = 0
     peak = 0
     lock = threading.Lock()
+    overlap = threading.Barrier(2)
 
     def summarize(jobs, binaries):
       nonlocal running, peak
       with lock:
         running += 1
         peak = max(peak, running)
-      time.sleep(0.03)
-      with lock:
-        running -= 1
+      try:
+        overlap.wait(timeout=5)
+      finally:
+        with lock:
+          running -= 1
       self.assertLessEqual(len(jobs), 3)
       return {
         agent["key"]: {"summary": "Review parser", "brief": "Review"}
@@ -1060,6 +1063,9 @@ class AgentViewTest(unittest.TestCase):
       cache = AGENTS.refresh_summaries(agents, {}, {}, {}, now=1000)
       self.assertEqual(peak, 2)
       self.assertEqual(len(cache), 6)
+      for entry in cache.values():
+        self.assertEqual(entry.get('summary'), 'Review parser')
+        self.assertNotIn('error', entry)
       again = AGENTS.refresh_summaries(agents, cache, {}, {}, now=1301)
       self.assertEqual(cache, again)
 

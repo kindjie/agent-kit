@@ -308,6 +308,7 @@ class ActivityTest(unittest.TestCase):
 
   def test_sort_controls_keep_families_selection_folds_and_filter(self):
     ui = importlib.import_module('agent_activity_live').AgentView()
+    ui.sort = 'activity'
     rows = [agent('z-root', seen=900), agent('z-child', 'z-root', seen=999),
             agent('a-child', 'z-root', seen=998), agent('a-root', seen=990)]
     rows[0]['session_title'] = 'Zulu'
@@ -343,6 +344,7 @@ class ActivityTest(unittest.TestCase):
 
   def test_updated_sort_ties_missing_times_and_recent_descendant(self):
     ui = importlib.import_module('agent_activity_live').AgentView()
+    ui.sort = 'activity'
     rows = [agent('z', seen=None), agent('b', seen=999),
             agent('a', seen=999), agent('parent', seen=800),
             agent('child', 'parent', seen=1000)]
@@ -354,6 +356,33 @@ class ActivityTest(unittest.TestCase):
     self.assertEqual(ui.visible(), ['codex:parent', 'codex:a', 'codex:b',
                                   'codex:z'])
     self.assertIn('updated', str(ui.frame(120, 24, 1002)))
+
+  def test_working_default_groups_descendants_and_refreshes_status(self):
+    ui = importlib.import_module('agent_activity_live').AgentView()
+    rows = [agent('idle'), agent('parent'), agent('idle-child', 'parent'),
+            agent('worker', 'parent', phase='thinking'),
+            agent('active', phase='active'),
+            agent('stale', phase='active', seen=-500)]
+    ui.update(rows, 1001)
+    self.assertEqual(ui.sort, 'working')
+    self.assertEqual(ui.visible(), ['codex:parent', 'codex:active',
+                                  'codex:idle', 'codex:stale'])
+    ui.key('RIGHT', 10)
+    self.assertEqual(ui.visible()[:3], ['codex:parent', 'codex:worker',
+                                      'codex:idle-child'])
+    ui.selected = 'codex:worker'
+    rows[3]['observation']['phase'] = 'ended'
+    ui.update(rows, 1002)
+    self.assertEqual(ui.visible()[0], 'codex:active')
+    self.assertEqual(ui.selected, 'codex:worker')
+    self.assertFalse(ui.collapsed['codex:parent'])
+    for expected in ('activity', 'updated', 'title', 'working'):
+      ui.key('s', 10)
+      self.assertEqual(ui.sort, expected)
+    self.assertIn('sort: working', str(ui.frame(120, 24, 1002)))
+    ui.frame(120, 24, 2300)
+    self.assertEqual(ui.visible()[0], 'codex:idle')
+    self.assertEqual(ui.selected, 'codex:worker')
 
   def test_collapsing_preserves_selection_and_explicit_choices(self):
     ui_mod = importlib.import_module('agent_activity_live')
@@ -725,6 +754,8 @@ run_agent_live(args, Path('/unused'), quota, loader)
               return (f'\x1b[<{button};{x+1};{y+1}M'.encode()
                       if b'1006' in initial else
                       b'\x1b[M' + bytes((button+32, x+33, y+33)))
+            os.write(master, b's')
+            until(b'activity')
             os.write(master, b's')
             until(b'updated')
             os.write(master, mouse(0, 2, 2))

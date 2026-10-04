@@ -30,7 +30,7 @@ class AgentView:
   def __init__(self):
     self.tree = AgentTree([], 0)
     self.selected = None
-    self.sort = 'activity'
+    self.sort = 'working'
     self.collapsed = {}
     self.first = 0
     self.details = False
@@ -71,6 +71,7 @@ class AgentView:
     if self.sort == 'activity':
       return
     tree = self.tree
+    activity_order = {key: index for index, key in enumerate(tree.rows)}
     def recent(key):
       values = [tree.rows[k].get('last_seen') for k in
                 [key] + tree.descendants(key)]
@@ -78,6 +79,10 @@ class AgentView:
                math.isfinite(v) and v >= 0]
       return max(known) if known else None
     def order(key):
+      if self.sort == 'working':
+        working = any(activity_status(tree.observed[k]) == 'Working'
+                      for k in [key] + tree.descendants(key))
+        return (not working, activity_order[key])
       if self.sort == 'updated':
         at = recent(key)
         return (at is None, -at if at is not None else 0, key)
@@ -156,7 +161,7 @@ class AgentView:
           self.pending = key
       return False
     if key == 's':
-      modes = ('activity', 'updated', 'title')
+      modes = ('working', 'activity', 'updated', 'title')
       self.sort = modes[(modes.index(self.sort) + 1) % len(modes)]
       self.tree = AgentTree(list(self.tree.rows.values()),
                             self.refreshed or 0, self.tree.incomplete)
@@ -291,6 +296,8 @@ class AgentView:
     self.mouse_rows, self.mouse_details = {}, (0, 0)
     width, height = max(0, width - 1), max(1, height)
     self.tree.refresh(now)
+    if self.sort == 'working':
+      self.sort_tree()
     shown = self.sync()
     if self.mode == 'help':
       sections = [
@@ -298,7 +305,9 @@ class AgentView:
           ('gg / G', 'First / last agent'),
           ('Ctrl-d / Ctrl-u', 'Move half a page'),
           ('Wheel / click', 'Scroll / select agent')]),
-        ('Sorting', [('s', 'Cycle activity, updated (newest), title (A-Z)'),
+        ('Sorting', [('s', 'Cycle working, activity, updated, title'),
+          ('Default', 'Working first; groups include working descendants'),
+          ('Working ties', 'Collector activity order; uncertain work follows'),
           ('Groups', 'Families stay together; descendants count for updates'),
           ('Ties', 'Agent ID; unknown update times follow known times'),
           ('Selection', 'Selection and fold choices survive sort changes')]),

@@ -549,6 +549,12 @@ A process can die without a transcript event. The view does not infer a stall
 or emit a stall alert from silence alone.
 
 `--agents --live` displays a collapsible tree with explicit branch connectors.
+It defaults to working-first sorting: agents and groups with a current
+`Working` observation come first, retaining collector activity order within
+each tier. Uncertain `Working?` observations remain in the other tier.
+Press `s` to cycle working-first, collector activity, newest update and title.
+Families stay together; newest-update sorting includes descendants' updates.
+Sorting is local to the view and preserves selection and collapse choices.
 Mouse wheel moves selection, or scrolls details under the pointer. Click a
 row to select it; click its fold marker to collapse/expand.
 Space toggles a group; Left collapses or selects its parent; Right expands

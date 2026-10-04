@@ -457,7 +457,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_activity
 Covers conservative foreground wait recognition, cleared and stale waits,
 Codex/Claude transcript observations, fork versus spawn ancestry, incomplete
 and cyclic hierarchies, descendant summaries, stable selection/collapse,
-filter ancestors, family-preserving activity/updated/title sorting, stable ties
+filter ancestors, working-first default and family-preserving
+working/activity/updated/title sorting, status refresh and stable ties
 and unknown times, selection and mouse targets after reordering,
 family-preserving live limits, title metadata, title-first Unicode-aligned columns, explicit
 on-screen ranges and cached task waits without writes. Real PTYs exercise

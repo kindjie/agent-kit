@@ -20,6 +20,13 @@ Space folds a parent group; Left/Right move through the tree. Enter opens
 observed activity details, and `?` opens scrollable controls and state help.
 Descendant summaries stay visible when a group is collapsed.
 
+The default sort puts working agents and groups with working descendants
+first, preserving collector activity order within each tier. Uncertain
+`Working?` observations stay in the remaining tier. Press `s` to cycle
+working-first, collector activity, newest update and title sorts. Families
+stay together, and selection and fold choices survive sorting. The Agent
+Tasks view defaults to newest update first.
+
 <!-- /site:wrap -->
 
 Details start with **Tasks**: matching IDs, titles, status and owner/helper
