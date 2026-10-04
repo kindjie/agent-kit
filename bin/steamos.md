@@ -11,10 +11,12 @@ steamos lease take 'deploy build 12' [--hours N]
 steamos lease renew [--hours N]
 steamos lease show | check | release
 steamos lease break --reason 'why'
+steamos devkit install              # Valve's helpers, at a pinned commit
 ```
 
 Exit codes: 0 success; 1 refused (the lease is held, or not yours); 2
-usage or configuration; 3 the device could not be reached.
+usage or configuration; 3 the device, or Valve's repository, could not
+be reached.
 
 ## Setup
 
@@ -87,6 +89,35 @@ Valve's `devkit-utils` are present, and the lease. Devices may run
 different SteamOS channels and versions; `status` reports each device's
 rather than assuming one. Valve's `steamos-get-status` is not used,
 because on a Steam Deck it also turns off wireless power management.
+
+## Valve's device helpers
+
+Valve's SteamOS Devkit Client keeps small helper scripts on each device
+in `~/devkit-utils` (registering a title with Steam, launching it,
+listing and deleting titles). `steamos devkit install` puts them there
+without the Devkit Client: it fetches Valve's repository at a pinned
+commit with `git`, which checks the content against that commit, keeps
+it in `$XDG_CACHE_HOME/agent-kit/steamos-devkit/COMMIT` (usually under
+`~/.cache`), and copies `client/devkit-utils` to the device with rsync,
+replacing what was there, so it needs the lease and refuses a
+`~/devkit-utils` that is a symlink. It records the commit in
+`~/devkit-utils/.agent-kit-pin`, and `status` reports whether a device
+has the pinned commit. Only the first install of a commit needs to reach
+Valve's GitLab. To use another commit or a mirror:
+
+```json
+{"devkit": {"commit": "<40-character commit>", "source": "<git URL>"}}
+```
+
+Facts found while proving this path, which these helpers do not check:
+
+- A title's game ID must not contain `-`; Steam rejects it with only
+  `missing/invalid arguments`.
+- A title's output goes to the user journal (`journalctl --user`), not to
+  a per-launch log file.
+- Deleting a title makes Steam re-register every folder in
+  `~/devkit-game` that has configuration files, so one invalid leftover
+  makes that whole step fail.
 
 ## Notes
 

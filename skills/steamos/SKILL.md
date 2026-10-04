@@ -12,7 +12,8 @@ description: >-
 
 Use the `steamos` command (see `steamos.md` beside it in agent-kit's
 `bin/`). It reaches devices over ssh and changes nothing on them except
-the lease and its log (`~/.agent-kit-steamos-lease.log` on the device).
+the lease, its log (`~/.agent-kit-steamos-lease.log` on the device) and,
+when asked, Valve's helpers in `~/devkit-utils`.
 If it is not configured, say so and ask the user for the device's name
 or address rather than guessing.
 
@@ -30,7 +31,10 @@ or address rather than guessing.
    with `steamos lease renew`.
 4. `steamos lease release` when done, including when you stop early.
 
-Reading status needs no lease.
+Reading status needs no lease. When `status` says Valve's
+`devkit-utils` are missing or not at the pinned commit and the work needs
+them, run `steamos devkit install` while holding the lease; it replaces
+the helpers another agent's title may be using.
 
 ## When the lease is held
 

@@ -20,6 +20,12 @@ import time
 
 OK, REFUSED, USAGE, UNREACHABLE = 0, 1, 2, 3
 DEFAULT_KEY = Path('~/.config/steamos-devkit/devkit_rsa')
+# Valve's SteamOS Devkit source and the commit whose device-side helpers
+# (client/devkit-utils) steamos installs; configurable under "devkit".
+DEVKIT_SOURCE = 'https://gitlab.steamos.cloud/devkit/steamos-devkit.git'
+DEVKIT_COMMIT = 'a00ceb7d91ea44a0c3e714a91a06417d6e5cdb33'
+DEVKIT_PIN_FILE = '.agent-kit-pin'
+COMMIT = re.compile(r'[0-9a-f]{40}')
 SAFE_PATH = re.compile(r'[A-Za-z0-9._-][A-Za-z0-9._/-]*')
 
 # Every device script starts by printing this line, so a dropped
@@ -200,7 +206,10 @@ echo "model=$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)"
 echo "hostname=$(uname -n)"
 echo "free_bytes=$(df -Pk "$HOME" | awk 'NR == 2 { print $4 * 1024 }')"
 echo "uptime_seconds=$(cut -d. -f1 /proc/uptime 2>/dev/null || true)"
-if [ -d "$HOME/devkit-utils" ]; then echo devkit_utils=yes
+if [ -d "$HOME/devkit-utils" ]; then
+  echo devkit_utils=yes
+  echo "devkit_commit=$(head -n 1 "$HOME/devkit-utils/.agent-kit-pin" \
+    2>/dev/null || true)"
 else echo devkit_utils=no
 fi
 for supply in /sys/class/power_supply/*; do
@@ -266,12 +275,17 @@ def targets(entry):
   return found
 
 
-def ssh(entry, script, args):
+def ssh_options(entry):
   key = entry.get('key')
   key = Path(key).expanduser() if key else DEFAULT_KEY.expanduser()
   options = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10']
   if key.is_file():
     options += ['-o', 'IdentitiesOnly=yes', '-i', str(key)]
+  return options
+
+
+def ssh(entry, script, args):
+  options = ssh_options(entry)
   remote = 'sh -s -- ' + ' '.join(shlex.quote(str(a)) for a in args)
   errors = []
   for address in targets(entry):
@@ -444,6 +458,128 @@ def lease_command(options):
   return OK if proc.returncode == 0 else REFUSED
 
 
+def devkit_pin(config):
+  devkit = config.get('devkit', {})
+  if not isinstance(devkit, dict):
+    raise Failure(USAGE, 'devkit must be an object')
+  source = devkit.get('source', DEVKIT_SOURCE)
+  commit = devkit.get('commit', DEVKIT_COMMIT)
+  if not isinstance(source, str) or not source or source.startswith('-'):
+    raise Failure(USAGE, 'devkit source must be a repository URL')
+  if not isinstance(commit, str) or not COMMIT.fullmatch(commit):
+    raise Failure(USAGE, 'devkit commit must be a full 40-character '
+                  'lowercase commit hash')
+  return source, commit
+
+
+def devkit_label(status):
+  if status['devkit_utils'] != 'yes':
+    return 'not installed (steamos devkit install)'
+  if not status['devkit_commit']:
+    return 'installed, commit unknown (not installed by steamos)'
+  short = status['devkit_commit'][:7]
+  if status['devkit_pinned']:
+    return f'{short}, the pinned commit'
+  return f'{short}, not the pinned commit (steamos devkit install)'
+
+
+def devkit_cache(source, commit):
+  """Valve's client/devkit-utils at COMMIT, fetched once and cached."""
+  root = Path(os.environ.get('XDG_CACHE_HOME') or
+              Path.home() / '.cache') / 'agent-kit' / 'steamos-devkit'
+  final = root / commit
+  utils = final / 'client' / 'devkit-utils'
+  if (final / '.complete').is_file():
+    return utils
+  root.mkdir(parents=True, exist_ok=True)
+  work = root / f'{commit}.tmp.{os.getpid()}'
+  shutil.rmtree(work, ignore_errors=True)
+  try:
+    for command in (['init', '-q'],
+                    ['fetch', '-q', '--depth', '1', '--', source, commit],
+                    ['-c', 'advice.detachedHead=false', 'checkout', '-q',
+                     'FETCH_HEAD']):
+      proc = subprocess.run(['git', '-C', str(work), *command]
+                            if command[0] != 'init' else
+                            ['git', *command, str(work)],
+                            capture_output=True, text=True)
+      if proc.returncode != 0:
+        raise Failure(UNREACHABLE, f'could not fetch {commit} from '
+                      f'{source}: {proc.stderr.strip()}')
+    head = subprocess.run(['git', '-C', str(work), 'rev-parse', 'HEAD'],
+                          capture_output=True, text=True).stdout.strip()
+    if head != commit:
+      raise Failure(USAGE, f'fetched {head or "nothing"}, not {commit}')
+    if not (work / 'client' / 'devkit-utils').is_dir():
+      raise Failure(USAGE, f'{commit} has no client/devkit-utils')
+    shutil.rmtree(work / '.git')
+    (work / '.complete').write_text(source + '\n')
+    try:
+      work.rename(final)
+    except OSError:
+      if not (final / '.complete').is_file():
+        raise
+  finally:
+    shutil.rmtree(work, ignore_errors=True)
+  return utils
+
+
+# Before copying: refuse a symlinked destination (rsync --delete would
+# work inside its target) and drop the old commit record, so a copy that
+# fails part way never leaves a stale claim of being pinned.
+DEVKIT_PREPARE = r'''
+if [ -L "$HOME/devkit-utils" ]; then echo result=symlink; exit 1; fi
+rm -f -- "$HOME/devkit-utils/$1"
+'''
+
+
+def devkit_command(options):
+  config = load_config()
+  name, entry = device(config, options.device)
+  source, commit = devkit_pin(config)
+  _, grace, legacy = lease_policy(config)
+  # Replacing the helpers can break a title another agent is running, so
+  # this needs the lease like any other change to the device.
+  proc = ssh(entry, LEASE_SCRIPT,
+             ['check', holder(config), '', 0, grace, '', *legacy])
+  if proc.returncode != 0:
+    raise Failure(REFUSED, f'installing the helpers needs the {name} '
+                  'lease: run `steamos lease take PURPOSE` first')
+  utils = devkit_cache(source, commit)
+  proc = ssh(entry, DEVKIT_PREPARE, [DEVKIT_PIN_FILE])
+  if proc.returncode == 1:
+    raise Failure(REFUSED, f'~/devkit-utils on {name} is a symlink; '
+                  'replace it with a directory first')
+  if proc.returncode != 0:
+    raise Failure(UNREACHABLE, f'device script failed: '
+                  f'{proc.stderr.strip()}')
+  if not shutil.which('rsync'):
+    raise Failure(USAGE, 'rsync is needed to copy the helpers')
+  remote_shell = ' '.join(shlex.quote(o) for o in ['ssh', *ssh_options(entry)])
+  errors = []
+  for address in targets(entry):
+    proc = subprocess.run(
+      ['rsync', '-a', '--delete', '-e', remote_shell, f'{utils}/',
+       f'{entry["user"]}@{address}:devkit-utils/'],
+      capture_output=True, text=True)
+    if proc.returncode == 0:
+      break
+    errors.append(f'{address}: {proc.stderr.strip()}')
+    if proc.returncode != 255:
+      raise Failure(UNREACHABLE, 'copying the helpers failed:\n  ' +
+                    '\n  '.join(errors))
+  else:
+    raise Failure(UNREACHABLE, 'cannot reach the device over ssh:\n  ' +
+                  '\n  '.join(errors))
+  proc = ssh(entry, 'printf "%s\\n" "$1" >"$HOME/devkit-utils/$2"\n',
+             [commit, DEVKIT_PIN_FILE])
+  if proc.returncode != 0:
+    raise Failure(UNREACHABLE, f'recording the commit failed: '
+                  f'{proc.stderr.strip()}')
+  print(f'Installed Valve devkit-utils {commit[:7]} on {name}.')
+  return OK
+
+
 def status_command(options):
   config = load_config()
   name, entry = device(config, options.device)
@@ -455,8 +591,14 @@ def status_command(options):
   values = parse(proc.stdout)
   status = {'device': name}
   for key in ('os_name', 'os_version', 'os_build', 'os_variant', 'channel',
-              'model', 'hostname', 'devkit_utils', 'battery_status'):
+              'model', 'hostname', 'devkit_utils', 'devkit_commit',
+              'battery_status'):
     status[key] = values.get(key, '')
+  try:
+    pinned = devkit_pin(config)[1]
+  except Failure:
+    pinned = None
+  status['devkit_pinned'] = status['devkit_commit'] == pinned
   for key in ('free_bytes', 'uptime_seconds', 'battery_percent'):
     status[key] = int(values[key]) if values.get(key, '').isdigit() else None
   status['external_power'] = values.get('external_power') == 'yes'
@@ -477,7 +619,7 @@ def status_command(options):
                 f'channel {status["channel"] or "unknown"}'),
     ('Free space', f'{free / 2**30:.1f} GiB' if free else 'unknown'),
     ('Power', power),
-    ('devkit-utils', status['devkit_utils']),
+    ('devkit-utils', devkit_label(status)),
   ]
   for label, value in rows:
     print(f'{label:<13} {value}')
@@ -507,7 +649,11 @@ def main(argv=None):
     if action == 'break':
       sub.add_argument('--reason')
     sub.add_argument('--json', action='store_true')
-  for sub in (status, lease):
+  devkit = commands.add_parser('devkit', help="Valve's device-side helpers")
+  devkit_actions = devkit.add_subparsers(dest='action', required=True)
+  devkit_actions.add_parser(
+    'install', help='copy the pinned devkit-utils to the device')
+  for sub in (status, lease, devkit):
     sub.add_argument('--device', dest='device_sub', help=argparse.SUPPRESS)
   options = parser.parse_args(argv)
   options.device = options.device_sub or options.device
@@ -515,6 +661,8 @@ def main(argv=None):
   try:
     if options.command == 'status':
       return status_command(options)
+    if options.command == 'devkit':
+      return devkit_command(options)
     return lease_command(options)
   except Failure as failure:
     print(f'steamos: {failure}', file=sys.stderr)

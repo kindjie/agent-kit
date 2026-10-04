@@ -35,7 +35,7 @@ FAKE_SSH = textwrap.dedent('''\
   home = os.path.join(root, 'devices', host.split('@')[-1])
   os.makedirs(home, exist_ok=True)
   env = dict(os.environ, HOME=home)
-  code = subprocess.run(['sh', '-c', command], env=env).returncode
+  code = subprocess.run(['sh', '-c', command], env=env, cwd=home).returncode
   if host.split('@')[-1] in os.environ.get('FAKE_SSH_DROP', '').split():
     sys.exit(255)
   sys.exit(code)
@@ -174,6 +174,118 @@ class SteamosTest(unittest.TestCase):
         'address': '10.0.0.5'}}, 'lease': lease})
       self.run_cli('lease', 'take', 'bench', code=2)
       self.run_cli('status', code=2)
+
+  def make_devkit_source(self):
+    """A local stand-in for Valve's repository; returns (url, commit)."""
+    repo = self.root / 'valve'
+    utils = repo / 'client' / 'devkit-utils'
+    (utils / 'devkit_utils').mkdir(parents=True)
+    (utils / 'steamos-get-status').write_text('#!/usr/bin/env python3\n')
+    (utils / 'devkit_utils' / '__init__.py').write_text('')
+    git = ['git', '-C', str(repo), '-c', 'user.name=t', '-c',
+           'user.email=t@example.invalid']
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    subprocess.run([*git, 'add', '.'], check=True)
+    subprocess.run([*git, 'commit', '-q', '-m', 'drop'], check=True)
+    commit = subprocess.check_output(
+      ['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip()
+    return repo.as_uri(), commit
+
+  def configure_devkit(self, source, commit):
+    self.configure({'default': 'unit', 'devices': {'unit': {
+      'address': '10.0.0.5'}}, 'devkit': {'source': source,
+                                          'commit': commit}})
+    self.env['XDG_CACHE_HOME'] = str(self.root / 'cache')
+
+  def test_devkit_install_copies_pinned_helpers_and_records_commit(self):
+    source, commit = self.make_devkit_source()
+    self.configure_devkit(source, commit)
+    stale = self.device_home() / 'devkit-utils' / 'old-helper'
+    stale.parent.mkdir(parents=True)
+    stale.write_text('old')
+    self.run_cli('lease', 'take', 'install helpers')
+    self.run_cli('devkit', 'install')
+    utils = self.device_home() / 'devkit-utils'
+    self.assertTrue((utils / 'steamos-get-status').is_file())
+    self.assertTrue((utils / 'devkit_utils' / '__init__.py').is_file())
+    self.assertFalse(stale.exists())
+    self.assertEqual((utils / '.agent-kit-pin').read_text().strip(), commit)
+    status = json.loads(self.run_cli('status', '--json').stdout)
+    self.assertEqual((status['devkit_utils'], status['devkit_commit'],
+                      status['devkit_pinned']), ('yes', commit, True))
+
+  def test_devkit_install_reuses_cache_and_rejects_bad_pins(self):
+    source, commit = self.make_devkit_source()
+    self.configure_devkit(source, commit)
+    self.run_cli('lease', 'take', 'install helpers')
+    self.run_cli('devkit', 'install')
+    subprocess.run(['rm', '-rf', str(self.root / 'valve')], check=True)
+    self.run_cli('devkit', 'install')
+    for bad in ('main', 'a' * 39, '../' + 'a' * 40):
+      self.configure_devkit(source, bad)
+      self.run_cli('devkit', 'install', code=2)
+
+  def test_devkit_install_fails_when_commit_is_missing(self):
+    source, _ = self.make_devkit_source()
+    self.configure_devkit(source, 'b' * 40)
+    self.run_cli('lease', 'take', 'install helpers')
+    proc = self.run_cli('devkit', 'install', code=3)
+    self.assertIn('could not fetch', proc.stderr)
+    self.assertFalse((self.device_home() / 'devkit-utils').exists())
+
+  def test_devkit_install_needs_the_lease(self):
+    source, commit = self.make_devkit_source()
+    self.configure_devkit(source, commit)
+    proc = self.run_cli('devkit', 'install', code=1)
+    self.assertIn('lease', proc.stderr)
+    self.run_cli('lease', 'take', 'theirs', holder='agent-b')
+    self.run_cli('devkit', 'install', code=1)
+    self.assertFalse((self.device_home() / 'devkit-utils').exists())
+
+  def test_devkit_install_clears_old_pin_and_refuses_symlink(self):
+    source, commit = self.make_devkit_source()
+    self.configure_devkit(source, commit)
+    self.run_cli('lease', 'take', 'install helpers')
+    utils = self.device_home() / 'devkit-utils'
+    utils.mkdir(parents=True)
+    pin = utils / '.agent-kit-pin'
+    pin.write_text('c' * 40 + '\n')
+    self.env['PATH'] = self.env['PATH'].replace(
+      str(self.root / 'bin') + os.pathsep,
+      str(self.root / 'bin') + os.pathsep + str(self.no_rsync()) + os.pathsep)
+    self.run_cli('devkit', 'install', code=3)
+    self.assertFalse(pin.exists())
+    self.env['PATH'] = self.env['PATH'].replace(
+      str(self.root / 'failing') + os.pathsep, '')
+    target = self.root / 'elsewhere'
+    target.mkdir()
+    (target / 'keep').write_text('keep')
+    subprocess.run(['rm', '-rf', str(utils)], check=True)
+    utils.symlink_to(target)
+    proc = self.run_cli('devkit', 'install', code=1)
+    self.assertIn('symlink', proc.stderr)
+    self.assertTrue((target / 'keep').exists())
+
+  def no_rsync(self):
+    """A directory whose rsync fails part way, as on a dropped copy."""
+    failing = self.root / 'failing'
+    failing.mkdir(exist_ok=True)
+    rsync = failing / 'rsync'
+    rsync.write_text('#!/bin/sh\necho "partial transfer" >&2\nexit 23\n')
+    rsync.chmod(0o755)
+    return failing
+
+  def test_bad_devkit_config_does_not_break_status(self):
+    self.configure({'default': 'unit', 'devices': {'unit': {
+      'address': '10.0.0.5'}}, 'devkit': {'commit': 'main'}})
+    status = json.loads(self.run_cli('status', '--json').stdout)
+    self.assertFalse(status['devkit_pinned'])
+
+  def test_status_reports_unpinned_devkit_utils(self):
+    (self.device_home() / 'devkit-utils').mkdir(parents=True)
+    status = json.loads(self.run_cli('status', '--json').stdout)
+    self.assertEqual((status['devkit_utils'], status['devkit_commit'],
+                      status['devkit_pinned']), ('yes', '', False))
 
   def test_second_holder_is_refused_and_told_who_holds_it(self):
     self.run_cli('lease', 'take', 'bench')
