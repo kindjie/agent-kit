@@ -2021,6 +2021,16 @@ def bench_ssh(entry, request):
                 '\n  '.join(errors))
 
 
+def governor_helper(config):
+  bench = config.get('bench', {})
+  if not isinstance(bench, dict):
+    raise Failure(USAGE, 'bench configuration must be an object')
+  helper = bench.get('governor_helper', '/etc/agent-kit/steamos-governor')
+  if not isinstance(helper, str) or not helper.startswith('/') or '\0' in helper:
+    raise Failure(USAGE, 'bench.governor_helper must be an absolute path')
+  return helper
+
+
 def bench_command(options):
   command = options.argv
   if not command or command[0] != '--' or len(command) < 2:
@@ -2038,11 +2048,9 @@ def bench_command(options):
   if not isinstance(bench, dict):
     raise Failure(USAGE, 'bench configuration must be an object')
   keep_runs = bench.get('keep_runs', 20)
-  helper = bench.get('governor_helper', '/etc/agent-kit/steamos-governor')
+  helper = governor_helper(config)
   if type(keep_runs) is not int or keep_runs < 1:
     raise Failure(USAGE, 'bench.keep_runs must be a positive integer')
-  if not isinstance(helper, str) or not helper.startswith('/') or '\0' in helper:
-    raise Failure(USAGE, 'bench.governor_helper must be an absolute path')
   output = output_path(options.out or (
     './steamos-bench-' + name + '-' +
     time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())))

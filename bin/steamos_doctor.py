@@ -3,18 +3,24 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+import time
 
 DOCTOR_SCRIPT = r'''
 echo "glibc=$(ldd --version 2>/dev/null | head -n 1 | awk '{print $NF}')"
-if [ -x /usr/local/sbin/steamos-governor ]; then
-  echo governor_helper=yes
-else echo governor_helper=no; fi
+if [ -f "$helper" ]; then echo doctor_helper=present
+else echo doctor_helper=missing; fi
+if sudo_rules=$(sudo -n -l 2>/dev/null); then
+  echo doctor_sudo=listed
+  printf '%s\n' "$sudo_rules" | sed 's/^/doctor_sudo_line=/'
+else echo doctor_sudo=unavailable; fi
 info=$HOME/.agent-kit-steamos-lease/info
 if [ -r "$info" ]; then
   echo "doctor_lease_holder=$(sed -n 's/^holder=//p' "$info" | head -n 1)"
+  echo "doctor_lease_purpose=$(sed -n 's/^purpose=//p' "$info" | head -n 1)"
   echo "doctor_lease_expires=$(sed -n 's/^expires=//p' "$info" | head -n 1)"
 elif [ -d "$HOME/.agent-kit-steamos-lease" ]; then
   echo doctor_lease_holder=unknown
@@ -30,6 +36,16 @@ if command -v systemctl >/dev/null 2>&1 &&
   else echo doctor_inhibit=inactive; fi
 else echo doctor_inhibit=unavailable; fi
 '''
+
+
+def helper_sudo_rule(output, helper):
+  """Find a root NOPASSWD command entry for the configured helper."""
+  rule = re.compile(r'^\s*\((?:root|ALL)\)\s+NOPASSWD:\s*'
+                    r'(?:[^,]+,\s*)*(?:ALL|' + re.escape(helper) +
+                    r')(?:\s|$)')
+  return any(rule.match(line.removeprefix('doctor_sudo_line='))
+             for line in output.splitlines()
+             if line.startswith('doctor_sudo_line='))
 
 
 def glibc_tuple(value):
@@ -147,11 +163,15 @@ def doctor_command(options, api):
     scope = f'device:{name}'
     _, entry = api.device(machine, name)
     try:
-      proc = api.ssh(entry, api.STATUS_SCRIPT + DOCTOR_SCRIPT, [], timeout=15)
+      helper_path = api.governor_helper(machine)
+      script = 'helper=' + shlex.quote(helper_path) + '\n' + \
+        api.STATUS_SCRIPT + DOCTOR_SCRIPT
+      proc = api.ssh(entry, script, [], timeout=15)
       if proc.returncode:
         raise api.Failure(api.UNREACHABLE, proc.stderr.strip() or
                       f'device script exited {proc.returncode}')
       facts = api.parse(proc.stdout)
+      facts.pop('doctor_sudo_line', None)
       if facts.get('connected') != '1' or not facts.get('hostname'):
         raise api.Failure(api.UNREACHABLE,
                           'device returned no usable status facts')
@@ -184,8 +204,14 @@ def doctor_command(options, api):
         add(scope, 'free-space', 'warn',
             f'{free or "unknown"} bytes free; bundle size unknown')
       battery = facts.get('battery_percent', '')
-      power = 'external' if facts.get('external_power') == 'yes' else \
-        f'battery {battery}%' if battery.isdigit() else 'unknown'
+      if not battery:
+        power = 'mains (no battery reported)'
+      elif not battery.isdigit():
+        power = 'unknown'
+      elif facts.get('external_power') == 'yes':
+        power = f'external power, battery {battery}%'
+      else:
+        power = f'battery {battery}%'
       add(scope, 'power', 'ok' if power != 'unknown' else 'warn', power)
       try:
         pin = api.devkit_pin(machine)[1]
@@ -196,14 +222,30 @@ def doctor_command(options, api):
       except api.Failure as error:
         add(scope, 'devkit-utils', 'fail', str(error))
       lease_holder = facts.get('doctor_lease_holder', 'unknown')
-      add(scope, 'lease', 'ok' if lease_holder == 'free' else 'warn',
-          lease_holder)
+      expires = facts.get('doctor_lease_expires', '')
+      active_lease = lease_holder not in ('free', 'unknown') and \
+        (not expires.isdigit() or int(expires) > time.time())
+      lease_message = ('free' if lease_holder == 'free' else
+                       f'held by {lease_holder} for '
+                       f'{facts.get("doctor_lease_purpose", "unknown")}; '
+                       f'expires {expires or "unknown"}')
+      add(scope, 'lease', 'ok' if lease_holder == 'free' or
+          lease_holder == api.holder(machine) or
+          (expires.isdigit() and not active_lease) else 'warn',
+          lease_message)
       inhibit = facts.get('doctor_inhibit', 'unavailable')
       add(scope, 'sleep-inhibition',
-          'ok' if inhibit == 'active' else 'warn', inhibit)
-      helper = facts.get('governor_helper') == 'yes'
-      add(scope, 'governor-helper', 'ok' if helper else 'warn',
-          'present' if helper else 'missing (bench pinning unavailable)')
+          'ok' if not active_lease or inhibit == 'active' else 'warn',
+          inhibit)
+      if facts.get('doctor_helper') != 'present':
+        helper_status, helper_message = 'warn', f'missing: {helper_path}'
+      elif facts.get('doctor_sudo') != 'listed' or not \
+          helper_sudo_rule(proc.stdout, helper_path):
+        helper_status, helper_message = 'warn', \
+          f'no-sudo-rule: {helper_path}'
+      else:
+        helper_status, helper_message = 'ok', f'present: {helper_path}'
+      add(scope, 'governor-helper', helper_status, helper_message)
     except api.Failure as error:
       add(scope, 'reachable', 'fail', str(error))
 

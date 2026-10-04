@@ -2,6 +2,7 @@
 import json
 import runpy
 import sys
+import time
 import unittest
 
 from tests import test_steamos
@@ -115,6 +116,75 @@ class BuildDoctorTest(unittest.TestCase):
     self.assertFalse((home / '.agent-kit-steamos-lease.log').exists())
     self.assertFalse((home / 'devkit-utils').exists())
 
+  def doctor_checks(self, holder=None):
+    report = json.loads(self.run_cli('doctor', '--device', 'unit', '--json',
+                                     holder=holder).stdout)
+    return {c['name']: c for c in report['checks']
+            if c['scope'] == 'device:unit'}
+
+  def test_doctor_lease_reports_real_holder_purpose_and_expiry(self):
+    checks = self.doctor_checks()
+    self.assertEqual(checks['lease']['status'], 'ok')
+    self.assertIn('free', checks['lease']['message'])
+    info = self.device_home() / '.agent-kit-steamos-lease' / 'info'
+    info.parent.mkdir()
+    expires = int(time.time()) + 3600
+    info.write_text(f'holder=claude-49ef3c7fa0f3f6b1\n'
+                    f'purpose=bench graphics\nstart={expires - 3600}\n'
+                    f'expires={expires}\n')
+    checks = self.doctor_checks()
+    self.assertEqual(checks['lease']['status'], 'warn')
+    for value in ('claude-49ef3c7fa0f3f6b1', 'bench graphics',
+                  str(expires)):
+      self.assertIn(value, checks['lease']['message'])
+    checks = self.doctor_checks(holder='claude-49ef3c7fa0f3f6b1')
+    self.assertEqual(checks['lease']['status'], 'ok')
+
+  def test_doctor_helper_checks_configured_path_and_sudo_rule(self):
+    helper = self.root / 'custom-governor'
+    self.configure({'default': 'unit', 'devices': {
+      'unit': {'address': '10.0.0.5', 'name': 'unit'}},
+      'bench': {'governor_helper': str(helper)}})
+    self.fixture_tool('sudo', """
+      import os, sys
+      assert sys.argv[1:] == ['-n', '-l'], sys.argv
+      helper = os.environ['FAKE_HELPER']
+      print('Matching Defaults entries for deck on unit:')
+      print('    env_reset')
+      print('User deck may run the following commands on unit:')
+      print('    (ALL) ALL')
+      if not os.environ.get('FAKE_NO_SUDO_RULE'):
+        print(f'    (root) NOPASSWD: {helper} cpu[0-9]* *')
+    """)
+    self.env['FAKE_HELPER'] = str(helper)
+    check = self.doctor_checks()['governor-helper']
+    self.assertEqual(check['status'], 'warn')
+    self.assertIn('missing', check['message'])
+    helper.write_text('#!/bin/sh\n')
+    helper.chmod(0o755)
+    self.assertEqual(self.doctor_checks()['governor-helper']['status'], 'ok')
+    self.env['FAKE_NO_SUDO_RULE'] = '1'
+    check = self.doctor_checks()['governor-helper']
+    self.assertEqual(check['status'], 'warn')
+    self.assertIn('no-sudo-rule', check['message'])
+
+  def test_doctor_mains_only_and_unleased_inhibitor(self):
+    sysfs = self.root / 'empty-sysfs'
+    sysfs.mkdir()
+    self.env['STEAMOS_TEST_SYSFS'] = str(sysfs)
+    checks = self.doctor_checks()
+    self.assertEqual(checks['power'], {
+      'scope': 'device:unit', 'name': 'power', 'status': 'ok',
+      'message': 'mains (no battery reported)'})
+    self.assertEqual(checks['sleep-inhibition']['status'], 'ok')
+    info = self.device_home() / '.agent-kit-steamos-lease' / 'info'
+    info.parent.mkdir()
+    expires = int(time.time()) + 3600
+    info.write_text(f'holder=agent-a\npurpose=bench\n'
+                    f'start={expires - 3600}\nexpires={expires}\n')
+    self.assertEqual(self.doctor_checks()['sleep-inhibition']['status'],
+                     'warn')
+
   def test_doctor_reports_project_stage_and_missing_requires(self):
     self.build_config(env={'INPUT_DIR': '${PROJECT}/missing'})
     report = json.loads(self.run_cli('doctor', '--project', str(self.repo),
@@ -157,7 +227,7 @@ class BuildDoctorTest(unittest.TestCase):
     self.assertFalse((self.device_home() / '.agent-kit-steamos-lease').exists())
     source = runpy.run_path(str(test_steamos.BIN.with_name(
       'steamos_doctor.py')))['DOCTOR_SCRIPT']
-    for forbidden in ('sudo ', 'mkdir ', 'rm ', 'mv ', '>>'):
+    for forbidden in ('mkdir ', 'rm ', 'mv ', '>>'):
       self.assertNotIn(forbidden, source)
 
   def test_doctor_all_devices_and_compatible_bundle(self):

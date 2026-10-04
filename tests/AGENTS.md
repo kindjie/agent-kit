@@ -44,6 +44,8 @@ refusals, publication order, rollback without a build and lease/pin refusals.
 Build/doctor tests use fake tools and ssh to check literal argv, overlay
 precedence, limited expansion, required inputs, redaction, post-build stage,
 offline project checks and read-only device diagnostics.
+Doctor fixtures cover foreign and caller leases, configured governor helpers
+with multi-line sudo rules, mains-only power, and idle sleep inhibition.
 Remote-interpreter instrumentation checks actual atomic replace without an
 unlink of current, and maps synthetic proc symlinks for running-version
 retention/list coverage. Retention fixtures protect outside targets and
