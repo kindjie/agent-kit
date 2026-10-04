@@ -14,6 +14,8 @@ steamos lease show | check | release
 steamos lease break --reason 'why'
 steamos devkit install              # Valve's helpers, at a pinned commit
 steamos stage [--project PATH] [--json]  # local inventory verification
+steamos build [--project PATH] [--dry-run] [--json]
+steamos doctor [--project PATH] [--device NAME | --all] [--json]
 steamos deploy [--project PATH] [--json] # versioned project publication
 steamos deploy --rollback [--project PATH] [--json]
 steamos deploy --abort-stale [--project PATH] [--json]
@@ -204,6 +206,59 @@ Symlinks and special files remain refused, including in runtime
 paths. Local staging and new uploads remain strict. Runtime declarations do
 not affect version IDs, retention or rollback selection.
 No build is run and no checkout provenance is inferred by these commands.
+
+### Build and doctor
+
+An optional `build` section gives `steamos build` a literal argv command.
+It runs from the project root without a shell. For example:
+
+```json
+{
+  "build": {
+    "command": ["tools/deck/build.sh"],
+    "env": {"INPUT_DIR": "${PROJECT}/../input"},
+    "requires": ["INPUT_DIR"],
+    "outputs": ["build/bundle"]
+  }
+}
+```
+
+`env` values expand only `${PROJECT}` and `${HOME}`. `requires` names
+environment variables whose resolved paths must exist. A missing path
+reports its variable name and stops before the command runs. `outputs` is
+an optional list of safe project-relative paths checked after the build.
+Unknown fields, duplicate names, shell command strings, unsupported
+expansions and invalid paths are refused. Machine-specific values may be
+set or overridden in
+`$XDG_CONFIG_HOME/agent-kit/steamos-projects/<title>.json`, with this form:
+
+```json
+{"build": {"env": {"INPUT_DIR": "${HOME}/private/input"}}}
+```
+
+Only `build.env` is accepted in the overlay. Keep private absolute paths
+there rather than in a public project config. Build prints the resolved
+environment, hiding values of names containing `TOKEN`, `SECRET`, `KEY`
+or `PASSWORD`, including when echoed by the build command.
+`--dry-run` prints the plan without running the command. A successful
+build runs the same verification as `steamos stage` and prints its version.
+
+`steamos doctor` is read-only. Without a device selector it checks local
+tools and the selected project, so `doctor --project PATH` works offline;
+without a project config it supports benchmark-only projects. `--device`
+checks one configured device and `--all` checks each. It reports local
+Python, ssh and rsync, plus Docker and its daemon when the build command
+uses Docker. Project checks cover config, required inputs and stage status.
+Device checks cover reachability, SteamOS build/channel, glibc compatibility
+when local ELF tools can determine the bundle requirement, free space,
+power, pinned devkit-utils, lease holder, sleep inhibition and the optional
+bench governor helper. Unknown facts are warnings. It never changes a
+device or prompts for sudo. A failed check gives exit 1; warnings alone
+give exit 0. macOS reports the Python Local Network permission caveat.
+
+The existing project build and doctor scripts remain in place. Review
+retiring them only after both projects have run through the adapters and
+their device and build results have been accepted.
 
 The default inventory filename is `bundle.json`, containing:
 

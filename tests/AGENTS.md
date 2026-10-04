@@ -6,6 +6,7 @@
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_steamos
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_steamos_bench
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_steamos_deploy
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_steamos_build_doctor
 ```
 
 Fake ssh runs remote commands locally with a separate HOME per host.
@@ -40,6 +41,9 @@ extension, strict project discovery/config, missing/extra/changed/empty files,
 links/traversal and executable permissions. Fake rsync and Valve helpers cover
 partial transfer and device corruption, same-version reuse, shortcut JSON
 refusals, publication order, rollback without a build and lease/pin refusals.
+Build/doctor tests use fake tools and ssh to check literal argv, overlay
+precedence, limited expansion, required inputs, redaction, post-build stage,
+offline project checks and read-only device diagnostics.
 Remote-interpreter instrumentation checks actual atomic replace without an
 unlink of current, and maps synthetic proc symlinks for running-version
 retention/list coverage. Retention fixtures protect outside targets and

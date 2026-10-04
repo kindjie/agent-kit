@@ -24,6 +24,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import steamos_deploy as publication
+import steamos_doctor as diagnostics
 
 OK, REFUSED, USAGE, UNREACHABLE = 0, 1, 2, 3
 BENCH_FAILED = 4
@@ -918,6 +919,111 @@ def stage_command(options):
   _, _, version = local_stage(root, config)
   result = {'title': config['title'], 'version': version}
   print(json.dumps(result, indent=2) if options.json else version)
+  return OK
+
+
+def build_plan(root, config):
+  build = config.get('build')
+  if build is None:
+    raise Failure(USAGE, 'project has no build section')
+  env = dict(build.get('env', {}))
+  overlay = config_path().parent / 'steamos-projects' / (
+    config['title'] + '.json')
+  if overlay.exists():
+    try:
+      content = publication.read_json(overlay)
+      if (not isinstance(content, dict) or set(content) != {'build'} or
+          not isinstance(content['build'], dict) or
+          set(content['build']) != {'env'} or
+          not isinstance(content['build']['env'], dict)):
+        raise ValueError('overlay must contain only build.env')
+      env.update(content['build']['env'])
+      publication.validate_build(dict(build, env=env))
+    except (OSError, ValueError) as error:
+      raise Failure(USAGE, f'project overlay {overlay}: {error}')
+  resolved = {name: publication.expand_build_value(value, root, Path.home())
+              for name, value in env.items()}
+  missing = [(name, resolved[name]) for name in build.get('requires', [])
+             if not Path(resolved[name]).exists()]
+  return {'title': config['title'], 'root': str(root),
+          'command': build['command'], 'env': resolved,
+          'requires_missing': missing,
+          'outputs': build.get('outputs', [])}
+
+
+def public_plan(plan):
+  copy = dict(plan)
+  copy['env'] = {name: '<redacted>' if secret_name(name) else value
+                 for name, value in plan['env'].items()}
+  copy['requires_missing'] = [
+    (name, '<redacted>' if secret_name(name) else path)
+    for name, path in plan['requires_missing']]
+  return copy
+
+
+def secret_name(name):
+  return bool(re.search(r'TOKEN|SECRET|KEY|PASSWORD', name, re.I))
+
+
+def build_command(options):
+  root, config = project(options)
+  plan = build_plan(root, config)
+  public = public_plan(plan)
+  if not options.json:
+    print(f'Build {config["title"]} in {root}\n'
+          f'command: {shlex.join(plan["command"])}\n' + '\n'.join(
+            f'{name}={value}' for name, value in public['env'].items()),
+          flush=True)
+  elif options.dry_run:
+    print(json.dumps(public, indent=2))
+  if plan['requires_missing']:
+    name, path = plan['requires_missing'][0]
+    if secret_name(name):
+      path = '<redacted>'
+    raise Failure(REFUSED, f'build requires {name}: path does not exist: '
+                  f'{path}')
+  if options.dry_run:
+    return OK
+  env = dict(os.environ, **plan['env'])
+  def redacted(output):
+    for name, value in plan['env'].items():
+      if secret_name(name) and value:
+        output = output.replace(value, '<redacted>')
+    return output
+  try:
+    proc = subprocess.Popen(plan['command'], cwd=root, env=env, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+  except OSError as error:
+    raise Failure(REFUSED, f'build command failed to start: {error}')
+  output = {'stdout': [], 'stderr': []}
+  def relay(stream, key, target):
+    for line in stream:
+      line = redacted(line)
+      if options.json:
+        output[key].append(line)
+      else:
+        print(line, end='', file=target, flush=True)
+  threads = [threading.Thread(target=relay, args=(proc.stdout, 'stdout',
+                                                 sys.stdout)),
+             threading.Thread(target=relay, args=(proc.stderr, 'stderr',
+                                                 sys.stderr))]
+  for thread in threads:
+    thread.start()
+  proc.wait()
+  for thread in threads:
+    thread.join()
+  if proc.returncode:
+    raise Failure(REFUSED, f'build command exited {proc.returncode}')
+  for output_path in plan['outputs']:
+    if not (root / output_path).exists():
+      raise Failure(REFUSED, f'build output missing: {output_path}')
+  _, _, version = local_stage(root, config)
+  result = dict(public, version=version)
+  if options.json:
+    result['build_stdout'] = ''.join(output['stdout'])
+    result['build_stderr'] = ''.join(output['stderr'])
+  print(json.dumps(result, indent=2) if options.json else
+        f'staged version {version}')
   return OK
 
 
@@ -2007,6 +2113,12 @@ def main(argv=None):
   status.add_argument('--project', help='project directory (default: from cwd)')
   stage = commands.add_parser('stage', help='verify a project bundle locally')
   stage.add_argument('--project', help='project directory (default: from cwd)')
+  build = commands.add_parser('build', help='build then stage a project bundle')
+  build.add_argument('--project', help='project directory (default: from cwd)')
+  build.add_argument('--dry-run', action='store_true')
+  doctor = commands.add_parser('doctor', help='read-only prerequisites')
+  doctor.add_argument('--project', help='project directory (default: from cwd)')
+  doctor.add_argument('--all', action='store_true', help='check every device')
   deploy = commands.add_parser('deploy', help='publish a verified version')
   deploy.add_argument('--project', help='project directory (default: from cwd)')
   mode = deploy.add_mutually_exclusive_group()
@@ -2077,13 +2189,19 @@ def main(argv=None):
                        help='allow a session without its summary CSV')
     common_options(sub)
   for sub in (status, lease, devkit, install, title, wake, logs, capture,
-              frametimes, bench, stage, deploy):
+              frametimes, bench, stage, build, doctor, deploy):
     common_options(sub)
   options = parser.parse_args(argv)
   options.hours = getattr(options, 'hours', None)
   try:
     if options.command == 'stage':
       return stage_command(options)
+    if options.command == 'build':
+      return build_command(options)
+    if options.command == 'doctor':
+      if options.all and options.device:
+        raise Failure(USAGE, '--all and --device are mutually exclusive')
+      return diagnostics.doctor_command(options, sys.modules[__name__])
     if options.command == 'deploy':
       return deploy_command(options)
     if options.command == 'status':

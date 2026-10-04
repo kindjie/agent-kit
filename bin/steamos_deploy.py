@@ -17,6 +17,8 @@ import time
 
 VERSION = re.compile(r'[0-9a-f]{12}')
 TITLE = re.compile(r'[A-Za-z0-9]+')
+ENV_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+EXPANSION = re.compile(r'\$\{(PROJECT|HOME)\}')
 
 
 def pairs(items):
@@ -75,7 +77,7 @@ def project_config(location=None, optional=False):
     raise ValueError('No project steamos.json found')
   config = read_json(no_links(root, 'steamos.json'))
   allowed = {'title', 'bundle', 'inventory', 'start', 'args', 'runtime',
-             'keep_versions', 'runtime_files'}
+             'keep_versions', 'runtime_files', 'build'}
   if not isinstance(config, dict) or set(config) - allowed:
     raise ValueError('Unknown project configuration fields')
   if not isinstance(config.get('title'), str) or not TITLE.fullmatch(
@@ -121,7 +123,53 @@ def project_config(location=None, optional=False):
   config.setdefault('keep_versions', 3)
   if type(config['keep_versions']) is not int or config['keep_versions'] < 1:
     raise ValueError('keep_versions must be a positive integer')
+  if 'build' in config:
+    validate_build(config['build'])
   return root, config
+
+
+def expand_build_value(value, root, home):
+  if not isinstance(value, str) or not value or any(
+      ord(c) < 32 or ord(c) == 127 for c in value):
+    raise ValueError('build.env values must be nonempty strings')
+  expanded = EXPANSION.sub(lambda match: str(root if match[1] == 'PROJECT'
+                                           else home), value)
+  if '$' in expanded and '$' in value:
+    raise ValueError('build.env permits only ${PROJECT} and ${HOME}')
+  return expanded
+
+
+def validate_build(build):
+  if not isinstance(build, dict) or set(build) - {
+      'command', 'env', 'requires', 'outputs'}:
+    raise ValueError('build must contain only command, env, requires, outputs')
+  command = build.get('command')
+  if not isinstance(command, list) or not command or any(
+      not isinstance(arg, str) or not arg or any(
+        ord(c) < 32 or ord(c) == 127 for c in arg) for arg in command):
+    raise ValueError('build.command must be a nonempty literal argv array')
+  if Path(command[0]).name in ('sh', 'bash', 'zsh', 'dash', 'fish') and \
+      any(arg in ('-c', '-lc', '-ic') for arg in command[1:]):
+    raise ValueError('build.command cannot invoke a shell command string')
+  env = build.get('env', {})
+  if not isinstance(env, dict) or any(
+      not isinstance(name, str) or not ENV_NAME.fullmatch(name) or
+      not isinstance(value, str) for name, value in env.items()):
+    raise ValueError('build.env must map environment names to strings')
+  for value in env.values():
+    expand_build_value(value, Path('/project'), Path('/home'))
+  requires = build.get('requires', [])
+  if not isinstance(requires, list) or len(set(map(str, requires))) != len(
+      requires) or any(not isinstance(name, str) or name not in env
+                      for name in requires):
+    raise ValueError('build.requires must list unique build.env names')
+  outputs = build.get('outputs', [])
+  if not isinstance(outputs, list):
+    raise ValueError('build.outputs must be an array of relative paths')
+  for output in outputs:
+    relative(output)
+  if len(set(outputs)) != len(outputs):
+    raise ValueError('build.outputs cannot repeat a path')
 
 
 def canonical(manifest):

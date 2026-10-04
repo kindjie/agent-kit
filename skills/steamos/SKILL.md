@@ -63,6 +63,16 @@ the helpers another agent's title may be using.
   title, bundle, inventory, executable, args, runtime and retention; see
   `bin/steamos.md`. Version-1 SHA256 inventories accept a `required` list
   directly. Never infer inventory contents from the checkout.
+- When the project declares `build`, use `steamos build --dry-run` to inspect
+  its resolved inputs, then `steamos build` to run its command and stage the
+  resulting bundle. Machine-specific input paths belong in the per-user
+  overlay described in `bin/steamos.md`. A missing required path stops before
+  the build; a successful build prints the verified version ID.
+- Use `steamos doctor --project PATH` for read-only local and project checks.
+  Add `--device NAME` or `--all` for device checks; no selector means no
+  device connection. Warnings identify unavailable evidence and failures
+  identify unmet requirements. Doctor never obtains a lease or changes a
+  device. Benchmark-only projects need no `steamos.json`.
 - Deploy uploads and verifies every hash in a new version, then atomically
   replaces `current`; it preserves current on pre-publication failure.
   `steamos deploy --list` is read-only and reports current/retained/running
