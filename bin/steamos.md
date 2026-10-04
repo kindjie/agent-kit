@@ -444,10 +444,15 @@ including `userspace`; it does not restrict the choice to `performance`.
 Bench itself pins to `performance` and restores each CPU's saved value.
 
 Install the OPTIONAL sudoers rule through `visudo`, which validates it before
-saving (the editor below takes the rule from stdin):
+saving (the editor below takes the rule from stdin). sudo reads
+`/etc/sudoers.d` in name order and the last matching rule wins, so the file
+must sort after any broader rule for the same user. On SteamOS the `wheel`
+file grants `(ALL) ALL` with a password; a rule named before it is silently
+overridden, so the name starts with `zz-`. Check with `sudo -n -l`: the
+NOPASSWD helper line must appear after `(ALL) ALL`.
 
 ```sh
-sudo env SUDO_EDITOR=/usr/bin/tee visudo -f /etc/sudoers.d/agent-kit-steamos <<'RULE'
+sudo env SUDO_EDITOR=/usr/bin/tee visudo -f /etc/sudoers.d/zz-agent-kit-steamos <<'RULE'
 deck ALL=(root) NOPASSWD: /etc/agent-kit/steamos-governor cpu[0-9]* *
 RULE
 ```
