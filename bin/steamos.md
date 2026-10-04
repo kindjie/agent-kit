@@ -309,18 +309,19 @@ A registration failure after the switch reports the published version
 explicitly; current remains published for inspection, retry or rollback.
 
 `deploys.log` records publication order as JSON lines (version, inventory,
-start and device epoch). The record is written and synced before the atomic
-switch; failed ledger I/O or replacement restores its prior length and leaves
-current untouched. Authority is rechecked after the ledger sync. If restoring
-the log fails, the refusal explicitly requires log inspection. Abrupt device
-loss can leave a recorded intent whose switch did not finish; inspect both
-current and the log before proceeding. Retention ignores logged versions
-whose directories are absent and keeps the newest `keep_versions` distinct
-published IDs, current, and detected running versions. Only logged, direct
-12-hex version directories inside `versions/` are pruned. Symlinks, other
-entries and external targets are preserved; nested symlinks are not followed.
-Running versions are identified by `/proc/<pid>/exe` paths below `versions/`;
-permissions or disappearing processes can limit that observation.
+start, device epoch and lease holder; older lines may lack the holder). The
+record is written and synced before the atomic switch; failed ledger I/O or
+replacement restores its prior length and leaves current untouched. Authority is
+rechecked after the ledger sync. If restoring the log fails, the refusal
+explicitly requires log inspection. Abrupt device loss can leave a recorded
+intent whose switch did not finish; inspect both current and the log before
+proceeding. Retention ignores logged versions whose directories are absent and
+keeps the newest `keep_versions` distinct published IDs, current, and detected
+running versions. Only logged, direct 12-hex version directories inside
+`versions/` are pruned. Symlinks, other entries and external targets are
+preserved; nested symlinks are not followed. Running versions are identified by
+`/proc/<pid>/exe` paths below `versions/`; permissions or disappearing processes
+can limit that observation.
 
 `deploy --rollback` needs the lease and pin but no local bundle. It verifies
 the previous retained version in `deploys.log`, atomically switches current,
@@ -329,7 +330,8 @@ Rollback records its action and history position; a second rollback walks
 farther back through retained versions. `deploy --list` needs neither the
 lease nor pinned helpers and does not mutate the device. JSON includes
 `versions`, `current`, `running`
-(version to PID array), `deploy_order`, `partials`, and lock details.
+(version to PID array), `deploy_order`, `deploys` (each record's version,
+device time, holder and any rollback action), `partials`, and lock details.
 
 Before publication, failures clean up only the invocation's partial and lock;
 current is preserved. A completed version can remain after a switch

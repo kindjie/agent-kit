@@ -435,6 +435,14 @@ class SteamosDeployTest(unittest.TestCase):
                (self.title / 'deploys.log').read_text().splitlines()]
     self.assertEqual([record.get('action') for record in records[-2:]],
                      ['rollback', 'rollback'])
+    self.assertEqual({record.get('holder') for record in records},
+                     {'agent-a'})
+    listed = json.loads(self.deploy('--list').stdout)['deploys']
+    self.assertEqual([(d['version'], d['holder'], d.get('action'))
+                      for d in listed[-2:]],
+                     [(second, 'agent-a', 'rollback'),
+                      (first, 'agent-a', 'rollback')])
+    self.assertIsInstance(listed[0]['device_time'], float)
 
   def test_retention_ignores_logged_version_without_directory(self):
     first = self.fixture(keep_versions=2)
@@ -448,6 +456,9 @@ class SteamosDeployTest(unittest.TestCase):
     self.deploy()
     self.assertTrue((self.title / f'versions/{first}').is_dir())
     self.assertTrue((self.title / f'versions/{second}').is_dir())
+    listed = json.loads(self.deploy('--list').stdout)['deploys']
+    self.assertNotIn('holder', listed[1])  # A line from before holders.
+    self.assertEqual(listed[2]['holder'], 'agent-a')
 
   def test_rollback_refuses_missing_previous_or_corrupt_target(self):
     first = self.fixture()

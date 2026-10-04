@@ -288,6 +288,9 @@ def current_version(root):
   return target.split('/')[1]
 
 
+DEPLOY_FIELDS = ('version', 'device_time', 'holder', 'action')
+
+
 def history(root):
   log = no_links(root, 'deploys.log')
   records = []
@@ -335,9 +338,12 @@ def list_result(root):
   partials = sorted(p.name for p in versions.iterdir()
                     if re.fullmatch(r'[0-9a-f]{12}\.partial', p.name)) \
              if versions.is_dir() else []
+  records = history(root)
   return {'current': current_version(root), 'versions': versions_list(root),
           'running': running_versions(root),
-          'deploy_order': [r['version'] for r in history(root)],
+          'deploy_order': [r['version'] for r in records],
+          'deploys': [{key: r[key] for key in DEPLOY_FIELDS if key in r}
+                      for r in records],
           'partials': partials, 'lock': lock_info(root)}
 
 
@@ -495,7 +501,8 @@ def switch(root, request):
   with no_links(root, 'deploys.log').open('ab', buffering=0) as log:
     offset = log.tell()
     record = {'version': version, 'inventory': request['inventory'],
-              'start': request['start'], 'device_time': time.time()}
+              'start': request['start'], 'device_time': time.time(),
+              'holder': request['holder']}
     if request['rollback']:
       target = previous_version(root, config['runtime_files'])
       if target['version'] != version:
