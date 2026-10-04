@@ -42,9 +42,12 @@ leased display/performance work. `lease.prevent_sleep: false` opts out in
 `steamos.json`. Missing `systemd-run`, `systemd-inhibit` or a user manager
 is skipped with `inhibit=unavailable`; `lease show --json` and the `lease`
 object in `status --json` report `sleep_inhibited` as true, false or null
-(unavailable). Active means `systemctl --user is-active` reports active;
-inspect `systemd-inhibit --list` after ssh closes and after release/expiry
-when validating actual logind locks. No PID files or PID signalling are used.
+(unavailable). Active requires both an active unit and its
+`agent-kit-steamos` logind entry; startup checks both after 0.5 seconds. Inhibition failure is
+best-effort: take/renew/reclaim still succeed, with `inhibit=failed`, a
+stderr warning and `sleep_inhibited: false`. Inspect `systemd-inhibit --list`
+after ssh closes and after release/expiry when validating device behavior.
+No inhibitor PID files or PID signalling are used.
 
 Reading status needs no lease. When `status` says Valve's
 `devkit-utils` are missing or not at the pinned commit and the work needs
@@ -87,7 +90,11 @@ the helpers another agent's title may be using.
   for a complete PNG, copies it with scp, and deletes only its device temp
   file. Default output is `./steamos-capture-<device>-<utc>.png`. Missing
   gamescope or a timeout is a refusal. It preserves existing screenshots.
-  If interrupted, inspect any capture lock/temp file before cleanup.
+  SIGHUP/SIGTERM clean up the PID/time capture lock; locks older than
+  60 seconds or with a gone PID are replaced on the next capture. A fresh
+  live lock is refused. Inspect any leftover temp file before cleanup.
+  If download and cleanup both fail, the download error is primary and
+  cleanup failure is a stderr warning.
 - `steamos frametimes start` / `stop` require your active lease and use
   `mangohudctl set log_session true` / `false`. MangoHud must already be
   active on the running game; successful control alone proves no frame data.
@@ -97,9 +104,10 @@ the helpers another agent's title may be using.
 - `steamos frametimes pull --out ./frametimes` needs no lease and copies
   the newest session from the device home, using either member's mtime.
   It pulls `mangoapp_<stamp>.csv` and its `_summary.csv` companion even
-  when their mtimes differ; a missing summary is allowed, but a missing
-  base CSV is refused. It preserves device logs and ignores symlinks and
-  unsafe names. Inspect the CSV and measured scenario before reporting
+  when their mtimes differ. A missing summary refuses the pull: logging
+  may still be active, so run `frametimes stop` first. Use `--partial`
+  explicitly to allow a base-only session; a missing base is always refused.
+  It preserves device logs and ignores symlinks and unsafe names. Inspect the CSV and measured scenario before reporting
   performance; no quiet-machine or hardware acceptance is implied.
 
 Logs, capture and frametimes do not require pinned Valve helpers. Downloads

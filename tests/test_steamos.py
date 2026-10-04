@@ -118,7 +118,15 @@ class SteamosTest(unittest.TestCase):
   def inhibitor_fixture(self):
     # Model the user manager boundary: no session process or PID signalling.
     self.env['FAKE_SSH_HANGUP'] = '1'
-    self.fixture_tool('systemd-inhibit', 'import sys; sys.exit(0)')
+    self.fixture_tool('systemd-inhibit', """
+      import json, os, pathlib, sys, time
+      assert sys.argv[1:] == ['--list'], sys.argv
+      unit = pathlib.Path.home() / 'unit'
+      record = json.loads(unit.read_text()) if unit.exists() else {}
+      if record.get('active') and record['expires'] > time.time() and not \
+          os.environ.get('FAKE_NO_INHIBIT_LOCK'):
+        print('agent-kit-steamos deck 1234 sleep:idle steamos lease block')
+    """)
     self.fixture_tool('systemd-run', """
       import json, os, pathlib, sys, time
       home = pathlib.Path.home()
@@ -129,7 +137,9 @@ class SteamosTest(unittest.TestCase):
         sys.exit(1)
       (home / 'unit').write_text(json.dumps({
         'args': args, 'expires': time.time() + int(args[-1]),
-        'active': not os.environ.get('FAKE_UNIT_INACTIVE')}))
+        'active': not os.environ.get('FAKE_UNIT_INACTIVE'),
+        'crash_at': time.time() + .2 if
+          os.environ.get('FAKE_UNIT_EARLY_EXIT') else None}))
     """)
     self.fixture_tool('systemctl', """
       import json, os, pathlib, sys, time
@@ -150,6 +160,8 @@ class SteamosTest(unittest.TestCase):
       assert args[1] == 'is-active', args
       record = json.loads(unit.read_text()) if unit.exists() else {}
       active = record.get('active') and record['expires'] > time.time()
+      if record.get('crash_at') and time.time() >= record['crash_at']:
+        active = False
       print('active' if active else 'inactive')
       sys.exit(0 if active else 3)
     """)
@@ -233,15 +245,47 @@ class SteamosTest(unittest.TestCase):
     self.assertEqual(proc.stderr, '')
     self.assertIsNone(self.lease_json()['sleep_inhibited'])
 
-  def test_inhibitor_start_failure_cleans_fresh_lease_and_mutex(self):
+  def test_inhibitor_start_failure_keeps_take_refresh_renew_and_reclaim(self):
     self.inhibitor_fixture()
-    for flag in ('FAKE_UNIT_START_FAIL', 'FAKE_UNIT_INACTIVE'):
-      self.env[flag] = '1'
-      self.run_cli('lease', 'take', 'bench', code=1)
-      self.assertEqual(self.lease_json()['state'], 'free')
-      self.assert_no_leftovers()
-      self.assertFalse((self.device_home() / 'unit').exists())
-      del self.env[flag]
+    self.env['FAKE_UNIT_START_FAIL'] = '1'
+    for command, result, who in (
+        (('take', 'bench'), 'took', 'agent-a'),
+        (('take', 'refresh'), 'refreshed', 'agent-a'),
+        (('renew', '--hours', '6'), 'refreshed', 'agent-a'),
+        (('take', 'reclaim'), 'reclaimed', 'agent-b')):
+      with self.subTest(command=command):
+        if result == 'reclaimed':
+          self.age_lease(7 * 3600)
+        proc = self.run_cli('lease', *command, '--json', holder=who)
+        lease = json.loads(proc.stdout)
+        self.assertEqual(lease['result'], result)
+        self.assertEqual(lease['state'], 'active')
+        self.assertEqual(lease['inhibit'], 'failed')
+        self.assertIs(lease['sleep_inhibited'], False)
+        self.assertIn('Warning:', proc.stderr)
+        self.assertEqual(self.lease_json()['holder'], who)
+        self.assertIs(self.lease_json()['sleep_inhibited'], False)
+        self.assert_no_leftovers()
+        self.assertFalse((self.device_home() / 'unit').exists())
+    del self.env['FAKE_UNIT_START_FAIL']
+    self.run_cli('lease', 'renew', holder='agent-b')
+    self.assertIs(self.lease_json()['sleep_inhibited'], True)
+
+  def test_inhibitor_verifies_delayed_unit_and_logind_lock(self):
+    self.inhibitor_fixture()
+    flags = ('FAKE_UNIT_INACTIVE', 'FAKE_UNIT_EARLY_EXIT',
+             'FAKE_NO_INHIBIT_LOCK')
+    for flag in flags:
+      for other in flags:
+        self.env.pop(other, None)
+      with self.subTest(flag=flag):
+        self.env[flag] = '1'
+        proc = self.run_cli('lease', 'take', 'bench')
+        self.assertIn('inhibit=failed', proc.stdout)
+        self.assertIn('Warning:', proc.stderr)
+        self.assertFalse((self.device_home() / 'unit').exists())
+        self.assertIs(self.lease_json()['sleep_inhibited'], False)
+        del self.env[flag]
 
   def test_inhibitor_stop_failure_preserves_lease(self):
     self.inhibitor_fixture()
@@ -942,6 +986,105 @@ class SteamosTest(unittest.TestCase):
                   .split(':', 1)[1])
     self.assertFalse(remote.parent.exists())
 
+  def test_capture_signals_cleanup_lock_and_private_temp(self):
+    self.capture_fixture()
+    self.env['FAKE_CAPTURE_TIMEOUT'] = '1'
+    home = self.device_home()
+    home.mkdir(parents=True)
+    module = runpy.run_path(str(BIN))
+    script = module['CAPTURE_SCRIPT'].split("<<'PY'\n", 1)[1].rsplit(
+      '\nPY', 1)[0]
+    # Isolate gamescope files and temp folders so cleanup has its own oracle.
+    script = script.replace("root = Path('/tmp')",
+                            f'root = Path({str(self.root)!r})')
+    for sig in (signal.SIGHUP, signal.SIGTERM):
+      with self.subTest(signal=sig):
+        marker = home / 'xprop-args'
+        marker.unlink(missing_ok=True)
+        proc = subprocess.Popen([sys.executable, '-c', script],
+                                env=dict(self.env, HOME=str(home)),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+          deadline = time.monotonic() + 5
+          while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(.01)
+          self.assertTrue(marker.exists(), 'capture did not reach PNG wait')
+          lock = home / '.agent-kit-steamos-capture'
+          self.assertTrue(lock.exists())
+          records = list(lock.iterdir())
+          metadata = records[0].read_text() if records else '{}'
+          proc.send_signal(sig)
+          proc.communicate(timeout=5)
+          self.assertNotEqual(proc.returncode, 0)
+          self.assertFalse(lock.exists())
+          self.assertEqual(list(self.root.glob('steamos-capture-*')), [])
+          record = json.loads(metadata)
+          self.assertEqual(record['pid'], proc.pid)
+          self.assertLess(abs(record['time'] - time.time()), 5)
+        finally:
+          if proc.poll() is None:
+            proc.kill()
+          proc.communicate(timeout=5)
+          shutil.rmtree(home / '.agent-kit-steamos-capture', ignore_errors=True)
+          for folder in self.root.glob('steamos-capture-*'):
+            shutil.rmtree(folder)
+
+  def test_capture_stale_lock_replaced_but_live_lock_refused(self):
+    self.capture_fixture()
+    home = self.device_home()
+    home.mkdir(parents=True)
+    lock = home / '.agent-kit-steamos-capture'
+    # Obtain a real exited PID, rather than assuming an unused PID number.
+    child = subprocess.Popen([sys.executable, '-c', 'pass'])
+    child.wait()
+    for pid, stamp, stale in ((os.getpid(), time.time(), False),
+                              (child.pid, time.time(), True),
+                              (os.getpid(), time.time() - 61, True)):
+      with self.subTest(pid=pid, stale=stale):
+        lock.mkdir(exist_ok=True)
+        (lock / 'owner').write_text(json.dumps({'pid': pid, 'time': stamp}))
+        proc = self.run_cli('capture', '--out', str(self.root / 'out'),
+                            code=0 if stale else 1)
+        if stale:
+          self.assertFalse(lock.exists())
+        else:
+          self.assertIn('another capture', proc.stderr)
+          self.assertTrue(lock.exists())
+          (lock / 'owner').unlink()
+          lock.rmdir()
+
+  def test_capture_download_error_survives_cleanup_connection_failure(self):
+    module = runpy.run_path(str(BIN))
+    remote = '/tmp/steamos-capture-fixture/capture.png'
+    reply = subprocess.CompletedProcess([], 0,
+      'connected=1\n' + json.dumps({'path': remote}), '')
+    for cleanup in (module['Failure'](3, 'cleanup ssh dropped'),
+                    subprocess.CompletedProcess([], 1, '', 'cleanup denied')):
+      with self.subTest(cleanup=cleanup):
+        ssh = mock.Mock(side_effect=[reply, cleanup])
+        with mock.patch.dict(os.environ, self.env), \
+            mock.patch.dict(module['capture_command'].__globals__, {
+              'ssh': ssh, 'pull_file': mock.Mock(side_effect=
+                module['Failure'](3, 'download failed sentinel'))}), \
+            mock.patch('sys.stderr') as stderr:
+          self.assertEqual(module['main'](['capture']), 3)
+        messages = ' '.join(str(c) for c in stderr.write.call_args_list)
+        self.assertIn('download failed sentinel', messages)
+        self.assertIn('Warning:', messages)
+        self.assertIn('cleanup', messages)
+
+  def test_fake_pgrep_returns_one_for_no_matching_process(self):
+    self.capture_fixture()
+    for pattern, expected in (('gamescope|gamescope-wl', 0),
+                              ('nonexistent-process', 1)):
+      proc = subprocess.run([str(self.root / 'bin' / 'pgrep'), '-x', pattern],
+                            env=self.env)
+      self.assertEqual(proc.returncode, expected)
+    self.env['FAKE_NO_GAMESCOPE'] = '1'
+    proc = subprocess.run([str(self.root / 'bin' / 'pgrep'), '-x',
+                           'gamescope|gamescope-wl'], env=self.env)
+    self.assertEqual(proc.returncode, 1)
+
   def test_frametimes_start_stop_need_lease_and_use_exact_control(self):
     self.fixture_tool('mangohudctl', '''
       import os, pathlib, sys
@@ -996,12 +1139,17 @@ class SteamosTest(unittest.TestCase):
     base = home / 'mangoapp_latest.csv'
     base.write_text('frames')
     out = self.root / 'frames'
-    self.run_cli('frametimes', 'pull', '--out', str(out))
+    proc = self.run_cli('frametimes', 'pull', '--out', str(out), code=1)
+    self.assertIn('logging may still be active; run frametimes stop', proc.stderr)
+    self.assertFalse(out.exists())
+    self.assertFalse((self.root / 'scp.log').exists())
+    self.run_cli('frametimes', 'pull', '--partial', '--out', str(out))
     self.assertEqual([p.name for p in out.iterdir()], [base.name])
     base.unlink()
     (home / 'mangoapp_latest_summary.csv').write_text('summary')
     proc = self.run_cli('frametimes', 'pull', '--out', str(out), code=1)
     self.assertIn('base CSV', proc.stderr)
+    self.run_cli('frametimes', 'pull', '--partial', '--out', str(out), code=1)
     self.assertFalse((out / 'mangoapp_latest_summary.csv').exists())
 
   def test_frametimes_pull_no_logs_is_refused(self):

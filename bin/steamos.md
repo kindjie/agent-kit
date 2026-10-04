@@ -20,7 +20,7 @@ steamos title remove Demo1
 steamos logs [Demo1] [--since EPOCH] [--until EPOCH] [--lines N] [--json]
 steamos capture [--out FILE]         # gamescope screenshot; Game Mode
 steamos frametimes start | stop      # change MangoHud logging; lease needed
-steamos frametimes pull [--out DIR]  # download newest CSV(s); no lease
+steamos frametimes pull [--out DIR] [--partial]  # newest session; no lease
 steamos wake [--wait N]              # broadcast, then wait for ssh
 ```
 
@@ -121,15 +121,17 @@ unit before starting its replacement; release, break and reclaim use
 `systemctl --user stop`. There are no PID files or PID signals.
 Missing `systemd-run`, `systemd-inhibit` or a reachable user manager is
 skipped without stderr warnings; output reports `inhibit=unavailable`.
-An available unit that fails to start or report active makes take/renew
-fail; check the lease before retrying.
+Inhibition is best-effort: a startup or verification failure reports
+`inhibit=failed` and a stderr warning, while take, refresh, renew and reclaim
+still succeed with the written lease. Failed startup units are stopped.
 
 `lease show --json` reports `sleep_inhibited`: `true` when
-`systemctl --user is-active agent-kit-steamos-lease-inhibit` reports active,
-`false` when absent, stopped, expired or disabled, and `null` when support
-is unavailable. `status --json` includes it under `lease`; text output
-includes `inhibit=active|inactive|disabled|unavailable`. Unit state is not a
-query of logind's inhibitor table. For device validation, inspect
+the unit reports active and `systemd-inhibit --list` contains the
+`agent-kit-steamos` entry, `false` when absent, stopped, expired, disabled
+or failed, and `null` when support is unavailable. `status --json` includes it under `lease`; text output
+includes `inhibit=active|inactive|disabled|failed|unavailable`. Startup
+verification waits 0.5 seconds before checking both the unit and logind
+inhibitor table. For device validation, inspect
 `systemd-inhibit --list` after ssh closes and after release or expiry.
 
 ## Status
@@ -250,15 +252,20 @@ created complete PNG, then moves it into a private device temp directory.
 
 It downloads with scp using the same key, ssh options and address fallback
 as other commands, then removes its device temp file and directory,
-including after a failed copy. Downloads replace local output only after
+including after a failed copy. If download and cleanup both fail, the
+download error and exit code are preserved and cleanup is a stderr warning.
+Downloads replace local output only after
 a successful transfer. The default output is
 `./steamos-capture-<device>-<UTC YYYYMMDDTHHMMSSZ>.png`; `--out` requires
 an existing parent directory. JSON reports `device` and `output`.
 Missing gamescope reports that Game Mode is required; xprop failures
 and timeouts exit 1. Concurrent agent-kit captures are refused by a
-short-lived capture lock, separate from the device lease. An interrupted
-connection may leave that lock or a temp file: inspect before removing
-them; never remove another capture's files or run broad gamescope cleanup.
+short-lived capture lock, separate from the device lease, recording PID
+and creation time. SIGHUP/SIGTERM exit through cleanup; a later capture
+replaces a lock older than 60 seconds or whose PID is gone. A fresh live
+lock is refused, and cleanup preserves a replacement lock. An uncatchable
+interruption may leave a temp file: inspect before removing it; never
+remove another capture's files or run broad gamescope cleanup.
 
 ## Frametimes
 
@@ -273,13 +280,15 @@ a vkcube run produced a 40 KB per-frame CSV plus its summary at about
 60 fps. A device woken over the network shows its lock screen; unlock it
 before visual or performance work.
 
-`frametimes pull [--out DIR]` needs no lease or Valve helpers. Valve
-downloads `mangoapp_*.csv` from the device user's home; this command copies
+`frametimes pull [--out DIR] [--partial]` needs no lease or Valve helpers.
+Valve downloads `mangoapp_*.csv` from the device user's home; this command copies
 the newest session to DIR (default: current directory), selected by the
 latest modification time of either member. It copies both
 `mangoapp_<stamp>.csv` and `mangoapp_<stamp>_summary.csv` when present,
 even when their modification times differ. The base CSV is required; a
-missing summary is allowed. It ignores symlinks and unsafe names, preserves
+missing summary exits 1 with "logging may still be active; run frametimes
+stop" before downloading. `--partial` explicitly allows a base-only session.
+It ignores symlinks and unsafe names, preserves
 device files, and refuses when no CSVs exist or the newest base is missing.
 It creates DIR as needed and uses scp with the same ssh options/address
 fallback. JSON gives

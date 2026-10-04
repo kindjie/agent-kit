@@ -10,9 +10,10 @@ Fake ssh runs remote commands locally with a separate HOME per host.
 Lease inhibition tests fake the systemd user manager and record unit
 arguments, expiry and stop/start order across separate ssh invocations.
 Tests cover take/renew replacement, release/break/reclaim shutdown, expiry,
-opt-out, missing tools/user manager, startup/inactive-unit failure cleanup
-and stop failure preservation. No detached processes or PID signalling are
-used; these fixtures do not establish real logind locks or device sleep.
+opt-out, missing tools/user manager, best-effort startup failure, delayed
+unit exits, missing logind locks, failed-unit cleanup
+and stop failure preservation. Lease fixtures use no detached processes
+or PID signalling; these fixtures do not establish real logind locks or device sleep.
 Valve helpers are small fixture scripts; title tests cover lease/pin/name
 refusals, exact shortcut arguments, exit-0 JSON errors, invalid leftovers,
 exact re-registration mirrors, unsafe remote-path refusal, scoped removal
@@ -22,9 +23,12 @@ Logs tests cover recorded launch windows, exact journal arguments, console
 timestamp/continuation filtering, line limits, missing records and malformed
 epochs. Capture tests fake gamescope/xprop and scp, checking the numeric
 Valve protocol, bounded PNG wait, preservation of existing captures and
-local outputs, scoped temp cleanup, Game Mode refusal and address fallback.
+local outputs, real local SIGHUP/SIGTERM cleanup, PID/time lock recovery
+and live-lock refusal, download error precedence when cleanup also fails,
+Game Mode refusal, fake-pgrep no-match exit codes and address fallback.
 Frametime tests check lease refusals, exact mangohudctl arguments, newest
-sessions with unequal member mtimes, base-only and missing-base cases,
+sessions with unequal member mtimes, base-only refusal before download,
+explicit `--partial` downloads and missing-base refusal even with `--partial`,
 symlink/unsafe-name exclusion and missing logs.
 All new device commands run behind fake ssh; no live capture or MangoHud
 control is performed. Download reply and connection-value tests reject

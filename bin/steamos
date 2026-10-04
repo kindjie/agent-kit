@@ -56,7 +56,7 @@ mutex=$lock.mutex
 log=$HOME/.agent-kit-steamos-lease.log
 now=$(date +%s)
 token=$$.$now
-fresh='' owned='' pending_unit=''
+fresh='' owned='' pending_unit='' inhibit_failed=''
 unit=agent-kit-steamos-lease-inhibit
 cleanup() {
   if [ -n "$pending_unit" ]; then
@@ -76,6 +76,10 @@ user_manager_available() {
 }
 inhibitor_active() {
   [ "$(systemctl --user is-active "$unit" 2>/dev/null)" = active ]
+}
+inhibitor_holds() {
+  inhibitor_active && systemd-inhibit --list 2>/dev/null |
+    awk '$1 == "agent-kit-steamos" { found=1 } END { exit !found }'
 }
 stop_inhibitor() {
   user_manager_available || return 0
@@ -104,7 +108,8 @@ start_inhibitor() {
     systemd-inhibit --what=sleep:idle --who=agent-kit-steamos \
     --why="steamos lease: $holder" --mode=block sleep "$left" \
     >/dev/null 2>&1 || return 1
-  inhibitor_active || return 1
+  sleep 0.5
+  inhibitor_holds || return 1
   pending_unit=''
   return 0
 }
@@ -137,7 +142,8 @@ emit() {
   printf 'state=%s\nnow=%s\n' "$(state)" "$now"
   # Reads without the mutex may race a removal; a vanished file is free.
   sed 's/^/lease_/' "$info" 2>/dev/null || true
-  if user_manager_available && inhibitor_active; then echo inhibit=active
+  if [ -n "$inhibit_failed" ]; then echo inhibit=failed
+  elif inhibit_available && inhibitor_holds; then echo inhibit=active
   elif [ ! -d "$lock" ]; then echo inhibit=inactive
   elif [ "$prevent_sleep" != true ]; then echo inhibit=disabled
   elif ! inhibit_available; then echo inhibit=unavailable
@@ -194,7 +200,12 @@ write() {
   printf 'holder=%s\npurpose=%s\nstart=%s\nexpires=%s\n' \
     "$holder" "$purpose" "$1" "$((now + seconds))" >"$new" || return 1
   mv -f "$new" "$info" || return 1
-  start_inhibitor || return 1
+  if ! start_inhibitor; then
+    inhibit_failed=1
+    if [ -n "$pending_unit" ]; then
+      systemctl --user stop "$unit" >/dev/null 2>&1 || true
+    fi
+  fi
   return 0
 }
 take_new() {
@@ -426,7 +437,8 @@ def lease_summary(values):
   lease = {'state': values.get('state', 'unknown'),
            'inhibit': values.get('inhibit', 'unavailable'),
            'sleep_inhibited': {'active': True, 'inactive': False,
-                              'disabled': False}.get(values.get('inhibit')),
+                              'disabled': False, 'failed': False}.get(
+                                values.get('inhibit')),
            'legacy': values.get('legacy', []),
            'legacy_info': values.get('legacy_info', [])}
   for key in ('holder', 'purpose', 'start', 'expires'):
@@ -511,6 +523,9 @@ def lease_command(options):
   values = parse(proc.stdout)
   lease = lease_summary(values)
   result = values.get('result', 'unknown')
+  if lease['inhibit'] == 'failed':
+    print('Warning: sleep inhibition failed; the device may sleep.',
+          file=sys.stderr)
   if options.json:
     print(json.dumps(dict(lease, result=result, device=name), indent=2))
   else:
@@ -1044,13 +1059,38 @@ def logs_command(options):
 # A small mutex serializes our requests, independently of the device lease.
 CAPTURE_SCRIPT = r'''
 python3 - <<'PY'
-import json, os, shutil, subprocess, sys, tempfile, time
+import json, os, shutil, signal, subprocess, sys, tempfile, time
 from pathlib import Path
 root = Path('/tmp')
 lock = Path.home() / '.agent-kit-steamos-capture'
 folder = None
-owned = False
+owned = None
 ready = False
+def interrupted(signum, frame):
+  raise SystemExit(128 + signum)
+for signum in (signal.SIGHUP, signal.SIGTERM):
+  signal.signal(signum, interrupted)
+def identity(path):
+  stat = path.stat()
+  return stat.st_dev, stat.st_ino
+def stale():
+  stamp = lock.stat().st_mtime
+  try:
+    owner = json.loads((lock / 'owner').read_text())
+    pid, recorded_time = owner['pid'], owner['time']
+    if not isinstance(pid, int) or pid <= 0 or \
+        not isinstance(recorded_time, (int, float)):
+      raise ValueError('invalid capture owner')
+    stamp = recorded_time
+    try:
+      os.kill(pid, 0)
+    except ProcessLookupError:
+      return True
+    except PermissionError:
+      pass
+  except (OSError, ValueError, KeyError, TypeError):
+    pass
+  return time.time() - stamp > 60
 try:
   if not shutil.which('pgrep') or subprocess.run(
       ['pgrep', '-x', 'gamescope|gamescope-wl'],
@@ -1060,9 +1100,22 @@ try:
     raise ValueError('xprop is unavailable; capture needs Game Mode')
   try:
     lock.mkdir()
-    owned = True
   except FileExistsError:
-    raise ValueError('another capture is active (or left a capture lock)')
+    previous = identity(lock)
+    if not stale():
+      raise ValueError('another capture is active')
+    aside = lock.with_name(lock.name + '.stale.' + str(os.getpid()))
+    lock.rename(aside)
+    if identity(aside) != previous:
+      if not lock.exists():
+        aside.rename(lock)
+      raise ValueError('capture lock changed; retry capture')
+    (aside / 'owner').unlink(missing_ok=True)
+    aside.rmdir()
+    lock.mkdir()
+  owned = identity(lock)
+  (lock / 'owner').write_text(json.dumps(
+    {'pid': os.getpid(), 'time': time.time()}))
   before = set(root.glob('gamescope*.png'))
   folder = Path(tempfile.mkdtemp(prefix='steamos-capture-', dir=str(root)))
   proc = subprocess.run(
@@ -1102,10 +1155,14 @@ except (OSError, ValueError, subprocess.TimeoutExpired) as error:
   print(str(error), file=sys.stderr)
   sys.exit(1)
 finally:
-  if folder is not None and not ready:
-    folder.rmdir()
-  if owned:
-    lock.rmdir()
+  try:
+    if folder is not None and not ready:
+      (folder / 'capture.png').unlink(missing_ok=True)
+      folder.rmdir()
+  finally:
+    if owned is not None and lock.exists() and identity(lock) == owned:
+      (lock / 'owner').unlink(missing_ok=True)
+      lock.rmdir()
 PY
 '''
 
@@ -1167,12 +1224,23 @@ def capture_command(options):
   remote = reply.get('path')
   if not isinstance(remote, str) or not CAPTURE_PATH.fullmatch(remote):
     raise Failure(UNREACHABLE, 'capture returned an unsafe temporary path')
+  download_failed = False
   try:
     pull_file(entry, remote, output)
+  except Failure:
+    download_failed = True
+    raise
   finally:
-    cleanup = ssh(entry, 'rm -f -- "$1" && rmdir -- "${1%/*}"\n', [remote])
-    if cleanup.returncode:
-      raise Failure(REFUSED, 'could not remove the device capture temp file')
+    try:
+      cleanup = ssh(entry, 'rm -f -- "$1" && rmdir -- "${1%/*}"\n', [remote])
+      if cleanup.returncode:
+        raise Failure(REFUSED, 'could not remove the device capture temp file: '
+                      + cleanup.stderr.strip())
+    except Failure as error:
+      if download_failed:
+        print(f'Warning: capture cleanup failed: {error}', file=sys.stderr)
+      else:
+        raise
   if options.json:
     print(json.dumps({'device': name, 'output': str(output)}, indent=2))
   else:
@@ -1232,6 +1300,10 @@ def frametimes_command(options):
                     'start and stop a logging session first')
     if not any(not Path(path).stem.endswith('_summary') for path in files):
       raise Failure(REFUSED, 'newest MangoHud session is missing its base CSV')
+    if not options.partial and not any(
+        Path(path).stem.endswith('_summary') for path in files):
+      raise Failure(REFUSED, 'logging may still be active; run frametimes stop '
+                    'before pulling, or use --partial')
     try:
       output.mkdir(parents=True, exist_ok=True)
     except OSError as error:
@@ -1298,6 +1370,8 @@ def main(argv=None):
     sub = frame_actions.add_parser(action)
     if action == 'pull':
       sub.add_argument('--out', help='local directory (default: current)')
+      sub.add_argument('--partial', action='store_true',
+                       help='allow a session without its summary CSV')
     common_options(sub)
   for sub in (status, lease, devkit, install, title, wake, logs, capture,
               frametimes):
