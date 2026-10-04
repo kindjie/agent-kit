@@ -33,6 +33,8 @@ flowchart TD
 
 - **Skills:** ask for the profiling skill and receive a measurement plan.
   A skill provides guidance; it does not install a profiler.
+- **SteamOS devices:** if you have a paired Steam Deck or Steam Machine,
+  ask for the [SteamOS guide](steamos.md) to set up the command and skill.
 - **Quota:** see remaining capacity and reset times for an authenticated
   CLI. Missing data stays unknown. This check contacts your provider.
 - **Dashboard:** see Agents, Agent Tasks, and Timeline in a terminal.

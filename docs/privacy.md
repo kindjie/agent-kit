@@ -42,3 +42,26 @@ provider's quota or credits.
 `--repository-assets` widens that to the enclosing repository, which makes
 every sibling readable by any local client for as long as the server runs.
 Version-control directories are never served.
+
+## SteamOS devices
+
+`steamos` keeps device configuration in
+`$XDG_CONFIG_HOME/agent-kit/steamos.json`, a pinned Devkit source cache in
+`$XDG_CACHE_HOME/agent-kit/steamos-devkit/`, and optional per-user project
+build overlays in `$XDG_CONFIG_HOME/agent-kit/steamos-projects/`. Local
+captures, frametime CSVs and benchmark copies go to the paths you choose.
+Keep private input paths in the overlay rather than a public project config.
+
+On each device, it uses a lease directory and lease log in the user's home.
+It records title launch times in `~/.agent-kit-steamos-launches`, benchmark
+runs in `~/.agent-kit-steamos-bench/`, Devkit titles under `~/devkit-game/`,
+and versioned deploys inside each managed title. Devkit helpers live in
+`~/devkit-utils/`. Bench runs are retained until later runs prune them
+according to the configured count; see the
+[command reference](../bin/steamos.md#benchmarks).
+
+Device commands cross the network by ssh to your configured devices; wake
+uses a local-network UDP broadcast. The first Devkit helper install for a
+pin fetches Valve's GitLab repository at that commit, unless you configure
+a different source. The command sends no data to any other service. Your
+agent or build command may have its own network behaviour.

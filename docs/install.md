@@ -20,7 +20,11 @@ user a first command or skill prompt.
 - **[uv](https://docs.astral.sh/uv)** for `md-preview`, which is a PEP 723
   script: uv resolves its pinned dependencies per invocation. Without it the
   wrapper says so and exits 127.
-- `git` — required for the records commands; optional for other tools.
+- `git` — required for the records commands and `steamos devkit install`.
+- `steamos` needs Python 3.9+, `ssh`, `rsync` and `git` on the host. The
+  device uses SteamOS's own Python 3. No host Python installation is copied
+  to it. `scp` is needed to download captures and measurements. See the
+  [SteamOS guide](steamos.md) for Developer Mode, pairing and device setup.
 - `tmux` — required only for `agent-dash`; `taskglance` is optional with
   `agent-dash --personal`. The default uses no model summaries.
 - An authenticated `claude` or `codex` CLI for `agent-quota` to report on.
@@ -133,6 +137,35 @@ Skill selection depends on the agent and request, so installation does not
 guarantee automatic invocation. See the supported paths and symlink behavior
 in [Codex's documentation](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills)
 and [Claude Code's documentation](https://code.claude.com/docs/en/skills#choose-where-skills-load).
+
+### SteamOS-only installation
+
+From the checkout, link `steamos` and its whole skill directory. The command
+resolves its sibling Python modules through its real path. This setup needs
+neither the dashboard nor shared task records. For Codex:
+
+```sh
+mkdir -p "$HOME/bin" "$HOME/.agents/skills"
+command_target="$HOME/bin/steamos"
+skill_target="$HOME/.agents/skills/steamos"
+[ ! -e "$command_target" ] && [ ! -L "$command_target" ] && \
+  ln -s "$PWD/bin/steamos" "$command_target"
+[ ! -e "$skill_target" ] && [ ! -L "$skill_target" ] && \
+  ln -s "$PWD/skills/steamos" "$skill_target"
+steamos --help
+```
+
+For Claude Code, use `$HOME/.claude/skills` as the skill destination.
+Inspect an existing entry before replacing it, and keep the checkout in
+place. Device setup is separate: `steamos doctor` checks local prerequisites
+without connecting, while `steamos doctor --device NAME` checks one device.
+
+Governor pinning for `steamos bench run` is optional. It requires an
+owner-installed, root-owned helper and a narrow sudoers rule on the device.
+The sudoers filename must sort after `wheel`; see the
+[governor helper instructions](
+../bin/steamos.md#optional-governor-helper-and-sudoers-rule).
+An unpinned benchmark needs no sudo.
 
 ### Verify the selected setup
 

@@ -164,7 +164,7 @@ cleanup. Its file lock releases automatically; never delete `run.lock`
 to bypass an active run.
 
 - `--require-power` requires confirmed external power in the status fields.
-- `--pin-governor` uses only `sudo -n /usr/local/sbin/steamos-governor CPU
+- `--pin-governor` uses only `sudo -n /etc/agent-kit/steamos-governor CPU
   GOVERNOR`. If denied, report the exact refused command and the optional
   root-owned helper/sudoers example in `bin/steamos.md`. Never install it
   automatically, prompt for a password or silently drop requested pinning.

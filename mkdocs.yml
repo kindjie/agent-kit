@@ -61,6 +61,7 @@ nav:
       - Understand quota: docs/quota.md
       - Coordinate work: docs/work.md
       - Investigate performance: docs/profiling.md
+      - Work with SteamOS devices: docs/steamos.md
       - As your work grows: docs/growing.md
   - Reference:
       - Tools and skills: docs/tools.md

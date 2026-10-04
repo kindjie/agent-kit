@@ -32,6 +32,7 @@ make the dashboard a live monitor of every machine.
 
 [Quick start](#quick-start) · [Requirements](#requirements) ·
 [Profiling](#investigate-performance-with-evidence) ·
+[SteamOS](#work-with-steamos-devices) ·
 [Agents](#follow-agents) · [Timeline](#read-the-quota-timeline) ·
 [Shared tasks](#coordinate-work) · [Skills](#build-your-own-toolkit) ·
 [Install](#install) · [Privacy](#privacy)
@@ -155,6 +156,7 @@ You only need the requirements for the pieces you choose.
 | Live quota | A signed-in Claude Code or Codex CLI; either provider is enough |
 | Combined dashboard | tmux, in addition to the command requirements |
 | Shared task records | Git and task stores you explicitly configure |
+| SteamOS devices | ssh, rsync and git on the host; a paired SteamOS device |
 
 The [setup reference](docs/install.md) covers installation and optional
 integrations in detail. It's written for agents doing setup and people who
@@ -223,6 +225,19 @@ provides guidance; it does not install profiling tools.
 For manual setup, follow the [whole-directory installation instructions](
 docs/install.md#profiling-only-installation). Ask your agent to **use the
 profiling skill** when you want an investigation.
+
+## Work with SteamOS devices
+
+The [`steamos` command](bin/steamos.md) and
+[SteamOS skill](skills/steamos/SKILL.md) help agents share a Steam Deck or
+Steam Machine. Inspect device status, hold a lease while deploying or
+benchmarking, run titles, and collect logs, screenshots and frametimes.
+A held lease normally inhibits device sleep. Devices can run different
+SteamOS channels; check each device before relying on its capabilities.
+
+Start with the [SteamOS guide](docs/steamos.md) for pairing, project setup
+and first runs. You can install just this command and skill without the
+dashboard or shared task records.
 
 ## Follow agents
 

@@ -17,7 +17,7 @@
 | `agent-speak.sh` | Spoken attention notification, with mute control |
 | `agent-attention` | Explicit tmux attention badges and prompt reset hook |
 | `md-preview` | Local GitHub-style Markdown preview served on loopback |
-| [`steamos`](../bin/steamos.md) | Shares a Steam Deck or Steam Machine through a device lease and reports its status |
+| [`steamos`](../bin/steamos.md) | Inspects and leases SteamOS devices; installs pinned Devkit helpers, manages titles and versioned deploys, and collects logs, captures, frametimes and benchmarks |
 | `agent-id` | Derives or mints agent IDs and manages repository keys |
 | `agent-task` | Creates, claims, hands off and closes task records |
 | `agent-resource` | Serializes cooperating foreground jobs with scoped resource locks |
@@ -39,7 +39,7 @@
 | `design-documents` | Deciding whether a design document is warranted |
 | `preview-markdown` | Previewing and visually validating Markdown |
 | `profiling` | Collecting or reading a performance profile, CPU, GPU or Wasm |
-| `steamos` | Working on a shared Steam Deck or Steam Machine: status, the device lease, and owner hand-offs |
+| [`steamos`](../skills/steamos/SKILL.md) | Sharing a SteamOS device for builds, deploys, title runs and performance work, with lease and owner hand-offs |
 | `pull-requests` | Taking a change through a pull-request workflow |
 | `agent-records` | Tracking work and lasting machine state with `agent-task` and `agent-changelog` |
 | `estimate-agent-work` | Sizing tracked work and identifying useful decomposition |
