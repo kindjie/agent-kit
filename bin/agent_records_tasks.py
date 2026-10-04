@@ -518,30 +518,49 @@ def checklist(body):
                  if line.startswith("- [")]
 
 
-def check_text(line):
-  """Checklist text without evidence or n/a appended to a checked item."""
+def check_texts(line):
+  """Possible item texts before a checked line's suffix marker."""
   content = line[6:]
   if line.startswith("- [x] "):
-    end = max(content.rfind(" -- evidence: "),
-              content.rfind(": n/a -- "))
-    if end >= 0:
-      return content[:end]
-  return content
+    ends = sorted({match.start() for marker in
+                   (" -- evidence: ", ": n/a -- ") for match in
+                   re.finditer(re.escape(marker), content)})
+    if ends:
+      return [content[:end] for end in ends]
+  return [content]
 
 
 def checklist_item(body, item):
   """(index, line, fixed (key, label) or None, key) of a checklist item."""
   _, lines = checklist(body)
-  index = (int(item) - 1 if re.fullmatch(r"[0-9]+", item) else next(
-    (i for i, line in enumerate(lines) if check_text(line) == item or
-     check_text(line).startswith(item + ":")), -1))
+  texts = [check_texts(line) for line in lines]
+  if re.fullmatch(r"[0-9]+", item):
+    index = int(item) - 1
+  else:
+    matches = [i for i, candidates in enumerate(texts)
+               if item in candidates]
+    if not matches:
+      matches = [i for i, candidates in enumerate(texts)
+                 if candidates[-1].startswith(item + ":")]
+    if len(matches) > 1:
+      numbers = ", ".join(str(i + 1) for i in matches)
+      raise RecordsError("ambiguous checklist item; matches " + numbers, 1)
+    index = matches[0] if matches else -1
   if not 0 <= index < len(lines):
     raise RecordsError("checklist item not found", 1)
   line = lines[index]
   content = line[6:]
   fixed = (FIXED[index] if index < len(FIXED) and
            content.startswith(FIXED[index][0] + ":") else None)
-  key = fixed[0] if fixed else check_text(line)
+  if fixed:
+    key = fixed[0]
+  elif not re.fullmatch(r"[0-9]+", item) and item in texts[index]:
+    key = item
+  elif len(texts[index]) > 1:
+    raise RecordsError("ambiguous stored checklist suffix; select by full "
+                       "item text", 1)
+  else:
+    key = texts[index][0]
   return index, line, fixed, key
 
 
@@ -847,14 +866,18 @@ def alter_task(root, args, agent, push, changes=None):
     index, line, fixed, key = checklist_item(body, args.item)
     if bool(args.evidence) == bool(args.na):
       raise RecordsError("give --evidence or --na", 2)
+    value = one_line(args.evidence if args.evidence else args.na)
+    for marker in (" -- evidence: ", ": n/a -- "):
+      if marker in value:
+        option = "--evidence" if args.evidence else "--na"
+        raise RecordsError(option + " cannot contain " + repr(marker), 2)
     if args.na and fields.get("produces-changes") == "yes" and index in (0, 3):
       raise RecordsError("this item needs evidence", 1)
     if args.na:
-      replacement = "- [x] " + key + ": n/a -- " + one_line(args.na)
+      replacement = "- [x] " + key + ": n/a -- " + value
     else:
       base = (key + ": " + fixed[1] if fixed else key)
-      replacement = ("- [x] " + base + " -- evidence: " +
-                     one_line(args.evidence))
+      replacement = "- [x] " + base + " -- evidence: " + value
     body = replace_check(body, index, replacement)
     body = append_log(body, agent, (
       "Rechecked " if line.startswith("- [x] ") else "Checked ") + key +

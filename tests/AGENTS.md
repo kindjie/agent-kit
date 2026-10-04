@@ -447,7 +447,8 @@ global git config with signing off and disable system git config. The setup,
 lifecycle, records, commands, transitions and watch suites cover identity,
 initialization, task claims, permissions, help, checklist corrections
 (re-checking, owner-only unchecking, and edits confined to the checklist),
-added-check marker text and text lookup, non-empty correction reasons,
+added-check marker text, invalid value markers, legacy ambiguous values,
+exact and ambiguous text lookup, non-empty correction reasons,
 closing and watch cursors.
 The planning suite covers dependency declaration/revocation, graph validation,
 prerequisite and dependent status views, `next` readiness across closure and

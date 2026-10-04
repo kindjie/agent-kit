@@ -70,7 +70,13 @@ changes, create with `--no-changes` and mark inapplicable checks with
 `check --na REASON`. `check` also takes an optional `--reason` to log;
 checking an item again rewrites its evidence, and the owner can `uncheck
 --reason` one ticked in error. Added checks can be selected by number or
-their full text, including text with evidence markers. `uncheck` and
+their full text, including text with evidence markers. Digits select a
+checklist number, so an all-digit check text must be selected by number.
+Exact text wins over a `key:` prefix; ambiguous matches report their
+numbers. Evidence and n/a values cannot contain ` -- evidence: ` or
+`: n/a -- ` because those strings delimit the stored value. For older
+checked lines containing multiple markers, select an added check by its
+full text; number selection refuses an ambiguous suffix. `uncheck` and
 `reopen` require a non-empty `--reason`. The review field is separate from
 the work-reviewed check. `agent-task --help` summarizes transitions; each
 subcommand's `--help` describes its options.

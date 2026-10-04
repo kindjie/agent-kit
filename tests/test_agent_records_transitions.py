@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 
-from tests.agent_records_support import RecordsFixture
+from tests.agent_records_support import BIN, RecordsFixture
 
 
 class TransitionTest(RecordsFixture):
@@ -206,7 +207,7 @@ class TransitionTest(RecordsFixture):
 
   def test_added_check_keeps_embedded_evidence_marker(self):
     self.init()
-    item = "review -- evidence: draft text"
+    item = "review -- evidence: draft: n/a -- text"
     task = self.task("Evidence marker", "--check", item)
     self.run_task("agent-a", "claim", task)
     self.run_task("agent-a", "check", task, item, "--evidence", "approved")
@@ -227,6 +228,80 @@ class TransitionTest(RecordsFixture):
     self.run_task("agent-a", "uncheck", task, item, "--reason", "retry")
     self.assertIn("- [ ] " + item + "\n",
                   self.run_cmd("agent-task", "show", task))
+
+  def test_check_rejects_markers_in_values_without_writing(self):
+    self.init()
+    task = self.task("Ambiguous values", "--check", "plain item")
+    self.run_task("agent-a", "claim", task)
+    head = self.git_head()
+    for option, value in (("--evidence", "see x: n/a -- y"),
+                          ("--evidence", "see x -- evidence: y"),
+                          ("--na", "not -- evidence: here"),
+                          ("--na", "not: n/a -- here")):
+      result = subprocess.run(
+        [sys.executable, str(BIN / "agent-task"), "--agent", "agent-a",
+         "check", task, "plain item", option, value],
+        env=self.env, text=True, capture_output=True, timeout=8)
+      self.assertEqual(result.returncode, 2, result.stderr)
+      self.assertIn(option + " cannot contain", result.stderr)
+      self.assertEqual(self.git_head(), head)
+    self.assertIn("- [ ] plain item\n",
+                  self.run_cmd("agent-task", "show", task))
+
+  def test_exact_check_text_wins_over_prefix_match(self):
+    self.init()
+    task = self.task("Exact text", "--check", "deploy: staging",
+                     "--check", "deploy")
+    self.run_task("agent-a", "claim", task)
+    self.run_task("agent-a", "check", task, "deploy", "--evidence", "done")
+    shown = self.run_cmd("agent-task", "show", task)
+    self.assertIn("- [ ] deploy: staging\n- [x] deploy -- evidence: done",
+                  shown)
+    self.run_task("agent-a", "uncheck", task, "deploy", "--reason", "retry")
+    self.assertIn("- [ ] deploy: staging\n- [ ] deploy\n",
+                  self.run_cmd("agent-task", "show", task))
+
+  def test_duplicate_check_text_reports_matching_numbers(self):
+    self.init()
+    task = self.task("Duplicate text", "--check", "deploy",
+                     "--check", "deploy")
+    self.run_task("agent-a", "claim", task)
+    head = self.git_head()
+    for command, tail in (("check", ("--evidence", "done")),
+                          ("uncheck", ("--reason", "retry"))):
+      result = subprocess.run(
+        [sys.executable, str(BIN / "agent-task"),
+         "--agent", "agent-a", command, task, "deploy", *tail],
+        env=self.env, text=True, capture_output=True, timeout=8)
+      self.assertEqual(result.returncode, 1, result.stderr)
+      self.assertIn("5, 6", result.stderr)
+      self.assertEqual(self.git_head(), head)
+
+  def test_legacy_ambiguous_values_do_not_rewrite_item_text(self):
+    self.init()
+    task = self.task("Legacy values", "--check", "A", "--check", "B")
+    self.run_task("agent-a", "claim", task)
+    self.run_task("agent-a", "check", task, "A", "--evidence", "good")
+    self.run_task("agent-a", "check", task, "B", "--na", "good")
+    path = next(self.tasks.glob(task + "-*.md"))
+    text = path.read_text()
+    text = text.replace("- [x] A -- evidence: good",
+                        "- [x] A -- evidence: see x: n/a -- y")
+    text = text.replace("- [x] B: n/a -- good",
+                        "- [x] B: n/a -- not -- evidence: here")
+    path.write_text(text)
+    for args in (("add", path.name), ("commit", "-qm", "Legacy values")):
+      subprocess.run(["git", "-C", str(self.tasks), *args], env=self.env,
+                     check=True, capture_output=True)
+    head = self.git_head()
+    for number in ("5", "6"):
+      self.run_task("agent-a", "uncheck", task, number, "--reason", "retry",
+                    code=1)
+      self.assertEqual(self.git_head(), head)
+    for item in ("A", "B"):
+      self.run_task("agent-a", "uncheck", task, item, "--reason", "retry")
+    shown = self.run_cmd("agent-task", "show", task)
+    self.assertIn("- [ ] A\n- [ ] B\n", shown)
 
   def test_added_check_without_colon_is_findable_by_text(self):
     self.init()
