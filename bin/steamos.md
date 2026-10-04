@@ -223,6 +223,10 @@ It runs from the project root without a shell. For example:
 }
 ```
 
+`steamos build` runs code chosen by the repository. The shell-string guard
+checks configuration shape; it is not a security boundary for untrusted
+repositories or build commands.
+
 `env` values expand only `${PROJECT}` and `${HOME}`. `requires` names
 environment variables whose resolved paths must exist. A missing path
 reports its variable name and stops before the command runs. `outputs` is
@@ -239,7 +243,10 @@ set or overridden in
 Only `build.env` is accepted in the overlay. Keep private absolute paths
 there rather than in a public project config. Build prints the resolved
 environment, hiding values of names containing `TOKEN`, `SECRET`, `KEY`
-or `PASSWORD`, including when echoed by the build command.
+or `PASSWORD`, and also `CREDENTIAL`, `PASS`, `PASSWD`, `AUTH`, `PAT`,
+`COOKIE` and `CERT`. Values of at least eight characters are also hidden
+in printed argv and build output. Shorter secret-named values produce a
+warning because redacting them from output could hide unrelated text.
 `--dry-run` prints the plan without running the command. A successful
 build runs the same verification as `steamos stage` and prints its version.
 

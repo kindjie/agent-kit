@@ -1,5 +1,6 @@
 """Read-only local, project and SteamOS device diagnostics."""
 import json
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import re
@@ -40,12 +41,20 @@ else echo doctor_inhibit=unavailable; fi
 
 def helper_sudo_rule(output, helper):
   """Find a root NOPASSWD command entry for the configured helper."""
-  rule = re.compile(r'^\s*\((?:root|ALL)\)\s+NOPASSWD:\s*'
-                    r'(?:[^,]+,\s*)*(?:ALL|' + re.escape(helper) +
-                    r')(?:\s|$)')
-  return any(rule.match(line.removeprefix('doctor_sudo_line='))
-             for line in output.splitlines()
-             if line.startswith('doctor_sudo_line='))
+  rule = re.compile(r'^\s*\((?:root|ALL)(?:\s*:\s*(?:root|ALL))?\)\s+'
+                    r'((?:[A-Z_]+:\s*)*)(.*)$')
+  for line in output.splitlines():
+    if not line.startswith('doctor_sudo_line='):
+      continue
+    match = rule.match(line.removeprefix('doctor_sudo_line='))
+    if not match or 'NOPASSWD:' not in match[1]:
+      continue
+    for command in match[2].split(','):
+      command = command.strip()
+      if command == 'ALL' or command == helper or command.startswith(
+          helper + ' '):
+        return True
+  return False
 
 
 def glibc_tuple(value):
@@ -188,7 +197,10 @@ def doctor_command(options, api):
         needed, reason = bundle_glibc(stage['bundle'], stage['manifest'])
       else:
         needed, reason = None, 'no verified project bundle'
-      if needed and remote_glibc:
+      if selected and config.get('runtime') == 'slr4':
+        add(scope, 'glibc', 'ok',
+            'Steam Linux Runtime 4 provides glibc for this title')
+      elif needed and remote_glibc:
         add(scope, 'glibc', 'ok' if remote_glibc >= needed else 'fail',
             f'device {facts["glibc"]}; bundle requires '
             f'{".".join(map(str, needed[:2]))}')
@@ -225,10 +237,13 @@ def doctor_command(options, api):
       expires = facts.get('doctor_lease_expires', '')
       active_lease = lease_holder not in ('free', 'unknown') and \
         (not expires.isdigit() or int(expires) > time.time())
+      expiry_text = (datetime.fromtimestamp(int(expires), timezone.utc)
+                     .isoformat().replace('+00:00', 'Z')
+                     if expires.isdigit() else 'unknown')
       lease_message = ('free' if lease_holder == 'free' else
                        f'held by {lease_holder} for '
                        f'{facts.get("doctor_lease_purpose", "unknown")}; '
-                       f'expires {expires or "unknown"}')
+                       f'expires {expiry_text}')
       add(scope, 'lease', 'ok' if lease_holder == 'free' or
           lease_holder == api.holder(machine) or
           (expires.isdigit() and not active_lease) else 'warn',

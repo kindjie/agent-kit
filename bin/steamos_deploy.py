@@ -132,11 +132,10 @@ def expand_build_value(value, root, home):
   if not isinstance(value, str) or not value or any(
       ord(c) < 32 or ord(c) == 127 for c in value):
     raise ValueError('build.env values must be nonempty strings')
-  expanded = EXPANSION.sub(lambda match: str(root if match[1] == 'PROJECT'
-                                           else home), value)
-  if '$' in expanded and '$' in value:
+  if '$' in EXPANSION.sub('', value):
     raise ValueError('build.env permits only ${PROJECT} and ${HOME}')
-  return expanded
+  return EXPANSION.sub(lambda match: str(root if match[1] == 'PROJECT'
+                                        else home), value)
 
 
 def validate_build(build):

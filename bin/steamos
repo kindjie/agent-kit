@@ -953,25 +953,49 @@ def build_plan(root, config):
 
 def public_plan(plan):
   copy = dict(plan)
-  copy['env'] = {name: '<redacted>' if secret_name(name) else value
+  secrets = secret_values(plan)
+  copy['command'] = [redact_secrets(arg, secrets) for arg in plan['command']]
+  copy['env'] = {name: '<redacted>' if secret_name(name) and
+                 len(value) >= 8 else value
                  for name, value in plan['env'].items()}
   copy['requires_missing'] = [
-    (name, '<redacted>' if secret_name(name) else path)
+    (name, '<redacted>' if secret_name(name) and
+     len(plan['env'][name]) >= 8 else path)
     for name, path in plan['requires_missing']]
   return copy
 
 
 def secret_name(name):
-  return bool(re.search(r'TOKEN|SECRET|KEY|PASSWORD', name, re.I))
+  return bool(re.search(
+    r'CREDENTIAL|PASSWORD|PASSWD|PASS|SECRET|TOKEN|COOKIE|CERT|AUTH|KEY|'
+    r'(?:^|_)PAT(?:_|$)',
+    name, re.I))
+
+
+def secret_values(plan):
+  return sorted((value for name, value in plan['env'].items()
+                 if secret_name(name) and len(value) >= 8),
+                key=len, reverse=True)
+
+
+def redact_secrets(value, secrets):
+  for secret in secrets:
+    value = value.replace(secret, '<redacted>')
+  return value
 
 
 def build_command(options):
   root, config = project(options)
   plan = build_plan(root, config)
   public = public_plan(plan)
+  for name, value in plan['env'].items():
+    if secret_name(name) and len(value) < 8:
+      print(f'steamos: {name} has a short secret value '
+            '(fewer than 8 characters); output cannot safely redact it',
+            file=sys.stderr)
   if not options.json:
     print(f'Build {config["title"]} in {root}\n'
-          f'command: {shlex.join(plan["command"])}\n' + '\n'.join(
+          f'command: {shlex.join(public["command"])}\n' + '\n'.join(
             f'{name}={value}' for name, value in public['env'].items()),
           flush=True)
   elif options.dry_run:
@@ -986,10 +1010,7 @@ def build_command(options):
     return OK
   env = dict(os.environ, **plan['env'])
   def redacted(output):
-    for name, value in plan['env'].items():
-      if secret_name(name) and value:
-        output = output.replace(value, '<redacted>')
-    return output
+    return redact_secrets(output, secret_values(plan))
   try:
     proc = subprocess.Popen(plan['command'], cwd=root, env=env, text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)

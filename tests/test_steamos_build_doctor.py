@@ -1,9 +1,12 @@
 """Build plans and read-only doctor checks use local fixture devices only."""
 import json
+from datetime import datetime, timezone
+from pathlib import Path
 import runpy
 import sys
 import time
 import unittest
+from unittest import mock
 
 from tests import test_steamos
 from tests import test_steamos_deploy
@@ -76,6 +79,39 @@ class BuildDoctorTest(unittest.TestCase):
     self.assertIn('<redacted>', proc.stdout)
     self.assertIn('missing-output', proc.stderr)
 
+  def test_build_redacts_secret_names_argv_and_warns_on_short_values(self):
+    names = ('CREDENTIAL', 'PASS', 'PASSWD', 'AUTH', 'PAT', 'COOKIE',
+             'CERT', 'TOKEN', 'SECRET', 'KEY', 'PASSWORD')
+    env = {f'BUILD_{name}': f'{name.lower()}-private' for name in names}
+    env['BUILD_PIN_AUTH'] = '1234'
+    self.build_config(command=['builder', env['BUILD_COOKIE']], env=env,
+                      requires=[])
+    proc = self.run_cli('build', '--project', str(self.repo), '--dry-run',
+                        '--json')
+    plan = json.loads(proc.stdout)
+    for name in names:
+      self.assertEqual(plan['env'][f'BUILD_{name}'], '<redacted>')
+      self.assertNotIn(env[f'BUILD_{name}'], proc.stdout)
+    self.assertEqual(plan['command'][1], '<redacted>')
+    self.assertIn('BUILD_PIN_AUTH', proc.stderr)
+    self.assertEqual(plan['env']['BUILD_PIN_AUTH'], '1234')
+    plain = self.run_cli('build', '--project', str(self.repo), '--dry-run')
+    self.assertNotIn(env['BUILD_COOKIE'], plain.stdout)
+    self.assertIn("command: builder '<redacted>'", plain.stdout)
+
+  def test_build_expansion_allows_dollar_in_project_path(self):
+    self.build_config(env={'INPUT_DIR': '${PROJECT}/inputs'})
+    renamed = self.repo.with_name(self.repo.name + '$checkout')
+    self.repo.rename(renamed)
+    self.repo = renamed
+    plan = json.loads(self.run_cli('build', '--project', str(self.repo),
+                                   '--dry-run', '--json').stdout)
+    self.assertEqual(plan['env']['INPUT_DIR'], str(self.repo / 'inputs'))
+    expand = runpy.run_path(str(test_steamos.BIN.with_name(
+      'steamos_deploy.py')))['expand_build_value']
+    self.assertEqual(expand('${HOME}/input', self.repo, Path('/work/$user')),
+                     '/work/$user/input')
+
   def test_overlay_rejects_other_fields_and_secret_missing_path(self):
     self.build_config(env={'BUILD_SECRET_KEY': '${PROJECT}/missing'},
                       requires=['BUILD_SECRET_KEY'])
@@ -135,8 +171,10 @@ class BuildDoctorTest(unittest.TestCase):
     checks = self.doctor_checks()
     self.assertEqual(checks['lease']['status'], 'warn')
     for value in ('claude-49ef3c7fa0f3f6b1', 'bench graphics',
-                  str(expires)):
+                  datetime.fromtimestamp(expires, timezone.utc).isoformat()
+                  .replace('+00:00', 'Z')):
       self.assertIn(value, checks['lease']['message'])
+    self.assertNotIn(f'expires {expires}', checks['lease']['message'])
     checks = self.doctor_checks(holder='claude-49ef3c7fa0f3f6b1')
     self.assertEqual(checks['lease']['status'], 'ok')
 
@@ -167,6 +205,21 @@ class BuildDoctorTest(unittest.TestCase):
     check = self.doctor_checks()['governor-helper']
     self.assertEqual(check['status'], 'warn')
     self.assertIn('no-sudo-rule', check['message'])
+
+  def test_helper_sudo_rule_accepts_real_sudo_formats(self):
+    helper = '/etc/agent-kit/steamos-governor'
+    rule = runpy.run_path(str(test_steamos.BIN.with_name(
+      'steamos_doctor.py')))['helper_sudo_rule']
+    for line in (
+        f'(root : root) NOPASSWD: {helper} cpu[0-9]* *',
+        f'(ALL : ALL) SETENV: NOPASSWD: {helper} cpu[0-9]* *',
+        f'(root) NOPASSWD: SETENV: {helper} cpu[0-9]* *'):
+      with self.subTest(line=line):
+        output = ('doctor_sudo_line=Matching Defaults entries for deck:\n'
+                  'doctor_sudo_line=    env_reset\n'
+                  'doctor_sudo_line=User deck may run these commands:\n'
+                  'doctor_sudo_line=    ' + line)
+        self.assertTrue(rule(output, helper))
 
   def test_doctor_mains_only_and_unleased_inhibitor(self):
     sysfs = self.root / 'empty-sysfs'
@@ -209,6 +262,8 @@ class BuildDoctorTest(unittest.TestCase):
 
   def test_doctor_glibc_space_docker_and_read_only_script(self):
     self.build_config()
+    self.settings['runtime'] = 'none'
+    self.write_config()
     (self.repo / 'builder.py').write_text('# docker run\n')
     self.fixture_tool('docker', 'import sys\nsys.exit(1)')
     self.fixture_tool('readelf', "print('UND symbol@GLIBC_2.50')")
@@ -229,6 +284,30 @@ class BuildDoctorTest(unittest.TestCase):
       'steamos_doctor.py')))['DOCTOR_SCRIPT']
     for forbidden in ('mkdir ', 'rm ', 'mv ', '>>'):
       self.assertNotIn(forbidden, source)
+
+  def test_doctor_slr4_uses_runtime_glibc(self):
+    self.build_config()
+    self.settings['runtime'] = 'slr4'
+    self.write_config()
+    self.fixture_tool('readelf', "print('UND symbol@GLIBC_2.50')")
+    self.fixture_tool('ldd', "print('ldd (GNU libc) 2.41')")
+    report = json.loads(self.run_cli('doctor', '--project', str(self.repo),
+                                     '--device', 'unit', '--json').stdout)
+    check = next(c for c in report['checks'] if c['name'] == 'glibc')
+    self.assertEqual(check['status'], 'ok')
+    self.assertIn('Runtime', check['message'])
+
+  def test_bundle_glibc_accepts_llvm_objdump_symbols(self):
+    self.project()
+    detect = runpy.run_path(str(test_steamos.BIN.with_name(
+      'steamos_doctor.py')))['bundle_glibc']
+    symbol = '00000000      DF *UND* 00000000 (GLIBC_2.34) memcpy'
+    with mock.patch('shutil.which', side_effect=[None, '/usr/bin/llvm-objdump']), \
+         mock.patch('subprocess.run', return_value=mock.Mock(
+           returncode=0, stdout=symbol)):
+      needed, reason = detect(self.bundle, {'files': {'run': {}}})
+    self.assertEqual(needed[:2], (2, 34))
+    self.assertIsNone(reason)
 
   def test_doctor_all_devices_and_compatible_bundle(self):
     self.project()
