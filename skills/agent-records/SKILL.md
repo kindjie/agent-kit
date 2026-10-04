@@ -162,6 +162,13 @@ they apply. Update it as things change (`update`), and `close <entry>
 --what ...` once cleaned up. State you remove in the same session needs no
 entry.
 
+Entries are for state that will need cleanup. A change meant to stay (a
+committed tool, a deliberate config grant) belongs where it lives: the
+commit, or a comment beside the setting. When temporary state is adopted
+as permanent, close its entry with `--what` naming the owner's decision
+and where the record now lives, so the open list keeps meaning "still to
+clean up".
+
 To combine kinds, pass one quoted value with spaces around `+`, for example
 `--kind 'backup + scratch'`. The compact form `backup+scratch` is invalid.
 

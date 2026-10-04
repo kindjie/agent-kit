@@ -68,7 +68,10 @@ commands. Pass `--agent $(agent-id show)` on every call that writes.
   messages between sessions are fine.
 - When you create state that outlives your session (worktrees, stashes,
   kept branches, large scratch output, tool installs, services), record it
-  with `agent-changelog new` at once, and close it once cleaned up.
+  with `agent-changelog new` at once, and close it once cleaned up. A
+  change meant to stay is recorded where it lives (commit, or a comment
+  in the config); if it began as an entry, close that entry when the
+  owner adopts it, saying where the record now is.
 - Record serious mistakes (lost work, bad deletions, unintended
   publication) with `agent-changelog mistake new` at once.
 - Before cleaning anything up, read `agent-changelog list --open
