@@ -11,6 +11,7 @@ import ipaddress
 import json
 import os
 import re
+import signal
 from pathlib import Path
 import shlex
 import shutil
@@ -18,9 +19,11 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 OK, REFUSED, USAGE, UNREACHABLE = 0, 1, 2, 3
+BENCH_FAILED = 4
 DEFAULT_KEY = Path('~/.config/steamos-devkit/devkit_rsa')
 # Valve's SteamOS Devkit source and the commit whose device-side helpers
 # (client/devkit-utils) steamos installs; configurable under "devkit".
@@ -257,6 +260,22 @@ case $action in
 esac
 '''
 
+# Shared read-only power fields, also saved with benchmark results.
+POWER_SCRIPT = r'''
+for supply in "${STEAMOS_TEST_SYSFS:-/sys}"/class/power_supply/*; do
+  [ -r "$supply/type" ] || continue
+  case $(cat "$supply/type") in
+    Mains|USB)
+      if [ "$(cat "$supply/online" 2>/dev/null)" = 1 ]; then
+        echo external_power=yes
+      fi ;;
+    Battery)
+      echo "battery_percent=$(cat "$supply/capacity" 2>/dev/null)"
+      echo "battery_status=$(cat "$supply/status" 2>/dev/null)" ;;
+  esac
+done
+'''
+
 # Read-only device facts. Prints key=value lines.
 STATUS_SCRIPT = r'''
 if [ -r /etc/os-release ]; then
@@ -277,19 +296,7 @@ if [ -d "$HOME/devkit-utils" ]; then
     2>/dev/null || true)"
 else echo devkit_utils=no
 fi
-for supply in /sys/class/power_supply/*; do
-  [ -r "$supply/type" ] || continue
-  case $(cat "$supply/type") in
-    Mains|USB)
-      if [ "$(cat "$supply/online" 2>/dev/null)" = 1 ]; then
-        echo external_power=yes
-      fi ;;
-    Battery)
-      echo "battery_percent=$(cat "$supply/capacity" 2>/dev/null)"
-      echo "battery_status=$(cat "$supply/status" 2>/dev/null)" ;;
-  esac
-done
-'''
+''' + POWER_SCRIPT
 
 
 class Failure(Exception):
@@ -1317,6 +1324,419 @@ def frametimes_command(options):
   return OK
 
 
+# The ssh command is constant Python source. COMMAND and all its arguments
+# arrive as JSON over stdin, followed by heartbeats. EOF, missed heartbeats
+# or device HUP/INT/TERM cancel the command process group before restoration.
+# No governor change depends on the host reconnecting to undo it.
+BENCH_SCRIPT = 'power_script = ' + repr(POWER_SCRIPT) + '\n' + r'''
+import csv
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+import uuid
+
+print('connected=1', flush=True)
+request = json.loads(sys.stdin.readline())
+home = Path.home().resolve()
+sysfs = Path('/sys')
+# Private fixture override; never forwarded from the host or used by the
+# installed privileged helper. Tests must put their sysfs beneath HOME.
+if os.environ.get('STEAMOS_TEST_SYSFS'):
+  sysfs = Path(os.environ['STEAMOS_TEST_SYSFS']).resolve()
+  if home not in sysfs.parents or sysfs.name != '.steamos-test-sysfs':
+    sys.exit('invalid test sysfs: expected HOME/.steamos-test-sysfs')
+root = home / '.agent-kit-steamos-bench'
+root.mkdir(mode=0o700, exist_ok=True)
+directory = root / ('run-' + time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+                    + '-' + uuid.uuid4().hex)
+directory.mkdir(mode=0o700)
+(directory / 'stdout.log').touch()
+(directory / 'stderr.log').touch()
+print(json.dumps({'remote_directory': str(directory)}), flush=True)
+helper = '/usr/local/sbin/steamos-governor'
+cancel = threading.Event()
+interruption = 0
+last_heartbeat = time.monotonic()
+child = None
+modified = False
+before = during = after = {}
+power_before = power_after = {}
+status = None
+error = ''
+started = time.time()
+ended = None
+perf = bool(request['perf_stat'] and shutil.which('perf'))
+
+def interrupted(signum, frame):
+  global interruption
+  interruption = signum
+  cancel.set()
+
+for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+  signal.signal(signum, interrupted)
+
+def heartbeats():
+  global last_heartbeat
+  for line in sys.stdin:
+    last_heartbeat = time.monotonic()
+  cancel.set()
+
+threading.Thread(target=heartbeats, daemon=True).start()
+
+def save(name, value):
+  (directory / name).write_text(json.dumps(value, indent=2) + '\n')
+
+def governors():
+  result = {}
+  for path in sorted(sysfs.glob(
+      'devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor')):
+    cpu = path.parent.parent.name
+    value = path.read_text().strip()
+    if not re.fullmatch(r'cpu[0-9]+', cpu) or not re.fullmatch(
+        r'[A-Za-z0-9_-]+', value):
+      raise RuntimeError('cannot read valid per-CPU governors')
+    result[cpu] = value
+  return result
+
+def power():
+  proc = subprocess.run(['sh', '-c', power_script],
+                        capture_output=True, text=True)
+  fields = dict(line.split('=', 1) for line in proc.stdout.splitlines()
+                if '=' in line)
+  percent = fields.get('battery_percent', '')
+  return {'external_power': fields.get('external_power') == 'yes',
+          'battery_percent': int(percent) if percent.isdigit() else None,
+          'battery_status': fields.get('battery_status', '')}
+
+def set_governor(cpu, value):
+  command = ['sudo', '-n', helper, cpu, value]
+  try:
+    proc = subprocess.run(command, capture_output=True, text=True,
+                          timeout=10)
+    if proc.returncode == 0:
+      return
+    detail = proc.stderr.strip()
+  except (OSError, subprocess.TimeoutExpired) as exc:
+    detail = str(exc)
+  raise RuntimeError('sudo -n refused or helper failed: ' +
+                     ' '.join(command) + '; ' + detail +
+                     '. See bin/steamos.md, optional governor sudoers '
+                     'helper. Pinning requires permission for each CPU '
+                     'and its saved governor as well as performance.')
+
+def stop_command():
+  if child is None:
+    return
+  # The group belongs to the Popen we just created, never a saved PID.
+  try:
+    os.killpg(child.pid, signal.SIGTERM)
+  except ProcessLookupError:
+    return
+  try:
+    child.wait(timeout=3)
+  except subprocess.TimeoutExpired:
+    pass
+  # Kill surviving descendants too, even if the immediate child exited.
+  try:
+    os.killpg(child.pid, signal.SIGKILL)
+  except ProcessLookupError:
+    pass
+  child.wait()
+
+thermal = None
+next_sample = 0
+
+def sample():
+  global next_sample
+  now = time.monotonic()
+  if thermal is None or now < next_sample:
+    return
+  next_sample = now + request['thermals']
+  paths = sorted(set(sysfs.glob('class/hwmon/hwmon*/temp*_input')) |
+                 set(sysfs.glob('class/thermal/thermal_zone*/temp')))
+  for path in paths:
+    try:
+      temperature = int(path.read_text().strip())
+    except (OSError, ValueError):
+      continue
+    writer.writerow([time.time(), str(path.relative_to(sysfs)), temperature])
+  thermal.flush()
+
+try:
+  # Serialize runs even when one holder invokes bench twice or its lease
+  # expires mid-run. Unlinking this stable file would defeat flock.
+  bench_lock = (root / 'run.lock').open('a')
+  try:
+    fcntl.flock(bench_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+  except BlockingIOError:
+    raise RuntimeError('another bench run is active; wait for its cleanup')
+  before = governors()
+  save('governors-before.json', before)
+  power_before = power()
+  save('power-before.json', power_before)
+  if request['require_power'] and not power_before['external_power']:
+    raise RuntimeError('--require-power needs confirmed external power')
+  if request['cpus'] and not shutil.which('taskset'):
+    raise RuntimeError('--cpus needs taskset on the device')
+  if request['pin_governor']:
+    if not before:
+      raise RuntimeError('cannot read CPU governors; refusing to pin')
+    # Verify noninteractive permission for restoration before any pinning.
+    # Writing the original values also checks helper availability per CPU.
+    for cpu, value in before.items():
+      set_governor(cpu, value)
+    modified = True
+    for cpu in before:
+      if cancel.is_set():
+        raise RuntimeError('interrupted before benchmark start')
+      set_governor(cpu, 'performance')
+  during = governors()
+  save('governors-during.json', during)
+  if request['pin_governor'] and (
+      set(before) != set(during) or
+      any(value != 'performance' for value in during.values())):
+    raise RuntimeError('not every CPU governor was pinned to performance')
+  argv = request['command']
+  if request['cpus']:
+    argv = ['taskset', '--cpu-list', request['cpus'], *argv]
+  if perf:
+    argv = ['perf', 'stat', '-x,', '-o', str(directory / 'perf-stat.csv'),
+            '--', *argv]
+  if request['thermals'] is not None:
+    thermal = (directory / 'thermals.csv').open('w', newline='')
+    writer = csv.writer(thermal)
+    writer.writerow(['device_time', 'sensor', 'millidegrees_celsius'])
+  with (directory / 'stdout.log').open('wb') as stdout, \
+       (directory / 'stderr.log').open('wb') as stderr:
+    if cancel.is_set():
+      raise RuntimeError('connection closed before benchmark start')
+    started = time.time()
+    sample()
+    try:
+      child = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+                               stdout=stdout, stderr=stderr,
+                               start_new_session=True)
+    except OSError as exc:
+      stderr.write((str(exc) + '\n').encode())
+      status = 127 if isinstance(exc, FileNotFoundError) else 126
+    while child is not None and child.poll() is None:
+      if cancel.is_set() or time.monotonic() - last_heartbeat > 5:
+        stop_command()
+        status = 128 + (interruption or signal.SIGHUP)
+        break
+      sample()
+      time.sleep(.02)
+    if status is None:
+      status = child.returncode
+      if status < 0:
+        status = 128 - status
+    ended = time.time()
+except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+  error = str(exc)
+finally:
+  # Ignore further signals only during bounded cleanup. Restoration tries
+  # every CPU even when an earlier write failed; its read-back is evidence.
+  for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(signum, signal.SIG_IGN)
+  stop_command()
+  if modified:
+    for cpu, value in before.items():
+      try:
+        set_governor(cpu, value)
+      except RuntimeError as exc:
+        error += ('; ' if error else '') + 'failed to restore: ' + str(exc)
+  try:
+    after = governors()
+    power_after = power()
+  except (OSError, RuntimeError) as exc:
+    error += ('; ' if error else '') + 'after snapshot failed: ' + str(exc)
+  restored = not modified or before == after
+  if not restored and 'restore' not in error:
+    error += ('; ' if error else '') + 'governor restore read-back differs'
+  save('governors-after.json', after)
+  save('power-after.json', power_after)
+  if thermal is not None:
+    thermal.close()
+  ended = time.time()
+  result = {
+    'remote_directory': str(directory), 'command': request['command'],
+    'exit_status': status, 'start_device_time': started,
+    'end_device_time': ended, 'restoration_ok': restored,
+    'governors': {'before': before, 'during': during, 'after': after},
+    'power': {'before': power_before, 'after': power_after},
+    'perf_stat': perf, 'thermals': request['thermals'], 'error': error}
+  save('summary.json', result)
+  result['files'] = sorted(p.name for p in directory.iterdir() if p.is_file())
+  print(json.dumps(result), flush=True)
+'''
+
+
+def cpu_list(value):
+  if not re.fullmatch(r'[0-9]+(?:-[0-9]+)?(?:,[0-9]+(?:-[0-9]+)?)*', value):
+    raise Failure(USAGE, '--cpus needs a CPU list such as 0,2-3')
+  ranges = []
+  for part in value.split(','):
+    try:
+      ends = [int(n) for n in part.split('-')]
+    except ValueError:
+      raise Failure(USAGE, '--cpus has an invalid CPU number')
+    low, high = ends[0], ends[-1]
+    if low > high or any(low <= b and high >= a for a, b in ranges):
+      raise Failure(USAGE, '--cpus has reversed or overlapping CPU ranges')
+    ranges.append((low, high))
+  return value
+
+
+def bench_ssh(entry, request):
+  """One live stdin transport; never embed COMMAND in a shell command."""
+  remote = 'python3 -c ' + shlex.quote(BENCH_SCRIPT)
+  options = ssh_options(entry) + ['-o', 'ServerAliveInterval=2',
+                                '-o', 'ServerAliveCountMax=3']
+  errors = []
+  for address in targets(entry):
+    proc = subprocess.Popen(
+      ['ssh', *options, f'{entry["user"]}@{address}', remote],
+      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+      text=True)
+    stopped = threading.Event()
+    output, diagnostics = [], []
+
+    def send():
+      try:
+        proc.stdin.write(json.dumps(request) + '\n')
+        proc.stdin.flush()
+        while not stopped.wait(.5):
+          proc.stdin.write('heartbeat\n')
+          proc.stdin.flush()
+      except (BrokenPipeError, OSError):
+        pass
+      finally:
+        try:
+          proc.stdin.close()
+        except OSError:
+          pass
+
+    def read(stream, target):
+      target.append(stream.read())
+      stream.close()
+
+    threads = [threading.Thread(target=send),
+               threading.Thread(target=read, args=(proc.stdout, output)),
+               threading.Thread(target=read, args=(proc.stderr, diagnostics))]
+    previous = {}
+    try:
+      # Host interruptions close stdin; the device owns cancellation and
+      # restoration. Keep reading until the final receipt/transport exit.
+      for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+        previous[signum] = signal.signal(signum, lambda *_: stopped.set())
+      for thread in threads:
+        thread.start()
+      proc.wait()
+    finally:
+      stopped.set()
+      for thread in threads:
+        if thread.ident is not None:
+          thread.join()
+      for signum, handler in previous.items():
+        signal.signal(signum, handler)
+    stdout, stderr = ''.join(output), ''.join(diagnostics)
+    if proc.returncode != 255:
+      return subprocess.CompletedProcess(proc.args, proc.returncode,
+                                         stdout, stderr)
+    if 'connected=1' in stdout.splitlines():
+      location = ''
+      for line in stdout.splitlines()[1:]:
+        try:
+          location = json.loads(line).get('remote_directory', location)
+        except (ValueError, AttributeError):
+          pass
+      where = location or 'the device run directory'
+      raise Failure(UNREACHABLE, 'connection dropped during bench; device '
+                    f'cleanup attempts governor restoration. Inspect {where} '
+                    'and `steamos lease show` before retrying')
+    errors.append(f'{address}: {stderr.strip()}')
+  raise Failure(UNREACHABLE, 'cannot reach device for bench:\n  ' +
+                '\n  '.join(errors))
+
+
+def bench_command(options):
+  command = options.argv
+  if not command or command[0] != '--' or len(command) < 2:
+    raise Failure(USAGE, 'bench run needs -- COMMAND [ARGS...]')
+  command = command[1:]
+  if not command[0] or any('\0' in arg for arg in command):
+    raise Failure(USAGE, 'COMMAND must be nonempty and argv must not have NUL')
+  if options.cpus is not None:
+    cpu_list(options.cpus)
+  if options.thermals is not None and not 0 < options.thermals < float('inf'):
+    raise Failure(USAGE, '--thermals must be a finite interval above zero')
+  config = load_config()
+  name, entry = device(config, options.device)
+  output = output_path(options.out or (
+    './steamos-bench-' + name + '-' +
+    time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())))
+  if output.exists():
+    raise Failure(USAGE, '--out must name a new run directory')
+  if not output.parent.is_dir():
+    raise Failure(USAGE, '--out needs an existing parent directory')
+  if not shutil.which('scp'):
+    raise Failure(USAGE, 'scp is needed to download benchmark results')
+  require_lease(config, name, entry, 'bench run')
+  request = {'command': command, 'pin_governor': options.pin_governor,
+             'require_power': options.require_power, 'cpus': options.cpus,
+             'perf_stat': options.perf_stat, 'thermals': options.thermals}
+  proc = bench_ssh(entry, request)
+  if proc.returncode != 0:
+    raise Failure(UNREACHABLE, 'device benchmark supervisor failed: ' +
+                  proc.stderr.strip())
+  try:
+    reply = json.loads(proc.stdout.strip().splitlines()[-1])
+  except (ValueError, IndexError):
+    raise Failure(UNREACHABLE, 'bench returned no final summary')
+  if not isinstance(reply, dict):
+    raise Failure(UNREACHABLE, 'bench returned an invalid summary')
+  remote = reply.get('remote_directory', '')
+  files = reply.pop('files', [])
+  allowed = {'summary.json', 'stdout.log', 'stderr.log', 'perf-stat.csv',
+             'thermals.csv', 'governors-before.json', 'governors-during.json',
+             'governors-after.json', 'power-before.json', 'power-after.json'}
+  if not re.fullmatch(
+      r'/[A-Za-z0-9._/-]+/\.agent-kit-steamos-bench/run-[A-Za-z0-9-]+',
+      remote) or '..' in Path(remote).parts or not isinstance(files, list) \
+      or any(not isinstance(f, str) or f not in allowed for f in files) \
+      or 'summary.json' not in files:
+    raise Failure(UNREACHABLE, 'bench returned unsafe or incomplete run paths')
+  try:
+    output.mkdir()
+  except OSError as error:
+    raise Failure(USAGE, f'cannot create --out directory: {error}')
+  for filename in files:
+    pull_file(entry, remote + '/' + filename, output / filename)
+  reply.update(device=name, output=str(output))
+  if reply.get('error'):
+    print('steamos: ' + reply['error'], file=sys.stderr)
+  if options.perf_stat and not reply.get('perf_stat'):
+    print('steamos: perf is unavailable; ran without perf stat', file=sys.stderr)
+  print(json.dumps(reply, indent=2) if options.json else
+        f'{name}: benchmark exit={reply.get("exit_status")}; '
+        f'governors restored={reply.get("restoration_ok")}; '
+        f'results: {output}')
+  if reply.get('exit_status') not in (None, 0):
+    return BENCH_FAILED
+  if reply.get('error') or not reply.get('restoration_ok') or \
+      reply.get('exit_status') is None:
+    return REFUSED
+  return OK
+
+
 def main(argv=None):
   parser = argparse.ArgumentParser(prog='steamos', description=__doc__)
   parser.add_argument('--device', help='configured device name')
@@ -1364,6 +1784,18 @@ def main(argv=None):
   logs.add_argument('--lines', type=int, default=200, help='last N lines')
   capture = commands.add_parser('capture', help='capture a gamescope PNG')
   capture.add_argument('--out', help='local PNG file')
+  bench = commands.add_parser('bench', help='run a device benchmark')
+  bench_actions = bench.add_subparsers(dest='action', required=True)
+  run = bench_actions.add_parser('run')
+  run.add_argument('--pin-governor', action='store_true')
+  run.add_argument('--require-power', action='store_true')
+  run.add_argument('--cpus', help='taskset CPU list, e.g. 0,2-3')
+  run.add_argument('--perf-stat', action='store_true')
+  run.add_argument('--thermals', type=float,
+                   help='sampling interval in seconds')
+  run.add_argument('--out', help='new local run directory')
+  run.add_argument('argv', nargs=argparse.REMAINDER)
+  common_options(run)
   frametimes = commands.add_parser('frametimes', help='MangoHud CSV logging')
   frame_actions = frametimes.add_subparsers(dest='action', required=True)
   for action in ('start', 'stop', 'pull'):
@@ -1374,7 +1806,7 @@ def main(argv=None):
                        help='allow a session without its summary CSV')
     common_options(sub)
   for sub in (status, lease, devkit, install, title, wake, logs, capture,
-              frametimes):
+              frametimes, bench):
     common_options(sub)
   options = parser.parse_args(argv)
   options.hours = getattr(options, 'hours', None)
@@ -1393,6 +1825,8 @@ def main(argv=None):
       return capture_command(options)
     if options.command == 'frametimes':
       return frametimes_command(options)
+    if options.command == 'bench':
+      return bench_command(options)
     return lease_command(options)
   except Failure as failure:
     print(f'steamos: {failure}', file=sys.stderr)

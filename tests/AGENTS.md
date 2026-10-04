@@ -4,6 +4,7 @@
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_steamos
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_steamos_bench
 ```
 
 Fake ssh runs remote commands locally with a separate HOME per host.
@@ -36,6 +37,20 @@ unsafe shell-bound values before transfer or deletion.
 Wake tests stub sockets and ssh to check packet bytes, broadcast targeting,
 three packets spaced 100 ms apart, validation and unreachable results
 without sending packets. Never use real devices or the network for this suite.
+
+Benchmark tests use `STEAMOS_TEST_SYSFS` only inside the fake device HOME,
+in `.steamos-test-sysfs`; the host CLI never forwards this override and the
+documented privileged helper never accepts it. Fake sudo enforces `-n` and
+the exact governor helper path; fake taskset and perf record their argv.
+Tests compare distinct per-CPU governors after success, command failure,
+partial pin failure, all three device and host signals, and a transport
+drop during COMMAND. They also cover sudo and power refusals, restoration
+failure diagnostics, lease/expiry checks, validation before ssh, literal argv
+absent from the shell transport, exec failure status mapping, thermal/perf
+CSVs and retained device results copied through fake scp. These establish
+local lifecycle behavior, not real-device sudoers or performance acceptance.
+Overlapping-run coverage verifies refusal without governor interleaving and
+automatic lock release after interruption.
 
 ## Read-only installation doctor
 

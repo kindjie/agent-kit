@@ -114,6 +114,44 @@ Logs, capture and frametimes do not require pinned Valve helpers. Downloads
 use the configured ssh key/options and address fallback; scp is needed
 locally. Start and stop logging before pulling a completed session.
 
+## Benchmarks
+
+With your active lease, use `steamos bench run [--pin-governor]
+[--require-power] [--cpus LIST] [--perf-stat] [--thermals SECONDS_INTERVAL]
+[--out DIR] -- COMMAND [ARGS...]`. COMMAND runs on the device as literal
+argv, initially in the ssh user's home; provide a wrapper for another cwd
+or environment. Benchmark stdin is closed. Paths are the caller's
+responsibility. The lease already inhibits sleep.
+Overlapping bench runs are refused until the first supervisor finishes
+cleanup. Its file lock releases automatically; never delete `run.lock`
+to bypass an active run.
+
+- `--require-power` requires confirmed external power in the status fields.
+- `--pin-governor` uses only `sudo -n /usr/local/sbin/steamos-governor CPU
+  GOVERNOR`. If denied, report the exact refused command and the optional
+  root-owned helper/sudoers example in `bin/steamos.md`. Never install it
+  automatically, prompt for a password or silently drop requested pinning.
+  Without the flag, bench needs no sudo. Every CPU's original governor is
+  saved, restored and checked, including after command failure, device
+  HUP/INT/TERM, host interruption or transport loss.
+- `--cpus` uses taskset; `--perf-stat` uses CSV perf stat when available
+  (otherwise warns and records the omission); `--thermals N` samples hwmon
+  and thermal-zone temperatures at a positive finite interval.
+
+Results remain under `~/.agent-kit-steamos-bench/run-<utc>-<unique-id>/`
+and are copied to a new local `--out` directory, default
+`./steamos-bench-<device>-<utc>`. JSON reports the original argv/status,
+device times, governor snapshots, power, collectors, restoration and paths;
+stdout/stderr and requested CSVs are retained. Inspect the workload and
+thermal trace before claiming performance acceptance.
+
+Exit 4 means COMMAND failed, with its original status in `summary.json`;
+exit 1 means setup or restoration failed. After exit 3 from a disconnect,
+device heartbeat cleanup stops the command group and restores governors;
+inspect the named run's summary and current governors before retrying or
+releasing the lease. SIGKILL, power loss or device failure cannot execute
+cleanup. Do not infer restoration from the host exit alone.
+
 ## When the lease is held
 
 - Held by someone else and active: wait, or tell the user who holds it

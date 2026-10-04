@@ -21,13 +21,16 @@ steamos logs [Demo1] [--since EPOCH] [--until EPOCH] [--lines N] [--json]
 steamos capture [--out FILE]         # gamescope screenshot; Game Mode
 steamos frametimes start | stop      # change MangoHud logging; lease needed
 steamos frametimes pull [--out DIR] [--partial]  # newest session; no lease
+steamos bench run [--pin-governor] [--require-power] [--cpus LIST] \
+  [--perf-stat] [--thermals SECONDS_INTERVAL] [--out DIR] -- COMMAND [ARGS...]
 steamos wake [--wait N]              # broadcast, then wait for ssh
 ```
 
 All commands accept `--device NAME` and `--json`, before the command or
 after its action. Exit codes: 0 success; 1 refused (including helper or
 Steam re-sync failure); 2 usage or configuration; 3 unreachable or an
-unusable device reply. A lost connection after a command starts has an
+unusable device reply; 4 benchmark command failed (including interruption).
+A lost connection after a command starts has an
 unknown effect; inspect the device before retrying.
 
 ## Setup
@@ -305,6 +308,120 @@ steamos logs Demo1 --lines 100 --json
 steamos capture --out ./capture.png
 steamos lease release
 ```
+
+## Benchmarks
+
+`bench run` requires your active device lease, using the same check as other
+mutating commands. The lease already inhibits sleep; bench adds no inhibitor.
+No Valve helpers are required. COMMAND runs on the device with stdin closed;
+the caller supplies its executable, arguments and working-directory strategy.
+The initial cwd is the ssh user's home. Paths and `~` in arguments are literal,
+and COMMAND is sent as JSON over stdin and executed as argv, never spliced into
+the remote shell command. Use an explicit executable wrapper if you need a
+different cwd or environment.
+Overlapping bench runs in the same device account are refused by a file lock,
+released automatically when the device supervisor exits. The stable
+`~/.agent-kit-steamos-bench/run.lock` file is retained; do not unlink it to
+bypass an active run. This also prevents interleaved governor restoration
+when a lease expires during a run.
+
+- `--require-power` refuses unless the existing status power fields confirm
+  an online `Mains` or `USB` supply. Unknown power also refuses.
+- `--pin-governor` snapshots each CPU's governor and pins all to `performance`.
+  It verifies `sudo -n` access to restore each saved value before pinning.
+  Every cleanup path attempts every CPU's restoration and compares read-back,
+  including partial pin failures, command failures, and device SIGINT,
+  SIGTERM and SIGHUP. No password prompt, password storage or automatic sudoers
+  installation is used. Without the flag, no sudo command runs.
+- `--cpus LIST` wraps COMMAND with `taskset --cpu-list LIST`. Lists like `0,2-3`
+  are allowed; malformed, reversed or overlapping ranges refuse before ssh.
+  Offline or unavailable CPUs are rejected by taskset, with benchmark exit 4.
+- `--perf-stat` wraps the command with `perf stat -x, -o perf-stat.csv --`.
+  If perf is absent, the benchmark runs without it, with a warning and
+  `perf_stat: false`. Perf permission failures return 4 and retain stderr.
+- `--thermals N` samples readable hwmon temperature inputs and thermal zones
+  every positive, finite N seconds, starting before COMMAND. `thermals.csv`
+  contains device epoch, sensor path and temperature in millidegrees Celsius.
+  A header-only CSV means no readable sensors, not a measured temperature.
+
+The device supervisor receives a host heartbeat every half-second. EOF,
+device signals or five seconds without a heartbeat stop COMMAND's process
+group (TERM, then KILL after a bounded wait) before restoring governors.
+Host SIGINT/SIGTERM/SIGHUP close the transport input and wait for the receipt.
+After a dropped connection the device cleans up independently; the CLI returns
+3, names the device run directory when available, and never reruns COMMAND at
+a fallback address. Inspect the saved summary and current governors before
+retrying or releasing the lease. SIGKILL of the supervisor, power loss and
+device failure cannot run cleanup; no software trap can guarantee restoration
+in those cases.
+
+Runs remain in `~/.agent-kit-steamos-bench/run-<utc>-<unique-id>/` on the device.
+The tool copies run files with scp to `--out`, defaulting to
+`./steamos-bench-<device>-<utc>`. The destination must be new and its parent
+must exist; existing results are never overwritten. Device paths must be
+absolute paths containing letters, digits, `.`, `_`, `-` and `/` for the
+shared download mechanism. Device results are retained after download or a
+transfer failure; inspect them before deleting anything.
+
+`summary.json` records the exact argv, COMMAND exit status (null if refused
+before launch), start/end device epochs, per-CPU governors before/during/after,
+power before/after, enabled collectors and restoration status. Separate
+governor and power JSON files, `stdout.log`, `stderr.log` and requested CSVs
+are copied too. `--json` prints that summary plus device and local output
+path. Interrupted commands use `128 + signal`; exec failures use 126/127.
+The CLI maps nonzero COMMAND status to **4**, preserving the original status
+in the summary, even if restoration also failed (inspect `restoration_ok`).
+Setup or restoration errors return 1 when COMMAND did not run or succeeded.
+A failed transfer returns 3 and can leave a partial local run.
+These files establish run controls and outputs, not hardware performance
+acceptance; inspect the workload, thermals and quiet-device conditions.
+
+### Optional governor helper and sudoers rule
+
+Pinning calls exactly:
+
+```sh
+sudo -n /usr/local/sbin/steamos-governor cpu0 performance
+sudo -n /usr/local/sbin/steamos-governor cpu0 schedutil
+```
+
+CPU names and saved governors vary by device. A refusal names the actual
+command needing permission. The owner may choose to install this small helper
+as `/usr/local/sbin/steamos-governor`, owned by root with mode 0755, with all
+parent directories root-owned and not writable by the benchmark user. Its
+fixed interpreter uses isolated mode; it ignores all environment overrides
+and only writes the named CPU's sysfs `scaling_governor` file.
+
+```python
+#!/usr/bin/python3 -I
+import re
+import sys
+from pathlib import Path
+
+if len(sys.argv) != 3:
+  sys.exit('usage: steamos-governor CPU GOVERNOR')
+cpu, governor = sys.argv[1:]
+if not re.fullmatch(r'cpu[0-9]+', cpu) or not re.fullmatch(
+    r'[A-Za-z0-9_-]+', governor):
+  sys.exit('invalid CPU or governor')
+root = Path('/sys/devices/system/cpu') / cpu / 'cpufreq'
+available = (root / 'scaling_available_governors').read_text().split()
+if governor not in available:
+  sys.exit('governor unavailable on this CPU')
+(root / 'scaling_governor').write_text(governor + '\n')
+```
+
+An OPTIONAL sudoers entry, edited and checked by the owner with `visudo`, is:
+
+```sudoers
+# Replace benchuser with the device user. The root-owned helper validates
+# exactly two arguments and permits only scaling_governor writes.
+benchuser ALL=(root) NOPASSWD: /usr/local/sbin/steamos-governor cpu[0-9]* *
+```
+
+Do not grant `sudo sh`, unrestricted `tee`, or a user-writable helper. SteamOS
+updates may reset this optional system configuration. No rule is needed to
+run unpinned benchmarks.
 
 ## Wake
 
