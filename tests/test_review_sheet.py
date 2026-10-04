@@ -3,12 +3,15 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
 
 
 TOOL = Path(__file__).resolve().parents[1] / 'bin' / 'review-sheet'
+PAGE_CORE = TOOL.parent / 'review_sheet_page.js'
+PAGE_CSS = TOOL.parent / 'review_sheet_page.css'
 
 
 class ReviewSheetTest(unittest.TestCase):
@@ -32,7 +35,8 @@ class ReviewSheetTest(unittest.TestCase):
                   'pick': {'kind': 'best', 'required': True},
                   'items': [{'id': 'one', 'fields': {'label': 'One'},
                              'evidence': {'revision': 1},
-                             'media': [{'kind': 'text', 'src': 'sample.txt'}]}]}],
+                             'media': [{'kind': 'text',
+                                        'src': 'sample.txt'}]}]}],
     }
     self.write_desc()
 
@@ -52,7 +56,9 @@ class ReviewSheetTest(unittest.TestCase):
   def test_build_freezes_hashes_and_digests(self):
     resolved = self.build()
     media = resolved['description']['groups'][0]['items'][0]['media'][0]
-    self.assertEqual(media['sha256'], hashlib.sha256(b'sample media').hexdigest())
+    self.assertEqual(media['sha256'],
+                     hashlib.sha256(b'sample media').hexdigest())
+    self.assertEqual(media['mime'], 'text/plain')
     self.assertEqual(resolved['scopes']['item:one:verdict']['digest'].__len__(),
                      64)
     self.assertIn('Content-Security-Policy', self.page.read_text())
@@ -124,6 +130,14 @@ class ReviewSheetTest(unittest.TestCase):
                                      code=2).stdout)
     self.assertEqual(result['answers'][key]['state'], 'invalid')
 
+  def test_embedded_media_obeys_byte_limit(self):
+    self.description['decisions']['verdict']['authority'] = True
+    del self.description['decisions']['verdict']['keys']
+    self.write_desc()
+    self.run_tool('build', self.desc, '--output', self.page,
+                  '--max-embedded-file', '4', code=2)
+    self.assertFalse(self.page.exists())
+
   def test_scope_changes_and_merge_semantics(self):
     resolved = self.build()
     key = 'item:one:verdict'
@@ -144,7 +158,12 @@ class ReviewSheetTest(unittest.TestCase):
     result = json.loads(self.run_tool('import', self.packet, second,
                                      '--description', self.desc,
                                      code=3).stdout)
-    self.assertEqual(result['conflicts'], [key])
+    self.assertEqual(result['conflicts'], [{
+      'scope': key,
+      'entries': [
+        {'state': 'answered', 'reviewer': None, 'value': 'keep'},
+        {'state': 'answered', 'reviewer': None, 'value': 'revise'}]}])
+    self.assertEqual(result['answers'][key], {'state': 'conflict'})
     for change in ('evidence', 'fields', 'question', 'layout'):
       with self.subTest(change=change):
         if change == 'evidence':
@@ -186,6 +205,129 @@ class ReviewSheetTest(unittest.TestCase):
     self.assertEqual(result['invalid_entries'], ['item:one:unknown'])
     self.run_tool('import', self.packet, '--description', self.desc,
                   '--max-results', '2', code=2)
+
+  def test_orphan_alone_exits_invalid(self):
+    self.build()
+    packet = {'schema_version': 1, 'review': 'sample-1',
+              'resolved_sha256': '0' * 64,
+              'answers': {'item:gone:verdict': {'state': 'answered',
+                                                'value': 'keep'}}}
+    self.packet.write_text(json.dumps(packet))
+    result = json.loads(self.run_tool('import', self.packet,
+                                     '--description', self.desc,
+                                     code=2).stdout)
+    self.assertEqual(result['orphaned'], ['item:gone:verdict'])
+
+  def test_import_preserves_evidence_and_media_hashes(self):
+    self.description['decisions']['verdict']['authority'] = True
+    del self.description['decisions']['verdict']['keys']
+    self.write_desc()
+    resolved = self.build()
+    key = 'item:one:verdict'
+    packet = {'schema_version': 1, 'review': 'sample-1',
+              'resolved_sha256': hashlib.sha256(
+                (self.root / 'review.resolved.json').read_bytes()
+              ).hexdigest(),
+              'answers': {key: {'state': 'answered', 'value': 'keep',
+                               'digest': resolved['scopes'][key]['digest'],
+                               'evidence': 'verified',
+                               'media_hashes': resolved['scopes'][key]
+                               ['media']}}}
+    self.packet.write_text(json.dumps(packet))
+    result = json.loads(self.run_tool('import', self.packet,
+                                     '--description', self.desc).stdout)
+    self.assertEqual(result['answers'][key]['evidence'], 'verified')
+    self.assertEqual(result['answers'][key]['media_hashes'],
+                     resolved['scopes'][key]['media'])
+
+  def test_media_options_and_page_core_bind_scope_digest(self):
+    first = self.build()['scopes']['item:one:verdict']['digest']
+    media = self.description['groups'][0]['items'][0]['media'][0]
+    media['fps'] = 24
+    self.write_desc()
+    second = self.build()['scopes']['item:one:verdict']['digest']
+    self.assertNotEqual(first, second)
+    copied = self.root / 'bin'
+    copied.mkdir()
+    for source in (TOOL, PAGE_CORE, PAGE_CSS):
+      shutil.copy2(source, copied / source.name)
+    shutil.copytree(TOOL.parent / 'review_sheet_components',
+                    copied / 'review_sheet_components')
+    previous = second
+    for name, addition in [('review_sheet_page.js', b'\n// fixture\n'),
+                           ('review_sheet_page.css', b'\n/* fixture */\n')]:
+      page_core = copied / name
+      page_core.write_bytes(page_core.read_bytes() + addition)
+      output = self.root / 'copied.html'
+      proc = subprocess.run([str(copied / 'review-sheet'), 'build',
+                             str(self.desc), '--output', str(output)],
+                            text=True, capture_output=True)
+      self.assertEqual(proc.returncode, 0, proc.stderr)
+      current = json.loads((self.root / 'copied.resolved.json')
+                           .read_text())['scopes']['item:one:verdict']['digest']
+      self.assertNotEqual(previous, current)
+      previous = current
+
+  def test_stale_copy_does_not_conflict_with_current_answer(self):
+    resolved = self.build()
+    key = 'item:one:verdict'
+    entry = {'state': 'answered', 'value': 'keep',
+             'digest': resolved['scopes'][key]['digest']}
+    packet = {'schema_version': 1, 'review': 'sample-1',
+              'resolved_sha256': '0' * 64, 'answers': {key: entry}}
+    second = self.root / 'second.json'
+    self.packet.write_text(json.dumps(packet))
+    packet['answers'][key] = {**entry, 'digest': '0' * 64}
+    second.write_text(json.dumps(packet))
+    result = json.loads(self.run_tool('import', self.packet, second,
+                                     '--description', self.desc,
+                                     code=3).stdout)
+    self.assertEqual(result['conflicts'], [])
+    self.assertEqual(result['answers'][key]['state'], 'stale')
+
+  def test_conflict_wins_when_a_third_copy_is_stale(self):
+    resolved = self.build()
+    key = 'item:one:verdict'
+    packet = {'schema_version': 1, 'review': 'sample-1',
+              'resolved_sha256': '0' * 64,
+              'answers': {key: {'state': 'answered', 'value': 'keep',
+                               'digest': resolved['scopes'][key]['digest']}}}
+    files = [self.root / f'result-{i}.json' for i in range(3)]
+    files[0].write_text(json.dumps(packet))
+    packet['answers'][key]['value'] = 'revise'
+    files[1].write_text(json.dumps(packet))
+    packet['answers'][key]['digest'] = '0' * 64
+    files[2].write_text(json.dumps(packet))
+    result = json.loads(self.run_tool('import', *files,
+                                     '--description', self.desc,
+                                     code=3).stdout)
+    self.assertEqual(result['answers'][key], {'state': 'conflict'})
+    self.assertEqual(result['conflicts'][0]['entries'][:2], [
+      {'state': 'answered', 'reviewer': None, 'value': 'keep'},
+      {'state': 'answered', 'reviewer': None, 'value': 'revise'}])
+
+  def test_different_reviewers_do_not_merge_answers(self):
+    resolved = self.build()
+    key = 'item:one:verdict'
+    packet = {'schema_version': 1, 'review': 'sample-1',
+              'resolved_sha256': '0' * 64, 'reviewer': 'Reviewer A',
+              'answers': {key: {'state': 'answered', 'value': 'keep',
+                               'digest': resolved['scopes'][key]['digest']}}}
+    second = self.root / 'second.json'
+    self.packet.write_text(json.dumps(packet))
+    packet['reviewer'] = 'Reviewer B'
+    second.write_text(json.dumps(packet))
+    result = json.loads(self.run_tool('import', self.packet, second,
+                                     '--description', self.desc,
+                                     code=3).stdout)
+    self.assertEqual(result['answers'][key], {'state': 'conflict'})
+    self.assertEqual(result['conflicts'][0], {
+      'scope': 'reviewer', 'entries': [
+        {'reviewer': 'Reviewer A'}, {'reviewer': 'Reviewer B'}]})
+    self.assertEqual(result['conflicts'][1]['scope'], key)
+    self.assertEqual([entry['reviewer'] for entry in
+                      result['conflicts'][1]['entries']],
+                     ['Reviewer A', 'Reviewer B'])
 
   def test_symlink_escape_and_schema(self):
     outside = self.root.parent / 'outside-sample.txt'
@@ -265,8 +407,42 @@ class ReviewSheetTest(unittest.TestCase):
                   '--resolved', frozen)
     packet['resolved_sha256'] = '0' * 64
     self.packet.write_text(json.dumps(packet))
+    result = json.loads(self.run_tool('import', self.packet,
+                                     '--description', self.desc,
+                                     '--resolved', frozen, code=3).stdout)
+    self.assertEqual(result['answers'][key]['state'], 'stale')
+    packet['answers'] = {}
+    self.packet.write_text(json.dumps(packet))
     self.run_tool('import', self.packet, '--description', self.desc,
-                  '--resolved', frozen, code=2)
+                  '--resolved', frozen, code=3)
+
+  def test_distinct_pages_have_distinct_resolved_files(self):
+    self.build()
+    other = self.root / 'second.html'
+    self.run_tool('build', self.desc, '--output', other)
+    self.assertTrue((self.root / 'review.resolved.json').is_file())
+    self.assertTrue((self.root / 'second.resolved.json').is_file())
+
+  def test_missing_git_refuses_untracked_output(self):
+    env = {**os.environ, 'PATH': '/nonexistent'}
+    proc = subprocess.run(['/usr/bin/python3', str(TOOL), 'build',
+                           str(self.desc), '--output', str(self.page)],
+                          text=True, capture_output=True, env=env)
+    self.assertEqual(proc.returncode, 2, proc.stderr)
+    self.assertIn('Git', proc.stderr)
+
+  def test_git_failure_is_not_treated_as_outside_worktree(self):
+    fake_bin = self.root / 'fake-bin'
+    fake_bin.mkdir()
+    git = fake_bin / 'git'
+    git.write_text('#!/bin/sh\necho "fatal: corrupt repository" >&2\n'
+                   'exit 128\n')
+    git.chmod(0o755)
+    proc = subprocess.run(['/usr/bin/python3', str(TOOL), 'build',
+                           str(self.desc), '--output', str(self.page)],
+                          text=True, capture_output=True,
+                          env={**os.environ, 'PATH': str(fake_bin)})
+    self.assertEqual(proc.returncode, 2, proc.stderr)
 
 
 if __name__ == '__main__':

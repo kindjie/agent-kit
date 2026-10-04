@@ -82,19 +82,27 @@ run('build', path.join(temp, 'missing.json'), '--output',
   path.join(temp, 'missing.html'));
 fs.unlinkSync(path.join(temp, 'gone.png'));
 
-async function check(browserType, name) {
-  const options = {headless: true};
-  if (name === 'Firefox' && process.env.REVIEW_SHEET_FIREFOX_EXECUTABLE)
-    options.executablePath = process.env.REVIEW_SHEET_FIREFOX_EXECUTABLE;
-  options.timeout = 10000;
+async function check(browserType, name, launchOptions = {}) {
+  const options = {headless: true, timeout: 10000, ...launchOptions};
   let browser;
   try { browser = await browserType.launch(options); }
   catch (error) {
-    const unavailable = new Error(name + ' could not launch: ' +
+    const launchError = new Error(name + ' could not launch: ' +
       String(error.message).split('\n')[0]);
-    unavailable.browserUnavailable = true;
-    throw unavailable;
+    launchError.browserLaunchError = true;
+    throw launchError;
   }
+  console.log('RUN: ' + name + ' ' + browser.version());
+  try {
+    await checkPage(browser, name);
+  } finally {
+    await browser.close();
+  }
+  console.log('PASS: ' + name + ' ' + browser.version() +
+    ' file:// page and components');
+}
+
+async function checkPage(browser, name) {
   const context = await browser.newContext({acceptDownloads: true});
   const page = await context.newPage();
   const errors = [];
@@ -137,18 +145,53 @@ async function check(browserType, name) {
   await page.keyboard.press('j');
   assert.equal(await page.locator('.item.focused').getAttribute('data-item-id'),
     'motion');
+  await page.keyboard.press('Control+j');
+  assert.equal(await page.locator('.item.focused').getAttribute('data-item-id'),
+    'motion');
   await page.keyboard.press('n');
   assert.equal(await page.locator('.item.focused').getAttribute('data-item-id'),
     'sound');
   await page.keyboard.press('?');
   assert.ok(await page.getByText('Keyboard controls').count());
   await page.getByRole('button', {name: 'Close'}).click();
+  const draftWithOrphan = JSON.parse(await page.evaluate(() =>
+    localStorage.getItem('review-sheet:browser-fixture')));
+  draftWithOrphan.answers['item:gone:verdict'] = {
+    state: 'answered', value: 'keep', digest: '0'.repeat(64)};
+  await page.evaluate(raw => localStorage.setItem(
+    'review-sheet:browser-fixture', raw), JSON.stringify(draftWithOrphan));
+  await page.reload();
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', {name: 'Discard stale draft entries'}).click();
+  const cleaned = JSON.parse(await page.evaluate(() =>
+    localStorage.getItem('review-sheet:browser-fixture')));
+  assert.ok(!cleaned.answers['item:gone:verdict']);
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', {name: 'Export results'}).click();
   const download = await downloadPromise;
   const packet = JSON.parse(fs.readFileSync(await download.path(), 'utf8'));
   assert.equal(packet.answers['item:still:verdict'].value, 'keep');
   assert.equal(packet.answers['item:motion:verdict'].state, 'unanswered');
+  const invalid = {...packet, answers: {...packet.answers,
+    'item:still:verdict': {...packet.answers['item:still:verdict'],
+      value: 'unsupported'}}};
+  await page.locator('#import-file').setInputFiles({name: 'invalid.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(invalid))});
+  await page.getByText(/invalid or stale imported answers/).waitFor();
+  assert.match(await page.locator('#messages').textContent(),
+    /rejected|invalid/i);
+  assert.equal(await page.locator('[data-scope-state="item:still:verdict"]')
+    .textContent(), 'answered');
+  const stale = {...packet, answers: {...packet.answers,
+    'item:still:verdict': {...packet.answers['item:still:verdict'],
+      digest: '0'.repeat(64)}}};
+  await page.locator('#import-file').setInputFiles({name: 'stale.json',
+    mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(stale))});
+  await page.getByText(/invalid or stale imported answers/).last().waitFor();
+  assert.match(await page.locator('#messages').textContent(), /stale/i);
+  assert.equal(await page.locator('[data-scope-state="item:still:verdict"]')
+    .textContent(), 'answered');
   const stored = await page.evaluate(() => localStorage.getItem(
     'review-sheet:browser-fixture'));
   await page.evaluate(() => localStorage.setItem('review-sheet:browser-fixture',
@@ -174,7 +217,8 @@ async function check(browserType, name) {
     'item:still:verdict': {...packet.answers['item:still:verdict'],
       value: 'revise'}}};
   await page.locator('#import-file').setInputFiles({name: 'results.json',
-    mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(incoming))});
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(incoming))});
   await page.getByText('Choose each conflicting answer').waitFor();
   assert.ok(await page.getByText('Choose each conflicting answer').count());
   assert.ok(await page.getByRole('button', {name: /Keep draft: "keep"/})
@@ -183,10 +227,12 @@ async function check(browserType, name) {
   const authorityPage = await context.newPage();
   await authorityPage.goto('file://' + path.join(temp, 'authority.html'));
   await authorityPage.getByRole('button', {name: 'true'}).click();
-  assert.equal(await authorityPage.locator('[data-scope-state="item:one:approve"]')
+  assert.equal(await authorityPage.locator(
+    '[data-scope-state="item:one:approve"]')
     .textContent(), 'unanswered');
   await authorityPage.getByRole('button', {name: /Confirm true/}).click();
-  assert.equal(await authorityPage.locator('[data-scope-state="item:one:approve"]')
+  assert.equal(await authorityPage.locator(
+    '[data-scope-state="item:one:approve"]')
     .textContent(), 'answered');
   const authorityDownload = authorityPage.waitForEvent('download');
   await authorityPage.getByRole('button', {name: 'Export results'}).click();
@@ -196,6 +242,25 @@ async function check(browserType, name) {
     'one.png'], crypto.createHash('sha256').update(png).digest('hex'));
   await authorityPage.evaluate(() => localStorage.removeItem(
     'review-sheet:authority-fixture'));
+  await authorityPage.reload();
+  const wrongHash = structuredClone(authorityPacket);
+  wrongHash.answers['item:one:approve'].media_hashes['one.png'] =
+    '0'.repeat(64);
+  await authorityPage.locator('#import-file').setInputFiles({
+    name: 'wrong-hash.json', mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(wrongHash))});
+  await authorityPage.getByText(/invalid or stale imported answers/).waitFor();
+  assert.equal(await authorityPage.locator(
+    '[data-scope-state="item:one:approve"]').textContent(), 'unanswered');
+  await authorityPage.locator('#import-file').setInputFiles({
+    name: 'authority.json', mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(authorityPacket))});
+  assert.equal(await authorityPage.locator(
+    '[data-scope-state="item:one:approve"]').textContent(), 'inherited');
+  await authorityPage.getByRole('button', {name: 'true'}).click();
+  await authorityPage.getByRole('button', {name: /Confirm true/}).click();
+  assert.equal(await authorityPage.locator(
+    '[data-scope-state="item:one:approve"]').textContent(), 'answered');
   const corruptedPage = await context.newPage();
   await corruptedPage.goto('file://' + path.join(temp,
     'authority-corrupt.html'));
@@ -216,32 +281,64 @@ async function check(browserType, name) {
     .then(() => false, () => true));
   assert.equal(blocked, true, name + ': CSP allowed remote fetch');
   assert.deepEqual(remoteRequests, [], name + ': attempted remote request');
-  await browser.close();
-  console.log('PASS: ' + name + ' file:// page and components');
 }
 
 (async () => {
-  const missing = [];
-  for (const name of ['chromium', 'firefox']) {
-    const executable = name === 'firefox' &&
-      process.env.REVIEW_SHEET_FIREFOX_EXECUTABLE ||
-      playwright[name].executablePath();
-    if (!fs.existsSync(executable)) missing.push(name);
-  }
-  if (missing.length) {
-    console.log('SKIP: Playwright browsers absent: ' + missing.join(', '));
-    process.exit(77);
-  }
+  let passed = 0;
+  let failed = 0;
   try {
-    await check(playwright.chromium, 'Chromium');
-    await check(playwright.firefox, 'Firefox');
-  } catch (error) {
-    if (error.browserUnavailable) {
-      console.log('SKIP: ' + error.message);
-      process.exitCode = 77;
-      return;
+    try {
+      await check(playwright.chromium, 'Google Chrome', {channel: 'chrome'});
+      passed++;
+    } catch (error) {
+      const absent = error.browserLaunchError &&
+        /Chromium distribution 'chrome' is not found|executable doesn't exist/i
+          .test(error.message);
+      if (!absent) {
+        failed++;
+        console.error('FAIL: Google Chrome browser checks');
+        console.error(error);
+      } else {
+        console.log('SKIP: Google Chrome is absent: ' + error.message);
+        const executable = playwright.chromium.executablePath();
+        if (!fs.existsSync(executable)) {
+          console.log('SKIP: bundled Chromium executable absent: ' +
+            executable);
+        } else {
+          try {
+            await check(playwright.chromium, 'Bundled Chromium');
+            passed++;
+          } catch (fallbackError) {
+            failed++;
+            console.error('FAIL: bundled Chromium browser checks');
+            console.error(fallbackError);
+          }
+        }
+      }
     }
-    throw error;
+    const firefoxPath = process.env.REVIEW_SHEET_FIREFOX_EXECUTABLE ||
+      playwright.firefox.executablePath();
+    if (!fs.existsSync(firefoxPath)) {
+      console.log('SKIP: bundled Firefox executable absent: ' + firefoxPath);
+    } else {
+      try {
+        await check(playwright.firefox, 'Firefox',
+          process.env.REVIEW_SHEET_FIREFOX_EXECUTABLE ?
+            {executablePath: firefoxPath} : {});
+        passed++;
+      } catch (error) {
+        if (error.browserLaunchError) {
+          console.log('SKIP: ' + error.message);
+        } else {
+          failed++;
+          console.error('FAIL: Firefox browser checks');
+          console.error(error);
+        }
+      }
+    }
+    if (failed) process.exitCode = 1;
+    else if (!passed) process.exitCode = 77;
+    if (passed) console.log('PASS: ' + passed + ' available browser(s)');
   } finally {
     fs.rmSync(temp, {recursive: true, force: true});
   }

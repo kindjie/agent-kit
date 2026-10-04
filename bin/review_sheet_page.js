@@ -60,6 +60,12 @@
       return entry && entry.ready && entry.hash === scope.media[src];
     });
   }
+  function matchingHashes(actual, expected) {
+    return actual && typeof actual === 'object' &&
+      !Array.isArray(actual) &&
+      Object.keys(actual).length === Object.keys(expected).length &&
+      Object.entries(expected).every(([src, hash]) => actual[src] === hash);
+  }
   function itemReady(item) {
     return (item.media || []).every(media => {
       if (media.kind === 'link') return true;
@@ -82,6 +88,11 @@
     if (!answer) return 'unanswered';
     if (answer.state === 'answered' && answer.digest !==
         data.scopes[key].digest) return 'stale';
+    if (answer.state === 'answered' &&
+        (!validValue(data.scopes[key].definition, answer.value) ||
+         (data.scopes[key].authority &&
+          (!matchingHashes(answer.media_hashes, data.scopes[key].media) ||
+           !mediaFor(key))))) return 'invalid';
     return answer.state;
   }
   function currentValue(key) {
@@ -98,10 +109,33 @@
       storageSafe = false;
     }
   }
-  function load() {
+  function discardDraft() {
+    if (!confirm('Discard stale and unmatched draft entries?')) return;
+    for (const [key, answer] of Object.entries(answers)) {
+      if (!data.scopes[key] || answer.digest !== data.scopes[key].digest)
+        delete answers[key];
+    }
     try {
-      const raw = localStorage.getItem(storageKey);
-      if (!raw) return;
+      localStorage.setItem(storageKey, JSON.stringify({schema_version: 1,
+        review: desc.review, reviewer: reviewerValue, answers}));
+      storageSafe = true;
+      loadedCount = Object.keys(answers).length;
+      note('Stale and unmatched draft entries discarded.');
+      renderStatus();
+    } catch (_) {
+      note('Draft storage is unavailable; export your results.', true);
+    }
+  }
+  function load() {
+    let raw;
+    try { raw = localStorage.getItem(storageKey); }
+    catch (_) {
+      storageSafe = false;
+      note('Draft storage is unavailable. Export your results.', true);
+      return;
+    }
+    if (!raw) return;
+    try {
       const packet = JSON.parse(raw);
       if (packet.schema_version !== 1 || packet.review !== desc.review ||
           !packet.answers ||
@@ -156,6 +190,7 @@
         return;
       }
       answer.media_hashes = {...data.scopes[key].media};
+      answer.evidence = 'verified';
     } else answer.evidence = 'unverified';
     history.push([key, answers[key] ? structuredClone(answers[key]) : null]);
     if (history.length > 100) history.shift();
@@ -403,6 +438,7 @@
       button('Export results', exportResults),
       button('Import results', () =>
         document.getElementById('import-file').click()),
+      button('Discard stale draft entries', discardDraft),
       button('Keys (?)', showLegend));
     const file = el('input'); file.id = 'import-file'; file.type = 'file';
     file.accept = 'application/json,.json'; file.className = 'hidden';
@@ -480,9 +516,10 @@
     let packet;
     try { packet = JSON.parse(await file.text()); }
     catch (_) { note('Results file is not valid JSON.', true); return; }
-    if (packet.schema_version !== 1 || packet.review !== desc.review ||
-        !packet.answers ||
-        typeof packet.answers !== 'object') {
+    if (!packet || packet.schema_version !== 1 ||
+        packet.review !== desc.review || !packet.answers ||
+        typeof packet.answers !== 'object' ||
+        Array.isArray(packet.answers)) {
       note('Results are for a different review or malformed.', true); return;
     }
     if (typeof packet.reviewer === 'string' &&
@@ -491,15 +528,33 @@
       reviewerValue = packet.reviewer;
     }
     const conflicts = [];
+    let rejected = 0;
     for (const [key, incoming] of Object.entries(packet.answers)) {
       if (!data.scopes[key] || !incoming || incoming.state !== 'answered')
         continue;
+      const scope = data.scopes[key];
+      if (incoming.digest !== scope.digest ||
+          !validValue(scope.definition, incoming.value) ||
+          (scope.authority &&
+           (!matchingHashes(incoming.media_hashes, scope.media) ||
+            !mediaFor(key)))) {
+        rejected++;
+        continue;
+      }
+      const imported = {...incoming,
+        state: scope.authority ? 'inherited' : 'answered',
+        evidence: scope.authority ? 'verified' : 'unverified'};
+      if (scope.authority) imported.source = 'imported file';
       const existing = answers[key];
       if (existing && existing.state === 'answered' &&
           JSON.stringify(existing.value) !== JSON.stringify(incoming.value)) {
-        conflicts.push([key, existing, incoming]);
-      } else answers[key] = incoming;
+        conflicts.push([key, existing, imported]);
+      } else if (!existing || existing.state !== 'answered') {
+        answers[key] = imported;
+      }
     }
+    if (rejected) note(rejected + ' invalid or stale imported answers '
+      + 'were rejected.', true);
     if (conflicts.length) {
       const dialog = document.getElementById('dialog');
       dialog.replaceChildren(el('h2', '', 'Choose each conflicting answer'));
@@ -520,6 +575,20 @@
     save(); renderStatus();
     event.target.value = '';
   }
+  function validValue(definition, value) {
+    if (definition.kind === 'choice')
+      return typeof value === 'string' && definition.options.includes(value);
+    if (definition.kind === 'boolean') return typeof value === 'boolean';
+    if (definition.kind === 'flags')
+      return Array.isArray(value) && new Set(value).size === value.length &&
+        value.every(v => typeof v === 'string' &&
+          definition.options.includes(v));
+    if (definition.kind === 'text') return typeof value === 'string' &&
+      new TextEncoder().encode(value).length <= data.limits.text_answer;
+    return typeof value === 'number' && Number.isFinite(value) &&
+      (definition.min === undefined || value >= definition.min) &&
+      (definition.max === undefined || value <= definition.max);
+  }
   function showLegend() {
     const dialog = document.getElementById('dialog');
     dialog.replaceChildren(el('h2', '', 'Keyboard controls'),
@@ -530,6 +599,7 @@
     dialog.showModal();
   }
   function keydown(event) {
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
     if (document.getElementById('dialog').open) return;
     if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
     const key = event.key;

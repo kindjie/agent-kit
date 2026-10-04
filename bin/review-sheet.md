@@ -13,7 +13,7 @@ upload media or write project records.
 ./bin/review-sheet status review-results.json
 ```
 
-`build` also writes `review.resolved.json` beside the page. Preserve both
+`build` also writes `<page>.resolved.json` beside the page. Preserve both
 until the downloaded results are imported. Keep a separate copy if rebuilding
 the same page before importing an older export. The resolved file records the
 description, scope digests, and hashes of built-in component files. Passing
@@ -23,6 +23,12 @@ changed media, fields, evidence, questions, options, layout, membership or
 components make a former answer stale. A digest proves consistency with the
 current files, not that caller-supplied evidence is still authoritative.
 Project adapters must check that against their current records.
+The digest includes every resolved media presentation field, including `fps`
+and the derived MIME type. It also includes the SHA-256 of
+`review_sheet_page.js` and `review_sheet_page.css`. A page
+core change therefore makes old answers stale. Stage 1 permits import without
+`--resolved`; it will be required once presets exist so an import is bound to
+the exact frozen preset and component versions used by the page.
 
 ## Description
 
@@ -73,15 +79,29 @@ the legend. Choice hotkeys are declared in the description; flags use
 numbered keys by default. Export remains available while incomplete and
 reports the number of required answers left. The downloaded JSON is the
 handoff; localStorage is only a guarded draft. Re-import into the page shows
-different answers side by side for manual resolution.
+different valid answers side by side for manual resolution. The page rejects
+bad values, stale digests and unmatched authority media hashes. An authority
+answer re-imported from a file remains inherited until the person confirms it
+on the page. Unavailable draft storage and unreadable stored records have
+separate warnings. The discard button removes stale or unmatched draft keys
+only after explicit confirmation. Two open tabs can overwrite each other's
+draft; export before switching tabs or use one tab at a time.
 
-Each result entry has `answered`, `unanswered`, `inherited`, `stale`, or
-`invalid` state. `false`, `0`, and the empty string are valid answers for
+Each result entry has `answered`, `unanswered`, `inherited`, `stale`,
+`conflict`, or `invalid` state. Conflicts have no value and appear in the
+`conflicts` list with each side's state, reviewer and value. Answered entries
+preserve `evidence` (`verified` for
+validated authority media, `unverified` otherwise) and `media_hashes`.
+`false`, `0`, and the empty string are valid answers for
 their respective kinds. `import` prints normalized JSON without changing a
 project catalogue. It exits 0 for clean input, 2 for invalid input, or 3
-for stale, conflicting, or required incomplete input when
-`--require-complete` is set. Multiple results files with different answers
+for stale or conflicting input. With `--require-complete`, required incomplete
+input also exits 3. Multiple results files with different answers
 to one decision conflict; browser timestamps never resolve the conflict.
+An orphaned answer exits 2 and appears in `orphaned`.
+Files from different reviewers are never merged automatically; affected
+entries become conflicts. A `--resolved` hash mismatch exits 3 as stale,
+including when the packet has no answers.
 
 By default `build` refuses output in a Git worktree unless the output path
 is ignored. `--allow-tracked` is an explicit override. Import warns about
@@ -104,5 +124,9 @@ flags to raise limits. Stage 1's built-in components are below their caps.
 The browser harness is pinned by `tests/package-lock.json`. Install it with
 `npm ci --prefix tests`, then `tests/node_modules/.bin/playwright install
 chromium firefox`. The full Python suite runs the browser harness when Node,
-Playwright and both browsers are present; otherwise that test reports an
-explicit skip. A publishable result requires a run with both browsers.
+Playwright and a browser are present. It uses system Google Chrome by default
+and falls back to bundled Chromium only when Chrome is absent. It tries bundled
+Firefox when installed. Each run prints the browser version and reports PASS
+or SKIP with a reason; the wrapper skips only when no browser can run. Run it
+outside the sandbox so Chrome can launch. Record unavailable browsers as
+validation deviations.

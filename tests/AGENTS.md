@@ -9,12 +9,19 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
 
 The Python cases use fictional files and temporary Git repositories to check
 build, import, scope digests, bounds and output privacy. The browser case
-drives Chromium and Firefox from `file://` using Playwright pinned by
-`tests/package-lock.json`. Install with `npm ci --prefix tests` and
-`tests/node_modules/.bin/playwright install chromium firefox`. It reports a
-clear skip when Node, Playwright or a launchable browser is unavailable; a
-publishable browser result needs both browsers to pass. Safari is best
-effort. The harness uses no remote media or services.
+drives `file://` pages using Playwright pinned by `tests/package-lock.json`.
+Install with `npm ci --prefix tests` and
+`tests/node_modules/.bin/playwright install chromium firefox`. The harness
+uses system Google Chrome by default (`channel: 'chrome'`) and falls back to
+Playwright's bundled Chromium only when Chrome is absent. It tries bundled
+Firefox if installed; on this macOS host Firefox cannot launch, so it reports
+SKIP with the launch reason. Each run prints the browser and version used and
+reports PASS or SKIP separately. The Python wrapper fails if an available
+browser fails, and skips only when none can run. Run the browser suite outside
+the sandbox so Chrome can launch. Safari is best effort. The harness uses no
+remote media or services.
+Launch fixtures also check Chrome failure without fallback, missing-Chrome
+fallback, the no-browser skip, and browser cleanup when a check fails.
 
 ## SteamOS
 

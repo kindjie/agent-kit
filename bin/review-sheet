@@ -186,25 +186,31 @@ def component_files(limits):
   for kind in KINDS:
     folder = COMPONENTS / kind
     size = 0
+    contents = {}
     for name in ('component.json', 'component.js', 'README.md'):
       path = folder / name
       if path.is_symlink() or not path.is_file():
         raise ReviewError(f'missing or linked built-in component: {path}')
-      length = path.stat().st_size
+      raw = path.read_bytes()
+      length = len(raw)
       if length > limits['component_file']:
         raise ReviewError(f'component file too large: {path}')
       size += length
-      files[str(path)] = file_hash(path)
+      files[str(path)] = hashlib.sha256(raw).hexdigest()
+      contents[name] = raw
     if size > limits['component']:
       raise ReviewError(f'component too large: {kind}')
-    manifest = read_json(folder / 'component.json', limits['component_file'])
+    try:
+      manifest = json.loads(contents['component.json'])
+    except (UnicodeError, ValueError) as exc:
+      raise ReviewError(f'invalid component manifest: {kind}') from exc
     if manifest.get('kind') != kind:
       raise ReviewError(f'component manifest mismatch: {kind}')
-    scripts.append((kind, (folder / 'component.js').read_text()))
+    scripts.append((kind, contents['component.js'].decode('utf-8')))
   return files, scripts
 
 
-def scopes_for(description, component_hashes):
+def scopes_for(description, component_hashes, page_core_hashes):
   scopes = {}
   groups = description.get('groups', [])
   members = [item for group in groups for item in group['items']]
@@ -215,10 +221,7 @@ def scopes_for(description, component_hashes):
     return [{'id': item['id'], 'title': item.get('title'),
              'fields': item.get('fields', {}),
              'evidence': item.get('evidence', {}),
-             'media': [{'kind': m['kind'], 'src': m.get('src'),
-                        'alt': m.get('alt'),
-                        'sha256': m.get('sha256'), 'mode': m.get('mode')}
-                       for m in item.get('media', [])]}
+             'media': [m.copy() for m in item.get('media', [])]}
             for item in items]
 
   def add(scope_kind, scope_id, decisions, items, group=None):
@@ -229,6 +232,7 @@ def scopes_for(description, component_hashes):
                  'instructions': description.get('instructions', ''),
                  'caveats': description.get('caveats', []),
                  'items': media_context(items),
+                 'page_core': page_core_hashes,
                  'components': {kind: component_hashes[kind] for kind in
                                 sorted({m['kind'] for item in items for m in
                                         item.get('media', [])})},
@@ -339,7 +343,14 @@ def resolve(path, limits):
   files, scripts = component_files(limits)
   component_hashes = {kind: files[str(COMPONENTS / kind / 'component.js')]
                       for kind in KINDS}
+  page_core = {name: (ROOT / name).read_bytes() for name in
+               ('review_sheet_page.js', 'review_sheet_page.css')}
+  page_core_hashes = {name: hashlib.sha256(raw).hexdigest()
+                      for name, raw in page_core.items()}
+  files.update({str(ROOT / name): hash_ for name, hash_ in
+                page_core_hashes.items()})
   embedded_total = 0
+  embedded = {}
   for item in items:
     keys_only(item, ('id', 'title', 'fields', 'evidence', 'decisions',
                      'media', 'prefill'), 'item')
@@ -408,24 +419,32 @@ def resolve(path, limits):
         media['mode'] = 'display'
         continue
       source_file = confined(path.parent, media.get('src'))
-      hash_ = file_hash(source_file)
+      mode = 'embed' if authoritative or kind == 'text' else 'reference'
+      raw = None
+      if mode == 'embed':
+        with source_file.open('rb') as stream:
+          raw = stream.read(limits['embedded_file'] + 1)
+        if len(raw) > limits['embedded_file']:
+          raise ReviewError(f'embedded media file too large: {source_file}')
+      hash_ = hashlib.sha256(raw).hexdigest() if raw is not None else \
+        file_hash(source_file)
       if 'sha256' in media and media['sha256'] != hash_:
         raise ReviewError(f'media hash differs from supplied sha256: '
                           f'{media["src"]}')
       media['sha256'] = hash_
-      media['mode'] = ('embed' if authoritative or kind == 'text'
-                       else 'reference')
+      media['mode'] = mode
+      media['mime'] = mimetypes.guess_type(media['src'])[0] or \
+        'application/octet-stream'
       if media['mode'] == 'embed':
-        size = source_file.stat().st_size
-        if size > limits['embedded_file']:
-          raise ReviewError(f'embedded media file too large: {source_file}')
+        size = len(raw)
         embedded_total += size
         if embedded_total > limits['embedded_total']:
           raise ReviewError('embedded media total exceeds limit')
+        embedded[(item['id'], media['src'])] = raw
   check_hotkeys(description, groups, items)
-  scopes = scopes_for(description, component_hashes)
+  scopes = scopes_for(description, component_hashes, page_core_hashes)
   return {'schema_version': 1, 'description': description,
-          'files': files, 'scopes': scopes}, scripts
+          'files': files, 'scopes': scopes}, scripts, embedded, page_core
 
 
 def git_risk(path):
@@ -436,24 +455,27 @@ def git_risk(path):
     result = subprocess.run(['git', '-C', str(directory), 'rev-parse',
                              '--show-toplevel'], capture_output=True,
                             text=True, check=False)
-    if result.returncode:
+    if (result.returncode == 128 and
+        'not a git repository' in result.stderr):
       return False
+    if result.returncode:
+      return True
     ignored = subprocess.run(['git', '-C', str(directory), 'check-ignore',
                               '-q', str(path)], check=False)
     return ignored.returncode != 0
   except OSError:
-    return False
+    return True
 
 
 def build(args):
   path = args.description.resolve()
   output = args.output.resolve()
-  resolved_path = output.with_name('review.resolved.json')
+  resolved_path = output.with_suffix('.resolved.json')
   if not args.allow_tracked and (git_risk(output) or git_risk(resolved_path)):
     raise ReviewError('output is in a Git worktree and is not ignored; '
                       'use an ignored path or --allow-tracked')
   limits = limits_from(args)
-  resolved, scripts = resolve(path, limits)
+  resolved, scripts, embedded, page_core = resolve(path, limits)
   description = resolved['description']
   page_desc = copy.deepcopy(description)
   page_items = page_desc.get('items', []) + [
@@ -461,18 +483,15 @@ def build(args):
   for item in page_items:
     for media in item.get('media', []):
       if media['mode'] == 'embed':
-        raw = confined(path.parent, media['src']).read_bytes()
-        media['data'] = base64.b64encode(raw).decode('ascii')
+        media['data'] = base64.b64encode(
+          embedded[(item['id'], media['src'])]).decode('ascii')
       elif media['mode'] == 'reference':
         media['src'] = os.path.relpath(path.parent / media['src'],
                                        output.parent)
-      if media['kind'] != 'link':
-        media['mime'] = mimetypes.guess_type(media['src'])[0] or \
-          'application/octet-stream'
   resolved_bytes = canonical(resolved) + b'\n'
   page = make_page(page_desc, resolved['scopes'],
                    hashlib.sha256(resolved_bytes).hexdigest(), scripts,
-                   limits, output)
+                   limits, output, page_core)
   if len(page) > limits['page']:
     raise ReviewError('page exceeds size limit')
   output.parent.mkdir(parents=True, exist_ok=True)
@@ -481,9 +500,10 @@ def build(args):
   print(f'{output}\n{resolved_path}')
 
 
-def make_page(description, scopes, resolved_hash, scripts, limits, output):
-  css = (ROOT / 'review_sheet_page.css').read_text()
-  core = (ROOT / 'review_sheet_page.js').read_text()
+def make_page(description, scopes, resolved_hash, scripts, limits, output,
+              page_core):
+  css = page_core['review_sheet_page.css'].decode('utf-8')
+  core = page_core['review_sheet_page.js'].decode('utf-8')
   data = {'description': description, 'scopes': scopes,
           'resolved_sha256': resolved_hash, 'limits': limits}
   payload = json.dumps(data, ensure_ascii=False).replace('<', '\\u003c')
@@ -518,7 +538,7 @@ def limits_from(args):
 
 def result_import(args):
   limits = limits_from(args)
-  current, _ = resolve(args.description.resolve(), limits)
+  current, _, _, _ = resolve(args.description.resolve(), limits)
   scopes = current['scopes']
   review = current['description']['review']
   frozen = None
@@ -565,8 +585,9 @@ def result_import(args):
         not isinstance(packet.get('reviewer', ''), str) or
         not isinstance(packet.get('answers'), dict)):
       raise ReviewError(f'{path}: invalid results header')
-    if frozen_hash and packet['resolved_sha256'] != frozen_hash:
-      raise ReviewError(f'{path}: resolved description hash mismatch')
+    packet_stale = bool(frozen_hash and
+                        packet['resolved_sha256'] != frozen_hash)
+    stale |= packet_stale
     reviewers.add(packet.get('reviewer') or None)
     for key, entry in packet['answers'].items():
       if key not in scopes:
@@ -578,60 +599,84 @@ def result_import(args):
           invalid_entries.append(key)
         bad = True
         continue
-      if frozen and (not isinstance(entry, dict) or
-                     key not in frozen['scopes'] or
-                     not isinstance(frozen['scopes'][key], dict) or
-                     entry.get('digest') !=
-                     frozen['scopes'][key].get('digest')):
-        entry = {'state': 'invalid'}
       if not isinstance(entry, dict):
         entry = {'state': 'invalid'}
-      earlier = answers.get(key)
-      if earlier:
-        same = all(earlier.get(field) == entry.get(field) for field in
-                   ('state', 'value', 'digest', 'media_hashes'))
-        if same:
-          continue
-        if (earlier.get('state') == 'answered' and
-            entry.get('state') == 'answered'):
-          conflicts.append(key)
-          stale = True
-          continue
-        if earlier.get('state') == 'answered':
-          continue
-      answers[key] = entry
+      frozen_scope = frozen['scopes'].get(key) if frozen else None
+      if entry.get('state') == 'answered':
+        if (packet_stale or (frozen and
+            (not isinstance(frozen_scope, dict) or
+             entry.get('digest') != frozen_scope.get('digest'))) or
+            entry.get('digest') != scopes[key]['digest']):
+          entry = {**entry, 'state': 'stale'}
+      answers.setdefault(key, []).append((packet.get('reviewer') or None,
+                                          entry))
   if len(reviewers) > 1:
-    conflicts.append('reviewer')
+    conflicts.append({'scope': 'reviewer', 'entries': [
+      {'reviewer': reviewer} for reviewer in sorted(
+        reviewers, key=lambda value: value or '')]})
     stale = True
   normalized = {}
   missing = []
   for key, scope in scopes.items():
-    entry = answers.get(key)
-    if entry is None:
+    entries = answers.get(key)
+    if entries is None:
       normalized[key] = {'state': 'unanswered'}
       missing.append(key)
       continue
-    state = entry.get('state')
-    if state not in ('answered', 'unanswered', 'inherited', 'stale', 'invalid'):
-      state = 'invalid'
-    if state == 'answered':
-      if entry.get('digest') != scope['digest']:
-        state = 'stale'
-      elif (not check_value(scope['definition'], entry.get('value'), limits) or
-            (scope['authority'] and entry.get('media_hashes') !=
-             scope['media'])):
+    states = []
+    valid_answers = []
+    reported = []
+    for reviewer, entry in entries:
+      state = entry.get('state')
+      if state not in ('answered', 'unanswered', 'inherited', 'stale',
+                       'invalid'):
         state = 'invalid'
-    if state == 'inherited' and not check_value(
-        scope['definition'], entry.get('value'), limits):
+      if state == 'answered':
+        if entry.get('digest') != scope['digest']:
+          state = 'stale'
+        elif (not check_value(scope['definition'], entry.get('value'),
+                              limits) or
+              (scope['authority'] and entry.get('media_hashes') !=
+               scope['media'])):
+          state = 'invalid'
+      if state == 'inherited' and not check_value(
+          scope['definition'], entry.get('value'), limits):
+        state = 'invalid'
+      states.append(state)
+      side = {'state': state, 'reviewer': reviewer}
+      if 'value' in entry:
+        side['value'] = entry['value']
+      reported.append(side)
+      if state == 'answered':
+        valid_answers.append(entry)
+    values = {canonical(entry['value']) for entry in valid_answers}
+    if 'invalid' in states:
+      bad = True
+    if len(values) > 1 or len(reviewers) > 1:
+      state = 'conflict'
+      conflicts.append({'scope': key, 'entries': reported})
+    elif 'invalid' in states:
       state = 'invalid'
+    elif 'stale' in states:
+      state = 'stale'
+    elif valid_answers:
+      state = 'answered'
+    elif 'inherited' in states:
+      state = 'inherited'
+    else:
+      state = 'unanswered'
     if state == 'invalid':
       bad = True
-    if state == 'stale':
+    if state in ('stale', 'conflict'):
       stale = True
     normalized[key] = {'state': state}
     if state == 'answered':
+      entry = valid_answers[0]
       normalized[key]['value'] = entry['value']
       normalized[key]['digest'] = entry['digest']
+      normalized[key]['evidence'] = ('verified' if scope['authority'] else
+                                      'unverified')
+      normalized[key]['media_hashes'] = entry.get('media_hashes', {})
       if 'time' in entry:
         normalized[key]['time'] = entry['time']
   incomplete = [key for key, scope in scopes.items()
@@ -640,7 +685,7 @@ def result_import(args):
   result = {'schema_version': 1, 'review': review, 'answers': normalized,
             'missing': missing, 'orphaned': sorted(set(orphaned)),
             'invalid_entries': sorted(set(invalid_entries)),
-            'conflicts': sorted(set(conflicts)), 'incomplete': incomplete}
+            'conflicts': conflicts, 'incomplete': incomplete}
   rendered = json.dumps(result, indent=2, ensure_ascii=False) + '\n'
   if args.output:
     args.output.write_text(rendered, encoding='utf-8')
@@ -673,7 +718,7 @@ def main(argv=None):
   import_parser.add_argument('results', nargs='+', type=Path)
   import_parser.add_argument('--description', type=Path, required=True)
   import_parser.add_argument('--resolved', type=Path,
-                             help='frozen review.resolved.json from build')
+                             help='frozen <page>.resolved.json from build')
   import_parser.add_argument('--output', type=Path)
   import_parser.add_argument('--require-complete', action='store_true')
   status_parser = sub.add_parser('status', help='summarize result states')
