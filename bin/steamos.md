@@ -238,6 +238,14 @@ PerfOverlay controls. They change logging only; MangoHud must already be
 available on the device and attached to the running game. A successful
 control command does not prove that the game produced frame data.
 
+Not yet verified on a device. In a first test (SteamOS 3.8.27, beta
+Steam client, Game Mode) logging produced no CSV, with the performance
+overlay on or off; the device had just woken and its screen was locked,
+so the title may never have been displayed. Steam writes mangoapp's
+configuration itself (`MANGOHUD_CONFIGFILE`), with no log folder set.
+Treat `frametimes` as experimental until a run with the screen unlocked
+produces data.
+
 `frametimes pull [--out DIR]` needs no lease or Valve helpers. Valve
 downloads `mangoapp_*.csv` from the device user's home; this command copies
 the newest regular matching file(s), including ties in modification time,

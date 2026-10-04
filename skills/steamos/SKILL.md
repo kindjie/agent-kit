@@ -77,6 +77,10 @@ the helpers another agent's title may be using.
 - `steamos frametimes start` / `stop` require your active lease and use
   `mangohudctl set log_session true` / `false`. MangoHud must already be
   active on the running game; successful control alone proves no frame data.
+  Experimental: not yet shown to produce CSVs on a device (see steamos.md).
+- A device woken over the network shows its lock screen; a title launched
+  behind it may never be displayed. Ask the user to unlock it before
+  visual or performance work, and check with `steamos capture`.
 - `steamos frametimes pull --out ./frametimes` needs no lease and copies
   the newest `mangoapp_*.csv` file(s) from the device home (mtime ties
   included). It preserves device logs, ignores symlinks and refuses if

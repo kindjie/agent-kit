@@ -687,9 +687,12 @@ class SteamosTest(unittest.TestCase):
     self.addCleanup(lambda: image.unlink(missing_ok=True))
     self.env['FAKE_CAPTURE_PATH'] = str(image)
     self.fixture_tool('pgrep', '''
-      import os, sys
-      assert sys.argv[1:] == ['-x', 'gamescope']
-      sys.exit(1 if os.environ.get('FAKE_NO_GAMESCOPE') else 0)
+      import os, re, sys
+      # As on SteamOS: gamescope's process name is gamescope-wl.
+      assert sys.argv[1] == '-x'
+      running = not os.environ.get('FAKE_NO_GAMESCOPE')
+      sys.exit(0 if running and re.fullmatch(sys.argv[2], 'gamescope-wl')
+               else 1)
     ''')
     self.fixture_tool('xprop', '''
       import base64, json, os, pathlib, sys

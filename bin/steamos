@@ -992,7 +992,8 @@ owned = False
 ready = False
 try:
   if not shutil.which('pgrep') or subprocess.run(
-      ['pgrep', '-x', 'gamescope'], stdout=subprocess.DEVNULL).returncode:
+      ['pgrep', '-x', 'gamescope|gamescope-wl'],
+      stdout=subprocess.DEVNULL).returncode:
     raise ValueError('gamescope is not running; capture needs Game Mode')
   if not shutil.which('xprop'):
     raise ValueError('xprop is unavailable; capture needs Game Mode')
