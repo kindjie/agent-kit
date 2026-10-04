@@ -11,9 +11,10 @@ description: >-
 # SteamOS devices
 
 Use the `steamos` command (see `steamos.md` beside it in agent-kit's
-`bin/`). It reaches devices over ssh and changes nothing on them except
-the lease and its log, and, when asked, Valve's helpers in `~/devkit-utils`
-and uploaded titles in `~/devkit-game`. `wake` sends a UDP broadcast.
+`bin/`). It reaches devices over ssh and manages the lease, its log,
+launch-window records, and, when asked, Valve's helpers in `~/devkit-utils`,
+uploaded titles in `~/devkit-game`, screenshots and MangoHud logging.
+`wake` sends a UDP broadcast.
 If it is not configured, say so and ask the user for the device's name
 or address rather than guessing.
 
@@ -47,7 +48,8 @@ the helpers another agent's title may be using.
   another title to work around these; refer the named leftovers to the owner.
 - `steamos title launch Demo1 --json` needs the lease and Steam running in
   Game Mode. Its `device_time` is the device epoch immediately before launch;
-  use it to bound `journalctl --user` output. Check `launched` and exit status.
+  it appends that time, NAME and holder to `~/.agent-kit-steamos-launches`.
+  Use `steamos logs NAME` for that window. Check `launched` and exit status.
 - `steamos title remove Demo1` needs the lease and deletes only that title
   and its sibling argv/env/settings files. Check the reported Steam re-sync
   status: exit 1 may mean files were removed but re-sync failed.
@@ -57,6 +59,33 @@ the helpers another agent's title may be using.
   `broadcast` defaults to `255.255.255.255`; on macOS, subnet broadcast may
   work where unicast fails, and Python needs Local Network permission.
   A Steam Deck on Wi-Fi does not wake this way.
+
+## Logs, screenshots and frametimes
+
+- `steamos logs [NAME] --lines 200 --json` needs no lease. It reads the
+  user journal from the last recorded launch of NAME (or any title) to
+  device now. Use `--since EPOCH` when no launch is recorded; `--until EPOCH`
+  bounds the end. If journalctl is unavailable it reads timestamped Steam
+  `console-linux.txt` entries. NAME selects a window, not a title filter;
+  other titles/services may appear. JSON gives source, epochs and lines.
+- `steamos capture --out ./capture.png` needs Game Mode, but no lease.
+  It uses Valve's numeric gamescope xprop request, waits up to 10 seconds
+  for a complete PNG, copies it with scp, and deletes only its device temp
+  file. Default output is `./steamos-capture-<device>-<utc>.png`. Missing
+  gamescope or a timeout is a refusal. It preserves existing screenshots.
+  If interrupted, inspect any capture lock/temp file before cleanup.
+- `steamos frametimes start` / `stop` require your active lease and use
+  `mangohudctl set log_session true` / `false`. MangoHud must already be
+  active on the running game; successful control alone proves no frame data.
+- `steamos frametimes pull --out ./frametimes` needs no lease and copies
+  the newest `mangoapp_*.csv` file(s) from the device home (mtime ties
+  included). It preserves device logs, ignores symlinks and refuses if
+  none exist. Inspect the CSV and measured scenario before reporting
+  performance; no quiet-machine or hardware acceptance is implied.
+
+Logs, capture and frametimes do not require pinned Valve helpers. Downloads
+use the configured ssh key/options and address fallback; scp is needed
+locally. Start and stop logging before pulling a completed session.
 
 ## When the lease is held
 

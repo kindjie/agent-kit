@@ -17,6 +17,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 OK, REFUSED, USAGE, UNREACHABLE = 0, 1, 2, 3
@@ -274,10 +275,22 @@ def targets(entry):
   mdns = entry['name'] + '.local'
   if mdns not in found:
     found.append(mdns)
+  for address in found:
+    if not isinstance(address, str) or not re.fullmatch(
+        r'[A-Za-z0-9][A-Za-z0-9._:-]*', address):
+      raise Failure(USAGE, 'device addresses/names must be hostnames or IPs')
+    if ':' in address:
+      try:
+        ipaddress.IPv6Address(address)
+      except ValueError:
+        raise Failure(USAGE, 'invalid device IPv6 address')
   return found
 
 
 def ssh_options(entry):
+  if not isinstance(entry['user'], str) or not re.fullmatch(
+      r'[A-Za-z_][A-Za-z0-9_-]*', entry['user']):
+    raise Failure(USAGE, 'invalid device ssh user')
   key = entry.get('key')
   key = Path(key).expanduser() if key else DEFAULT_KEY.expanduser()
   options = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10']
@@ -658,7 +671,13 @@ esac
 if ! kill -0 "$pid" 2>/dev/null; then
   echo 'Steam must be running in Game Mode' >&2; exit 1
 fi
-echo "device_time=$(date +%s)"
+now=$(date +%s)
+echo "device_time=$now"
+if [ -L "$HOME/.agent-kit-steamos-launches" ] ||
+   ! printf '%s\t%s\t%s\n' "$now" "$1" "$2" \
+     >>"$HOME/.agent-kit-steamos-launches"; then
+  echo 'cannot record the launch window' >&2; exit 1
+fi
 if python3 "$HOME/devkit-utils/steam-devkit-rpc" run-game "gameid=$1"; then
   exit 0
 else exit 1; fi
@@ -689,6 +708,10 @@ def title_command(options):
         directory not in (directory / start).resolve().parents:
       raise Failure(USAGE, '--start must name a file inside DIR')
   config = load_config()
+  if options.action == 'launch':
+    identity = one_line('holder', holder(config))
+    if '\0' in identity:
+      raise Failure(USAGE, 'the holder must not contain NUL')
   name, entry = device(config, options.device)
   if options.action != 'list':
     require_lease(config, name, entry, f'title {options.action}')
@@ -746,7 +769,7 @@ def title_command(options):
     text = f'Registered {gameid} on {name}.'
     code = OK
   elif options.action == 'launch':
-    proc = ssh(entry, TITLE_LAUNCH, [gameid])
+    proc = ssh(entry, TITLE_LAUNCH, [gameid, identity])
     epoch = parse(proc.stdout).get('device_time')
     if not epoch or not epoch.isdigit():
       raise Failure(REFUSED, proc.stderr.strip() or
@@ -871,6 +894,285 @@ def status_command(options):
   return OK
 
 
+# Read logs using the device clock and timezone. NAME selects a launch
+# window, not a journal filter: Steam combines output from several titles.
+LOGS_SCRIPT = r'''
+python3 - "$@" <<'PY'
+import json, re, subprocess, sys, time
+from collections import deque
+from pathlib import Path
+name, since, until, limit = sys.argv[1:]
+try:
+  if not since:
+    ledger = Path.home() / '.agent-kit-steamos-launches'
+    if ledger.is_file():
+      for line in ledger.read_text(errors='replace').splitlines():
+        fields = line.split(None, 2)
+        if len(fields) != 3 or not fields[0].isascii() or \
+            not fields[0].isdigit() or \
+            not re.fullmatch(r'[A-Za-z0-9]+', fields[1]):
+          continue
+        if (not name or fields[1] == name) and \
+            0 <= int(fields[0]) <= 253402300799:
+          since = fields[0]
+    if not since:
+      raise ValueError('no recorded launch; supply --since EPOCH')
+  since, until = int(since), int(until) if until else int(time.time())
+  if since > until:
+    raise ValueError('launch window starts after --until or device now')
+  try:
+    proc = subprocess.run(
+      ['journalctl', '--user', '--since', '@' + str(since), '--until',
+       '@' + str(until), '-o', 'short-iso', '--no-pager'],
+      capture_output=True, text=True, errors='replace', timeout=30)
+  except FileNotFoundError:
+    proc = None
+  source = 'journalctl'
+  if proc is not None and proc.returncode == 0:
+    lines = proc.stdout.splitlines()
+  else:
+    source = 'console-linux.txt'
+    path = Path.home() / '.local/share/Steam/logs/console-linux.txt'
+    lines = deque(maxlen=int(limit))
+    in_window = False
+    with path.open(errors='replace') as stream:
+      for line in stream:
+        match = re.match(r'^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\]', line)
+        if match:
+          try:
+            epoch = time.mktime(time.strptime(match[1], '%Y-%m-%d %H:%M:%S'))
+            in_window = since <= epoch <= until
+          except (ValueError, OverflowError):
+            in_window = False
+        if in_window:
+          lines.append(line.rstrip('\n'))
+  print(json.dumps({'source': source, 'since': since, 'until': until,
+                    'lines': list(lines)[-int(limit):]}))
+except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+  print(str(error), file=sys.stderr)
+  sys.exit(1)
+PY
+'''
+
+
+def logs_command(options):
+  if options.name is not None and not TITLE_NAME.fullmatch(options.name):
+    raise Failure(USAGE, 'title NAME must contain only letters and digits')
+  for value in (options.since, options.until):
+    if value is not None and not 0 <= value <= 253402300799:
+      raise Failure(USAGE, 'epochs must be between 0 and 253402300799')
+  if options.since is not None and options.until is not None and \
+      options.since > options.until:
+    raise Failure(USAGE, '--since must not be after --until')
+  if not 1 <= options.lines <= 1000000:
+    raise Failure(USAGE, '--lines must be between 1 and 1000000')
+  _, entry = device(load_config(), options.device)
+  result = last_json(ssh(entry, LOGS_SCRIPT, [
+    options.name or '', '' if options.since is None else options.since,
+    '' if options.until is None else options.until, options.lines]), 'logs')
+  if options.json:
+    print(json.dumps(result, indent=2))
+  else:
+    for line in result['lines']:
+      print(line)
+  return OK
+
+
+# Valve requests mode 1 (baseplane) and discovers a gamescope-named PNG
+# in /tmp. Preserve existing captures; claim only a newly created file.
+# A small mutex serializes our requests, independently of the device lease.
+CAPTURE_SCRIPT = r'''
+python3 - <<'PY'
+import json, os, shutil, subprocess, sys, tempfile, time
+from pathlib import Path
+root = Path('/tmp')
+lock = Path.home() / '.agent-kit-steamos-capture'
+folder = None
+owned = False
+ready = False
+try:
+  if not shutil.which('pgrep') or subprocess.run(
+      ['pgrep', '-x', 'gamescope'], stdout=subprocess.DEVNULL).returncode:
+    raise ValueError('gamescope is not running; capture needs Game Mode')
+  if not shutil.which('xprop'):
+    raise ValueError('xprop is unavailable; capture needs Game Mode')
+  try:
+    lock.mkdir()
+    owned = True
+  except FileExistsError:
+    raise ValueError('another capture is active (or left a capture lock)')
+  before = set(root.glob('gamescope*.png'))
+  folder = Path(tempfile.mkdtemp(prefix='steamos-capture-', dir=str(root)))
+  proc = subprocess.run(
+    ['xprop', '-root', '-f', 'GAMESCOPECTRL_DEBUG_REQUEST_SCREENSHOT', '32c',
+     '-set', 'GAMESCOPECTRL_DEBUG_REQUEST_SCREENSHOT', '1'],
+    env=dict(os.environ, DISPLAY=':0'), capture_output=True, text=True,
+    timeout=5)
+  if proc.returncode:
+    raise ValueError('gamescope screenshot request failed: ' + proc.stderr)
+  deadline = time.monotonic() + 10
+  while time.monotonic() < deadline:
+    for path in sorted(set(root.glob('gamescope*.png')) - before):
+      if path.is_symlink() or not path.is_file():
+        continue
+      try:
+        # Do not copy an asynchronous, partially written PNG.
+        with path.open('rb') as stream:
+          signature = stream.read(8)
+          stream.seek(-12, 2)
+          end = stream.read()
+        if signature != b'\x89PNG\r\n\x1a\n' or \
+            end != b'\x00\x00\x00\x00IEND\xaeB`\x82':
+          continue
+        destination = folder / 'capture.png'
+        path.rename(destination)
+      except (OSError, ValueError):
+        continue
+      print(json.dumps({'path': str(destination)}))
+      ready = True
+      break
+    if ready:
+      break
+    time.sleep(.1)
+  if not ready:
+    raise ValueError('gamescope screenshot timed out after 10 seconds')
+except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+  print(str(error), file=sys.stderr)
+  sys.exit(1)
+finally:
+  if folder is not None and not ready:
+    folder.rmdir()
+  if owned:
+    lock.rmdir()
+PY
+'''
+
+CAPTURE_PATH = re.compile(r'/tmp/steamos-capture-[A-Za-z0-9_-]+/capture\.png')
+CSV_NAME = re.compile(r'mangoapp_[A-Za-z0-9._-]+\.csv')
+
+
+def pull_file(entry, remote, output):
+  """Download a validated absolute path with shared ssh options/fallback."""
+  if not re.fullmatch(r'/[A-Za-z0-9._/-]+', remote) or \
+      '..' in Path(remote).parts:
+    raise Failure(REFUSED, 'unsafe remote path for scp')
+  if not shutil.which('scp'):
+    raise Failure(USAGE, 'scp is needed to download device files')
+  errors = []
+  temporary = None
+  try:
+    with tempfile.NamedTemporaryFile(dir=output.parent,
+                                     prefix='.steamos-download-',
+                                     delete=False) as stream:
+      temporary = Path(stream.name)
+    for address in targets(entry):
+      # Bracket IPv6 addresses in scp's host:path syntax.
+      address_arg = f'[{address}]' if ':' in address else address
+      proc = subprocess.run(
+        ['scp', *ssh_options(entry), '--',
+         f'{entry["user"]}@{address_arg}:{remote}', str(temporary)],
+        capture_output=True, text=True)
+      if proc.returncode == 0:
+        temporary.replace(output)
+        return
+      errors.append(f'{address}: {proc.stderr.strip()}')
+      if proc.returncode != 255:
+        break
+  except OSError as error:
+    raise Failure(USAGE, f'cannot write --out: {error}')
+  finally:
+    if temporary is not None:
+      temporary.unlink(missing_ok=True)
+  raise Failure(UNREACHABLE, 'downloading device file failed:\n  ' +
+                '\n  '.join(errors))
+
+
+def output_path(value):
+  if '\0' in value:
+    raise Failure(USAGE, '--out must not contain NUL')
+  return Path(value).expanduser().resolve()
+
+
+def capture_command(options):
+  name, entry = device(load_config(), options.device)
+  safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', str(name))
+  timestamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+  filename = f'steamos-capture-{safe_name}-{timestamp}.png'
+  output = output_path(options.out or os.path.join(os.getcwd(), filename))
+  if not output.parent.is_dir() or output.is_dir():
+    raise Failure(USAGE, '--out must name a file in an existing directory')
+  reply = last_json(ssh(entry, CAPTURE_SCRIPT, []), 'capture')
+  remote = reply.get('path')
+  if not isinstance(remote, str) or not CAPTURE_PATH.fullmatch(remote):
+    raise Failure(UNREACHABLE, 'capture returned an unsafe temporary path')
+  try:
+    pull_file(entry, remote, output)
+  finally:
+    cleanup = ssh(entry, 'rm -f -- "$1" && rmdir -- "${1%/*}"\n', [remote])
+    if cleanup.returncode:
+      raise Failure(REFUSED, 'could not remove the device capture temp file')
+  if options.json:
+    print(json.dumps({'device': name, 'output': str(output)}, indent=2))
+  else:
+    print(f'Screenshot saved to {output}')
+  return OK
+
+
+FRAMETIMES_FILES = r'''
+python3 - <<'PY'
+import json, re
+from pathlib import Path
+files = [(path.stat().st_mtime_ns, str(path))
+         for path in Path.home().glob('mangoapp_*.csv')
+         if not path.is_symlink() and path.is_file() and
+         re.fullmatch(r'mangoapp_[A-Za-z0-9._-]+\.csv', path.name)]
+latest = max((stamp for stamp, _ in files), default=None)
+print(json.dumps({'files': sorted(path for stamp, path in files
+                                 if stamp == latest)}))
+PY
+'''
+
+
+def frametimes_command(options):
+  config = load_config()
+  name, entry = device(config, options.device)
+  if options.action != 'pull':
+    require_lease(config, name, entry, f'frametimes {options.action}')
+    proc = ssh(entry, 'if mangohudctl set log_session "$1"; then exit 0\n'
+               'else exit 1; fi\n',
+               ['true' if options.action == 'start' else 'false'])
+    if proc.returncode:
+      raise Failure(REFUSED, 'MangoHud logging control failed: ' +
+                    proc.stderr.strip())
+    result = {'device': name, 'logging': options.action == 'start'}
+    text = f'MangoHud logging {options.action} on {name}.'
+  else:
+    output = output_path(options.out or os.getcwd())
+    if output.exists() and not output.is_dir():
+      raise Failure(USAGE, '--out must name a directory')
+    reply = last_json(ssh(entry, FRAMETIMES_FILES, []), 'frametimes inventory')
+    files = reply.get('files')
+    if not isinstance(files, list) or any(
+        not isinstance(path, str) or not CSV_NAME.fullmatch(Path(path).name)
+        or not re.fullmatch(r'/[A-Za-z0-9._/-]+', path)
+        or '..' in Path(path).parts for path in files):
+      raise Failure(UNREACHABLE, 'frametimes returned unsafe CSV paths')
+    if not files:
+      raise Failure(REFUSED, 'no MangoHud CSV logs in the device home; '
+                    'start and stop a logging session first')
+    try:
+      output.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+      raise Failure(USAGE, f'cannot create --out directory: {error}')
+    for remote in files:
+      pull_file(entry, remote, output / Path(remote).name)
+    result = {'device': name,
+              'files': [str(output / Path(path).name) for path in files]}
+    text = '\n'.join(result['files'])
+  print(json.dumps(result, indent=2) if options.json else text)
+  return OK
+
+
 def main(argv=None):
   parser = argparse.ArgumentParser(prog='steamos', description=__doc__)
   parser.add_argument('--device', help='configured device name')
@@ -911,7 +1213,22 @@ def main(argv=None):
     common_options(sub)
   wake = commands.add_parser('wake', help='wake a wired device over LAN')
   wake.add_argument('--wait', type=int, default=60, help='seconds to await ssh')
-  for sub in (status, lease, devkit, install, title, wake):
+  logs = commands.add_parser('logs', help='read the latest launch window')
+  logs.add_argument('name', nargs='?')
+  logs.add_argument('--since', type=int, help='start epoch (device clock)')
+  logs.add_argument('--until', type=int, help='end epoch (default: device now)')
+  logs.add_argument('--lines', type=int, default=200, help='last N lines')
+  capture = commands.add_parser('capture', help='capture a gamescope PNG')
+  capture.add_argument('--out', help='local PNG file')
+  frametimes = commands.add_parser('frametimes', help='MangoHud CSV logging')
+  frame_actions = frametimes.add_subparsers(dest='action', required=True)
+  for action in ('start', 'stop', 'pull'):
+    sub = frame_actions.add_parser(action)
+    if action == 'pull':
+      sub.add_argument('--out', help='local directory (default: current)')
+    common_options(sub)
+  for sub in (status, lease, devkit, install, title, wake, logs, capture,
+              frametimes):
     common_options(sub)
   options = parser.parse_args(argv)
   options.hours = getattr(options, 'hours', None)
@@ -924,6 +1241,12 @@ def main(argv=None):
       return title_command(options)
     if options.command == 'wake':
       return wake_command(options)
+    if options.command == 'logs':
+      return logs_command(options)
+    if options.command == 'capture':
+      return capture_command(options)
+    if options.command == 'frametimes':
+      return frametimes_command(options)
     return lease_command(options)
   except Failure as failure:
     print(f'steamos: {failure}', file=sys.stderr)

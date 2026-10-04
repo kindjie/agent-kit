@@ -12,6 +12,16 @@ refusals, exact shortcut arguments, exit-0 JSON errors, invalid leftovers,
 exact re-registration mirrors, unsafe remote-path refusal, scoped removal
 after non-zero helper exits and Steam sync failures, and device-clock
 launch timestamps.
+Logs tests cover recorded launch windows, exact journal arguments, console
+timestamp/continuation filtering, line limits, missing records and malformed
+epochs. Capture tests fake gamescope/xprop and scp, checking the numeric
+Valve protocol, bounded PNG wait, preservation of existing captures and
+local outputs, scoped temp cleanup, Game Mode refusal and address fallback.
+Frametime tests check lease refusals, exact mangohudctl arguments, newest
+home CSVs (mtime ties), symlink/unsafe-name exclusion and missing logs.
+All new device commands run behind fake ssh; no live capture or MangoHud
+control is performed. Download reply and connection-value tests reject
+unsafe shell-bound values before transfer or deletion.
 Wake tests stub sockets and ssh to check packet bytes, broadcast targeting,
 three packets spaced 100 ms apart, validation and unreachable results
 without sending packets. Never use real devices or the network for this suite.

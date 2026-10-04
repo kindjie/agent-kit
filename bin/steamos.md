@@ -17,6 +17,10 @@ steamos title register Demo1 ./build --start ./run.sh --arg=--verbose
 steamos title launch Demo1 --json
 steamos title list
 steamos title remove Demo1
+steamos logs [Demo1] [--since EPOCH] [--until EPOCH] [--lines N] [--json]
+steamos capture [--out FILE]         # gamescope screenshot; Game Mode
+steamos frametimes start | stop      # change MangoHud logging; lease needed
+steamos frametimes pull [--out DIR]  # download newest CSV(s); no lease
 steamos wake [--wait N]              # broadcast, then wait for ssh
 ```
 
@@ -163,7 +167,10 @@ leftovers; JSON contains `games` and `invalid_leftovers`.
 It records `date +%s` on the device immediately before calling Valve's
 launch RPC. JSON contains integer `device_time`, `launched`, `output`
 and `stderr`, including when the RPC fails after the time was captured.
-Use that device-clock time as the start of a user-journal log window.
+It also appends that epoch, NAME and holder (tab-separated) to
+`~/.agent-kit-steamos-launches` before calling the RPC, including failed
+launch attempts. If the record cannot be written, the launch is refused.
+Use `steamos logs NAME` to read that device-clock window.
 
 `title remove NAME` requires your lease and refuses named invalid leftovers
 before deletion, just as registration does. It calls Valve's delete helper
@@ -181,6 +188,75 @@ before each prepare, copy and shortcut-registration step.
 All title commands require the device's recorded helper commit to match
 the configured pin. If it does not, run `steamos devkit install` with the
 lease before retrying.
+
+## Logs
+
+`logs [NAME] [--since EPOCH] [--until EPOCH] [--lines N]` is read-only
+and needs no lease or Valve helpers. By default it starts at the last
+recorded launch of NAME, or any title when NAME is omitted, and ends at
+the device's current epoch. If there is no matching launch record, supply
+`--since`. Epochs are integer seconds on the device clock; `--lines`
+defaults to the last 200 lines (allowed range 1 to 1000000).
+
+It reads `journalctl --user --since @A --until @B -o short-iso --no-pager`.
+If journalctl is missing or fails, it reads
+`~/.local/share/Steam/logs/console-linux.txt`, filtering its timestamped
+entries and continuation lines to the window using the device's local
+timezone. A working journal with no entries returns an empty result.
+JSON is `{source, since, until, lines: [...]}`, with source `journalctl`
+or `console-linux.txt`. NAME selects the time window; output may include
+other titles and user services. Steam combines title stdout/stderr in
+these sources; there are no per-launch log files.
+
+## Capture
+
+`capture [--out FILE]` requests a gamescope screenshot in Game Mode,
+without a lease or Valve helpers. It uses Valve's `DISPLAY=:0 xprop`
+protocol: `GAMESCOPECTRL_DEBUG_REQUEST_SCREENSHOT`, format `32c`, mode
+`1` (baseplane). The property takes a numeric mode, not a filename;
+gamescope creates a `/tmp/gamescope*.png` asynchronously. The command
+preserves existing screenshots, waits up to 10 seconds for a newly
+created complete PNG, then moves it into a private device temp directory.
+
+It downloads with scp using the same key, ssh options and address fallback
+as other commands, then removes its device temp file and directory,
+including after a failed copy. Downloads replace local output only after
+a successful transfer. The default output is
+`./steamos-capture-<device>-<UTC YYYYMMDDTHHMMSSZ>.png`; `--out` requires
+an existing parent directory. JSON reports `device` and `output`.
+Missing gamescope reports that Game Mode is required; xprop failures
+and timeouts exit 1. Concurrent agent-kit captures are refused by a
+short-lived capture lock, separate from the device lease. An interrupted
+connection may leave that lock or a temp file: inspect before removing
+them; never remove another capture's files or run broad gamescope cleanup.
+
+## Frametimes
+
+`frametimes start` and `frametimes stop` require your active device lease.
+They run `mangohudctl set log_session true` or `false`, matching Valve's
+PerfOverlay controls. They change logging only; MangoHud must already be
+available on the device and attached to the running game. A successful
+control command does not prove that the game produced frame data.
+
+`frametimes pull [--out DIR]` needs no lease or Valve helpers. Valve
+downloads `mangoapp_*.csv` from the device user's home; this command copies
+the newest regular matching file(s), including ties in modification time,
+to DIR (default: current directory). It ignores symlinks and unsafe names,
+preserves device files, and refuses when no CSVs exist. It creates DIR as
+needed and uses scp with the same ssh options/address fallback. JSON gives
+`device` and `files`; start/stop instead give `device` and `logging`.
+
+```sh
+steamos lease take 'Demo1 frametime check'
+steamos title launch Demo1 --json
+steamos frametimes start
+# Let the title run through the scenario being measured.
+steamos frametimes stop
+steamos frametimes pull --out ./frametimes
+steamos logs Demo1 --lines 100 --json
+steamos capture --out ./capture.png
+steamos lease release
+```
 
 ## Wake
 

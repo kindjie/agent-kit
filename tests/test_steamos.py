@@ -1,5 +1,6 @@
 """steamos CLI tests: device-side scripts run locally behind a fake ssh."""
 import json
+import base64
 import os
 from pathlib import Path
 import runpy
@@ -10,6 +11,7 @@ import textwrap
 from concurrent.futures import ThreadPoolExecutor
 import time
 import unittest
+import uuid
 from unittest import mock
 
 BIN = Path(__file__).resolve().parents[1] / 'bin' / 'steamos'
@@ -548,6 +550,309 @@ class SteamosTest(unittest.TestCase):
     self.assertFalse(result['launched'])
     self.assertIsInstance(result['device_time'], int)
     self.assertIn('Steam RPC failed', result['stderr'])
+
+  def fixture_tool(self, name, script):
+    path = self.root / 'bin' / name
+    path.write_text('#!/usr/bin/env python3\n' + textwrap.dedent(script))
+    path.chmod(0o755)
+
+  def launch_records(self, host='10.0.0.5'):
+    home = self.device_home(host)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / '.agent-kit-steamos-launches').write_text(
+      '100 Demo1 agent-a\n120 Other2 agent-b\n130 Demo1 agent-a\n'
+      'broken record\n999 bad-name agent-a\n')
+
+  def journal_fixture(self):
+    self.fixture_tool('journalctl', '''
+      import json, os, pathlib, sys
+      (pathlib.Path.home() / 'journal-args').write_text(
+        json.dumps(sys.argv[1:]))
+      if os.environ.get('FAKE_JOURNAL_FAIL'):
+        sys.exit(1)
+      print('1970-01-01T00:02:11+00:00 steam: first')
+      print('1970-01-01T00:02:12+00:00 steam: connected=1')
+      print('1970-01-01T00:02:13+00:00 steam: last')
+    ''')
+
+  def test_launch_appends_device_window_and_holder(self):
+    self.title_helpers()
+    self.run_cli('lease', 'take', 'launch')
+    steam = self.device_home() / '.steam'
+    steam.mkdir()
+    (steam / 'steam.pid').write_text(str(os.getpid()))
+    for fail in (False, True):
+      if fail:
+        self.env['FAKE_LAUNCH_FAIL'] = '1'
+      proc = self.run_cli('title', 'launch', 'Demo1', '--json',
+                          code=1 if fail else 0)
+      epoch = json.loads(proc.stdout)['device_time']
+      records = (self.device_home() / '.agent-kit-steamos-launches')
+      self.assertEqual(records.read_text().splitlines()[-1].split(),
+                       [str(epoch), 'Demo1', 'agent-a'])
+    self.assertEqual(len(records.read_text().splitlines()), 2)
+
+  def test_logs_title_window_journal_arguments_and_line_limit(self):
+    self.launch_records()
+    self.journal_fixture()
+    result = json.loads(self.run_cli('logs', 'Demo1', '--until', '140',
+                                     '--lines', '2', '--json').stdout)
+    self.assertEqual(result, {
+      'source': 'journalctl', 'since': 130, 'until': 140,
+      'lines': ['1970-01-01T00:02:12+00:00 steam: connected=1',
+                '1970-01-01T00:02:13+00:00 steam: last']})
+    args = json.loads((self.device_home() / 'journal-args').read_text())
+    self.assertEqual(args, ['--user', '--since', '@130', '--until', '@140',
+                            '-o', 'short-iso', '--no-pager'])
+    self.assertFalse((self.device_home() / '.agent-kit-steamos-lease')
+                     .exists())
+    result = json.loads(self.run_cli('logs', '--json').stdout)
+    self.assertEqual(result['since'], 130)
+    self.assertLess(abs(result['until'] - time.time()), 3)
+    self.assertIn('first', self.run_cli('logs', '--since', '100').stdout)
+
+  def test_logs_missing_launch_requires_explicit_since(self):
+    self.journal_fixture()
+    self.launch_records()
+    proc = self.run_cli('logs', 'Missing3', code=1)
+    self.assertIn('--since', proc.stderr)
+    self.run_cli('logs', 'Missing3', '--since', '100')
+    (self.device_home() / '.agent-kit-steamos-launches').unlink()
+    self.run_cli('logs', code=1)
+
+  def test_logs_console_fallback_filters_window_and_continuations(self):
+    self.launch_records()
+    self.journal_fixture()
+    self.env['FAKE_JOURNAL_FAIL'] = '1'
+    console = (self.device_home() / '.local/share/Steam/logs'
+               / 'console-linux.txt')
+    console.parent.mkdir(parents=True)
+    console.write_text(
+      'orphan\n[1970-01-01 00:02:09] before\nold continuation\n'
+      '[1970-01-01 00:02:10] first\nstack frame\n'
+      '[1970-01-01 00:02:20] last\n'
+      '[1970-01-01 00:02:21] after\nafter continuation\n')
+    # Steam's console timestamps use the device's local timezone.
+    self.env['TZ'] = 'UTC'
+    result = json.loads(self.run_cli('logs', '--until', '140',
+                                     '--json').stdout)
+    self.assertEqual(result['source'], 'console-linux.txt')
+    self.assertEqual(result['lines'], [
+      '[1970-01-01 00:02:10] first', 'stack frame',
+      '[1970-01-01 00:02:20] last'])
+    console.unlink()
+    self.run_cli('logs', '--since', '100', code=1)
+
+  def test_logs_invalid_values_fail_before_ssh(self):
+    for args in (('bad-name',), ('--since', '-1'),
+                 ('--until', 'nan'), ('--since', '2', '--until', '1'),
+                 ('--lines', '0'), ('--lines', '1000001'),
+                 ('--since', '999999999999999999999'),
+                 ('--since', '1; touch injected')):
+      self.run_cli('logs', *args, code=2)
+    self.assertFalse((self.root / 'hosts.log').exists())
+
+  def test_transfer_connection_values_and_holder_are_validated(self):
+    for entry in ({'name': 'unit; touch bad'}, {'address': '-oProxyCommand=x'},
+                  {'name': 'unit', 'user': 'deck; touch bad'}):
+      self.configure({'devices': {'unit': entry}})
+      self.run_cli('capture', code=2)
+    self.assertFalse((self.root / 'hosts.log').exists())
+    self.configure({'devices': {'unit': {'address': '10.0.0.5'}}})
+    for identity in ('agent\nforged', 'agent\0bad'):
+      module = runpy.run_path(str(BIN))
+      with mock.patch.dict(os.environ, self.env), \
+          mock.patch.dict(module['title_command'].__globals__,
+                          holder=lambda config: identity):
+        self.assertEqual(module['main'](['title', 'launch', 'Demo1']), 2)
+    self.assertFalse((self.root / 'hosts.log').exists())
+
+  def test_launch_ledger_failure_does_not_launch(self):
+    self.title_helpers()
+    self.run_cli('lease', 'take', 'launch')
+    steam = self.device_home() / '.steam'
+    steam.mkdir()
+    (steam / 'steam.pid').write_text(str(os.getpid()))
+    ledger = self.device_home() / '.agent-kit-steamos-launches'
+    target = self.root / 'unrelated'
+    target.write_text('preserve')
+    ledger.symlink_to(target)
+    proc = self.run_cli('title', 'launch', 'Demo1', '--json', code=1)
+    self.assertFalse(json.loads(proc.stdout)['launched'])
+    self.assertEqual(target.read_text(), 'preserve')
+    self.assertFalse((self.device_home() / 'launch-time').exists())
+
+  def capture_fixture(self):
+    image = Path('/tmp') / f'gamescope-test-{uuid.uuid4().hex}.png'
+    self.addCleanup(lambda: image.unlink(missing_ok=True))
+    self.env['FAKE_CAPTURE_PATH'] = str(image)
+    self.fixture_tool('pgrep', '''
+      import os, sys
+      assert sys.argv[1:] == ['-x', 'gamescope']
+      sys.exit(1 if os.environ.get('FAKE_NO_GAMESCOPE') else 0)
+    ''')
+    self.fixture_tool('xprop', '''
+      import base64, json, os, pathlib, sys
+      assert os.environ['DISPLAY'] == ':0'
+      assert sys.argv[1:] == [
+        '-root', '-f', 'GAMESCOPECTRL_DEBUG_REQUEST_SCREENSHOT', '32c',
+        '-set', 'GAMESCOPECTRL_DEBUG_REQUEST_SCREENSHOT', '1']
+      (pathlib.Path.home() / 'xprop-args').write_text(json.dumps(sys.argv))
+      if os.environ.get('FAKE_XPROP_FAIL'):
+        sys.exit(1)
+      if not os.environ.get('FAKE_CAPTURE_TIMEOUT'):
+        pathlib.Path(os.environ['FAKE_CAPTURE_PATH']).write_bytes(
+          base64.b64decode(os.environ['FAKE_PNG']))
+    ''')
+    self.env['FAKE_PNG'] = base64.b64encode(
+      b'\x89PNG\r\n\x1a\n' + b'fixture' +
+      b'\x00\x00\x00\x00IEND\xaeB`\x82').decode()
+    self.fixture_tool('scp', '''
+      import json, os, pathlib, shutil, sys
+      args = sys.argv[1:]
+      with open(os.path.join(os.environ['FAKE_SSH_ROOT'], 'scp.log'), 'a') as f:
+        f.write(json.dumps(args) + '\\n')
+      remote, out = args[-2:]
+      host, path = remote.split(':', 1)
+      if host.split('@')[-1] in os.environ.get('FAKE_SCP_DOWN', '').split():
+        sys.exit(255)
+      if os.environ.get('FAKE_SCP_FAIL'):
+        pathlib.Path(out).write_text('partial transfer')
+        sys.exit(1)
+      shutil.copyfile(path, out)
+    ''')
+    return image
+
+  def test_capture_copies_new_png_and_cleans_only_its_temp_file(self):
+    image = self.capture_fixture()
+    stale = Path('/tmp') / f'gamescope-stale-{uuid.uuid4().hex}.png'
+    stale.write_bytes(b'keep')
+    self.addCleanup(lambda: stale.unlink(missing_ok=True))
+    out = self.root / 'capture with spaces.png'
+    proc = self.run_cli('capture', '--out', str(out))
+    self.assertIn(str(out), proc.stdout)
+    self.assertEqual(out.read_bytes(), base64.b64decode(self.env['FAKE_PNG']))
+    self.assertFalse(image.exists())
+    self.assertEqual(stale.read_bytes(), b'keep')
+    args = json.loads((self.root / 'scp.log').read_text().splitlines()[0])
+    self.assertIn('BatchMode=yes', args)
+    remote = Path(args[-2].split(':', 1)[1])
+    self.assertFalse(remote.exists())
+    self.assertFalse(remote.parent.exists())
+    self.assertFalse((self.device_home() / '.agent-kit-steamos-lease')
+                     .exists())
+
+  def test_capture_default_output_and_copy_address_fallback(self):
+    self.capture_fixture()
+    self.env['FAKE_SCP_DOWN'] = '10.0.0.5'
+    module = runpy.run_path(str(BIN))
+    with mock.patch.dict(os.environ, self.env), \
+        mock.patch.object(module['os'], 'getcwd', return_value=str(self.root)):
+      self.assertEqual(module['main'](['capture']), 0)
+    outputs = list(self.root.glob('steamos-capture-unit-*.png'))
+    self.assertEqual(len(outputs), 1)
+    args = [json.loads(line) for line in
+            (self.root / 'scp.log').read_text().splitlines()]
+    self.assertEqual([a[-2].split(':')[0] for a in args],
+                     ['deck@10.0.0.5', 'deck' + '@' + 'unit.local'])
+
+  def test_capture_refuses_desktop_mode_and_failed_xprop(self):
+    self.capture_fixture()
+    self.env['FAKE_NO_GAMESCOPE'] = '1'
+    proc = self.run_cli('capture', '--out', str(self.root / 'out'), code=1)
+    self.assertIn('Game Mode', proc.stderr)
+    self.assertFalse((self.device_home() / 'xprop-args').exists())
+    del self.env['FAKE_NO_GAMESCOPE']
+    self.env['FAKE_XPROP_FAIL'] = '1'
+    self.run_cli('capture', '--out', str(self.root / 'out'), code=1)
+    self.assertFalse((self.root / 'scp.log').exists())
+
+  def test_capture_timeout_is_bounded_and_copy_failure_cleans_remote(self):
+    image = self.capture_fixture()
+    self.env['FAKE_CAPTURE_TIMEOUT'] = '1'
+    proc = self.run_cli('capture', '--out', str(self.root / 'out'), code=1)
+    self.assertIn('timed out', proc.stderr)
+    del self.env['FAKE_CAPTURE_TIMEOUT']
+    self.env['FAKE_SCP_FAIL'] = '1'
+    (self.root / 'out').write_text('preserve existing output')
+    self.run_cli('capture', '--out', str(self.root / 'out'), code=3)
+    self.assertEqual((self.root / 'out').read_text(),
+                     'preserve existing output')
+    self.assertEqual(list(self.root.glob('.steamos-download-*')), [])
+    self.assertFalse(image.exists())
+    remote = Path(json.loads((self.root / 'scp.log').read_text())[-2]
+                  .split(':', 1)[1])
+    self.assertFalse(remote.parent.exists())
+
+  def test_frametimes_start_stop_need_lease_and_use_exact_control(self):
+    self.fixture_tool('mangohudctl', '''
+      import os, pathlib, sys
+      with (pathlib.Path.home() / 'mangohud-args').open('a') as f:
+        f.write(' '.join(sys.argv[1:]) + '\\n')
+      sys.exit(1 if os.environ.get('FAKE_MANGOHUD_FAIL') else 0)
+    ''')
+    for action in ('start', 'stop'):
+      self.run_cli('frametimes', action, code=1)
+    self.run_cli('lease', 'take', 'theirs', holder='agent-b')
+    self.run_cli('frametimes', 'start', code=1)
+    self.run_cli('lease', 'release', holder='agent-b')
+    self.run_cli('lease', 'take', 'frametimes')
+    self.run_cli('frametimes', 'start')
+    self.run_cli('frametimes', 'stop')
+    args = (self.device_home() / 'mangohud-args').read_text().splitlines()
+    self.assertEqual(args, ['set log_session true', 'set log_session false'])
+    self.env['FAKE_MANGOHUD_FAIL'] = '1'
+    self.run_cli('frametimes', 'start', code=1)
+    self.age_lease(5 * 3600)
+    self.run_cli('frametimes', 'stop', code=1)
+
+  def test_frametimes_pull_newest_home_csvs_without_lease(self):
+    self.capture_fixture()  # the same fake scp handles downloads
+    self.launch_records()
+    home = self.device_home()
+    for name, stamp in (('mangoapp_old.csv', 100),
+                        ('mangoapp_new.csv', 200),
+                        ('mangoapp_new_summary.csv', 200),
+                        ('other.csv', 300)):
+      path = home / name
+      path.write_text(name)
+      os.utime(path, (stamp, stamp))
+    outside = self.root / 'outside.csv'
+    outside.write_text('private')
+    (home / 'mangoapp_link.csv').symlink_to(outside)
+    (home / 'mangoapp_bad;name.csv').write_text('unsafe')
+    out = self.root / 'frame times'
+    self.run_cli('frametimes', 'pull', '--out', str(out))
+    self.assertEqual(sorted(p.name for p in out.iterdir()),
+                     ['mangoapp_new.csv', 'mangoapp_new_summary.csv'])
+    self.assertEqual((out / 'mangoapp_new.csv').read_text(), 'mangoapp_new.csv')
+    self.assertTrue((home / 'mangoapp_old.csv').exists())
+    self.assertFalse((home / '.agent-kit-steamos-lease').exists())
+
+  def test_frametimes_pull_no_logs_is_refused(self):
+    self.run_cli('frametimes', 'pull', '--out', str(self.root / 'out'), code=1)
+
+  def test_capture_rejects_untrusted_remote_reply_before_copy_or_delete(self):
+    module = runpy.run_path(str(BIN))
+    for path in ('/tmp/other.png', '/tmp/steamos-capture-x/../capture.png',
+                 '/tmp/steamos-capture-x/capture.png; touch bad'):
+      reply = subprocess.CompletedProcess([], 0,
+        'connected=1\n' + json.dumps({'path': path}), '')
+      remote = mock.Mock(return_value=reply)
+      with mock.patch.dict(os.environ, self.env), \
+          mock.patch.dict(module['capture_command'].__globals__, ssh=remote):
+        self.assertEqual(module['main'](['capture']), 3)
+      self.assertEqual(remote.call_count, 1)
+
+  def test_new_read_commands_unreachable_and_logs_mdns_fallback(self):
+    self.launch_records('unit.local')
+    self.journal_fixture()
+    self.env['FAKE_SSH_DOWN'] = '10.0.0.5'
+    self.run_cli('logs', '--json')
+    self.env['FAKE_SSH_DOWN'] = '10.0.0.5 unit.local'
+    for args in (('logs', '--since', '100'), ('capture',),
+                 ('frametimes', 'pull')):
+      self.run_cli(*args, code=3)
 
   def test_wake_packet_and_ssh_wait_are_offline(self):
     module = runpy.run_path(str(BIN))
