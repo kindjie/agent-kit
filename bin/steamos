@@ -932,9 +932,13 @@ def register_project(config, name, entry, project_config, destination, start):
            'force_appid': None, 'lepton_args': ''}
   reply = last_json(helper(entry, 'steam-client-create-shortcut',
                            ['--parms', json.dumps(parms)]), 'title register')
+  # Valve's helper reports success as {"success": ""} and failure as
+  # {"error": ...}, both with exit status 0.
+  if 'error' in reply:
+    raise Failure(REFUSED, f'title register failed: {reply["error"]}')
   if 'success' not in reply:
     raise Failure(UNREACHABLE, 'title register returned no success result')
-  if not reply['success']:
+  if reply['success'] is False:
     raise Failure(REFUSED, 'title register reported failure')
   return reply
 

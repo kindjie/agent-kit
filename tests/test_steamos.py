@@ -504,7 +504,8 @@ class SteamosTest(unittest.TestCase):
         parms = json.loads(sys.argv[sys.argv.index('--parms') + 1])
         (pathlib.Path.home() / 'parms.json').write_text(json.dumps(parms))
         print('helper progress')
-        print(os.environ.get('FAKE_SHORTCUT_REPLY', '{"success": true}'))
+        # Valve's helper reports success with an empty string.
+        print(os.environ.get('FAKE_SHORTCUT_REPLY', '{"success": ""}'))
       ''',
       'steamos-list-games': '''
         import json, pathlib
