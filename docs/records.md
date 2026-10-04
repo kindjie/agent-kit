@@ -74,9 +74,11 @@ their full text, including text with evidence markers. Digits select a
 checklist number, so an all-digit check text must be selected by number.
 Exact text wins over a `key:` prefix; ambiguous matches report their
 numbers. Evidence and n/a values cannot contain ` -- evidence: ` or
-`: n/a -- ` because those strings delimit the stored value. For older
-checked lines containing multiple markers, select an added check by its
-full text; number selection refuses an ambiguous suffix. `uncheck` and
+`: n/a -- ` because those strings delimit the stored value; a checked
+item is therefore selected by its full text up to the last marker. Older
+checked lines whose stored value itself contains a marker cannot be told
+apart from item text, so every selector refuses them; correct such a
+line by hand. `uncheck` and
 `reopen` require a non-empty `--reason`. The review field is separate from
 the work-reviewed check. `agent-task --help` summarizes transitions; each
 subcommand's `--help` describes its options.

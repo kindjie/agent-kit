@@ -229,6 +229,37 @@ class TransitionTest(RecordsFixture):
     self.assertIn("- [ ] " + item + "\n",
                   self.run_cmd("agent-task", "show", task))
 
+  def test_short_text_matching_inner_marker_split_is_refused(self):
+    self.init()
+    item = "deploy -- evidence: staging"
+    task = self.task("Inner split", "--check", item)
+    self.run_task("agent-a", "claim", task)
+    self.run_task("agent-a", "check", task, item, "--evidence", "E")
+    head = self.git_head()
+    for args in (("check", task, "deploy", "--evidence", "F"),
+                 ("uncheck", task, "deploy", "--reason", "retry")):
+      result = subprocess.run(
+        [sys.executable, str(BIN / "agent-task"), "--agent", "agent-a",
+         *args], env=self.env, text=True, capture_output=True, timeout=8)
+      self.assertEqual(result.returncode, 1, result.stderr)
+      self.assertIn("select by full item text", result.stderr)
+    self.assertEqual(self.git_head(), head)
+    self.assertIn("- [x] " + item + " -- evidence: E\n",
+                  self.run_cmd("agent-task", "show", task))
+
+  def test_link_corrections_reject_blank_reason(self):
+    self.init()
+    task = self.task("Blank reason")
+    self.run_task("agent-a", "claim", task)
+    self.run_task("agent-a", "link", task, "--pr", "https://example.com/1")
+    for option in ("--demote", "--remove"):
+      result = subprocess.run(
+        [sys.executable, str(BIN / "agent-task"), "--agent", "agent-a",
+         "link", task, option, "https://example.com/1", "--reason", "  "],
+        env=self.env, text=True, capture_output=True, timeout=8)
+      self.assertEqual(result.returncode, 2, result.stderr)
+      self.assertIn("--reason required", result.stderr)
+
   def test_check_rejects_markers_in_values_without_writing(self):
     self.init()
     task = self.task("Ambiguous values", "--check", "plain item")
@@ -294,14 +325,11 @@ class TransitionTest(RecordsFixture):
       subprocess.run(["git", "-C", str(self.tasks), *args], env=self.env,
                      check=True, capture_output=True)
     head = self.git_head()
-    for number in ("5", "6"):
-      self.run_task("agent-a", "uncheck", task, number, "--reason", "retry",
-                    code=1)
+    # Item text and value cannot be told apart, so nothing is guessed.
+    for selector in ("5", "6", "A", "B"):
+      self.run_task("agent-a", "uncheck", task, selector, "--reason",
+                    "retry", code=1)
       self.assertEqual(self.git_head(), head)
-    for item in ("A", "B"):
-      self.run_task("agent-a", "uncheck", task, item, "--reason", "retry")
-    shown = self.run_cmd("agent-task", "show", task)
-    self.assertIn("- [ ] A\n- [ ] B\n", shown)
 
   def test_added_check_without_colon_is_findable_by_text(self):
     self.init()

@@ -554,7 +554,7 @@ def checklist_item(body, item):
            content.startswith(FIXED[index][0] + ":") else None)
   if fixed:
     key = fixed[0]
-  elif not re.fullmatch(r"[0-9]+", item) and item in texts[index]:
+  elif not re.fullmatch(r"[0-9]+", item) and item == texts[index][-1]:
     key = item
   elif len(texts[index]) > 1:
     raise RecordsError("ambiguous stored checklist suffix; select by full "
@@ -905,14 +905,14 @@ def alter_task(root, args, agent, push, changes=None):
     elif args.doc:
       links.append("doc:" + one_line(args.doc))
     elif args.demote:
-      if not args.reason:
+      if not (args.reason or "").strip():
         raise RecordsError("--reason required", 2)
       if "pr:" + args.demote not in links:
         raise RecordsError("PR link not found", 1)
       links.remove("pr:" + args.demote)
       links.append("ref:" + args.demote)
     elif args.remove:
-      if not args.reason:
+      if not (args.reason or "").strip():
         raise RecordsError("--reason required", 2)
       if args.remove in comma(fields.get("related", "")):
         other = task_path(root, args.remove)
