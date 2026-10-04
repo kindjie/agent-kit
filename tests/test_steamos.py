@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -9,6 +10,7 @@ import textwrap
 from concurrent.futures import ThreadPoolExecutor
 import time
 import unittest
+from unittest import mock
 
 BIN = Path(__file__).resolve().parents[1] / 'bin' / 'steamos'
 
@@ -280,6 +282,306 @@ class SteamosTest(unittest.TestCase):
       'address': '10.0.0.5'}}, 'devkit': {'commit': 'main'}})
     status = json.loads(self.run_cli('status', '--json').stdout)
     self.assertFalse(status['devkit_pinned'])
+
+  def title_helpers(self, host='10.0.0.5'):
+    """Small Valve stand-ins; none reaches Steam or a real device."""
+    utils = self.device_home(host) / 'devkit-utils'
+    utils.mkdir(parents=True, exist_ok=True)
+    (utils / '.agent-kit-pin').write_text(
+      'a00ceb7d91ea44a0c3e714a91a06417d6e5cdb33\n')
+    scripts = {
+      'steamos-prepare-upload': '''
+        import json, pathlib, sys
+        home = pathlib.Path.home()
+        name = sys.argv[sys.argv.index('--gameid') + 1]
+        directory = home / 'devkit-game' / name
+        directory.mkdir(parents=True, exist_ok=True)
+        print(json.dumps({'directory': str(directory)}))
+      ''',
+      'steam-client-create-shortcut': '''
+        import json, os, pathlib, sys
+        parms = json.loads(sys.argv[sys.argv.index('--parms') + 1])
+        (pathlib.Path.home() / 'parms.json').write_text(json.dumps(parms))
+        print('helper progress')
+        print(os.environ.get('FAKE_SHORTCUT_REPLY', '{"success": true}'))
+      ''',
+      'steamos-list-games': '''
+        import json, pathlib
+        root = pathlib.Path.home() / 'devkit-game'
+        print(json.dumps([{'gameid': p.name} for p in root.iterdir()
+                          if p.is_dir()] if root.exists() else []))
+      ''',
+      'steamos-delete': '''
+        import os, pathlib, shutil, sys
+        assert sys.argv[1:] == ['--delete-title', 'Demo1']
+        shutil.rmtree(pathlib.Path.home() / 'devkit-game' / 'Demo1')
+        if os.environ.get('FAKE_SYNC_FAIL'):
+          print('Steam client sync of devkit games failed', file=sys.stderr)
+        if os.environ.get('FAKE_DELETE_EXIT'):
+          print('RPC unavailable', file=sys.stderr)
+          sys.exit(int(os.environ['FAKE_DELETE_EXIT']))
+      ''',
+      'steam-devkit-rpc': '''
+        import os, pathlib, sys, time
+        assert sys.argv[1:] == ['run-game', 'gameid=Demo1']
+        (pathlib.Path.home() / 'launch-time').write_text(str(int(time.time())))
+        print('launched')
+        if os.environ.get('FAKE_LAUNCH_FAIL'):
+          print('Steam RPC failed', file=sys.stderr)
+          sys.exit(255)
+      ''',
+    }
+    for name, script in scripts.items():
+      (utils / name).write_text(textwrap.dedent(script))
+    source = self.root / 'build'
+    source.mkdir(exist_ok=True)
+    (source / 'run.sh').write_text('#!/bin/sh\nexit 0\n')
+    return source
+
+  def register(self, source, *args, code=0, name='Demo1'):
+    return self.run_cli('title', 'register', name, str(source),
+                        '--start', './run.sh', *args, code=code)
+
+  def test_title_names_rejected_before_device_calls(self):
+    source = self.title_helpers()
+    for name in ('bad-name', 'bad_name', '../Demo', 'é', '', 'bad name'):
+      for action in ('register', 'launch', 'remove'):
+        if action == 'register':
+          proc = self.register(source, name=name, code=2)
+        else:
+          proc = self.run_cli('title', action, name, code=2)
+        self.assertIn('letters and digits', proc.stderr)
+    self.assertFalse((self.root / 'hosts.log').exists())
+
+  def test_title_mutations_need_lease_and_pinned_helpers(self):
+    source = self.title_helpers()
+    for action in ('register', 'launch', 'remove'):
+      args = [str(source), '--start', './run.sh'] if action == 'register' \
+        else []
+      proc = self.run_cli('title', action, 'Demo1', *args, code=1)
+      self.assertIn('lease', proc.stderr)
+    self.run_cli('lease', 'take', 'titles', holder='agent-b')
+    self.register(source, code=1)
+    self.run_cli('lease', 'release', holder='agent-b')
+    self.run_cli('lease', 'take', 'titles')
+    (self.device_home() / 'devkit-utils' / '.agent-kit-pin').unlink()
+    proc = self.register(source, code=1)
+    self.assertIn('steamos devkit install', proc.stderr)
+
+  def test_register_copies_and_passes_exact_shortcut_parameters(self):
+    source = self.title_helpers()
+    self.run_cli('lease', 'take', 'titles')
+    self.register(source, '--arg=--flag', '--arg', 'space and $quote',
+                  '--json')
+    home = self.device_home()
+    directory = home / 'devkit-game' / 'Demo1'
+    self.assertEqual((directory / 'run.sh').read_text(),
+                     (source / 'run.sh').read_text())
+    parms = json.loads((home / 'parms.json').read_text())
+    self.assertEqual(parms, {
+      'gameid': 'Demo1', 'directory': str(directory),
+      'argv': ['./run.sh', '--flag', 'space and $quote'], 'env': {},
+      'settings': {'steam_play': '0', 'compat_tool': 'SteamLinuxRuntime_4'},
+      'clear_settings': True, 'force_appid': None, 'lepton_args': ''})
+    self.register(source, '--runtime', 'none')
+    parms = json.loads((home / 'parms.json').read_text())
+    # Valve's helper reads compat_tool unconditionally; its own GUI sends
+    # an empty string when no runtime is selected.
+    self.assertEqual(parms['settings'],
+                     {'steam_play': '0', 'compat_tool': ''})
+
+  def test_register_zero_exit_json_error_and_malformed_reply_fail(self):
+    source = self.title_helpers()
+    self.run_cli('lease', 'take', 'titles')
+    self.env['FAKE_SHORTCUT_REPLY'] = '{"error": "Steam is not running"}'
+    proc = self.register(source, code=1)
+    self.assertIn('Steam is not running', proc.stderr)
+    self.env['FAKE_SHORTCUT_REPLY'] = 'not JSON'
+    self.register(source, code=3)
+    for reply in ('null', '[]', '"success"', '{}'):
+      self.env['FAKE_SHORTCUT_REPLY'] = reply
+      self.register(source, code=3)
+
+  def test_register_uses_mdns_fallback_and_preserves_other_titles(self):
+    self.env['FAKE_SSH_DOWN'] = '10.0.0.5'
+    source = self.title_helpers('unit.local')
+    other = self.device_home('unit.local') / 'devkit-game' / 'Other2'
+    other.mkdir(parents=True)
+    (other / 'keep').write_text('keep')
+    self.run_cli('lease', 'take', 'titles')
+    self.register(source)
+    self.assertEqual((other / 'keep').read_text(), 'keep')
+    self.assertTrue((other.parent / 'Demo1' / 'run.sh').is_file())
+
+  def test_register_refuses_symlinked_destination(self):
+    source = self.title_helpers()
+    self.run_cli('lease', 'take', 'titles')
+    root = self.device_home() / 'devkit-game'
+    root.mkdir()
+    (root / 'Demo1').symlink_to(source)
+    proc = self.register(source, code=1)
+    self.assertIn('symlink', proc.stderr)
+    self.assertFalse((self.device_home() / 'parms.json').exists())
+
+  def test_register_start_must_be_inside_source_and_exist(self):
+    source = self.title_helpers()
+    for start in ('/bin/sh', '../run.sh', 'missing'):
+      self.run_cli('title', 'register', 'Demo1', str(source),
+                   '--start', start, code=2)
+    self.run_cli('title', 'register', 'Demo1', str(source), code=2)
+    self.assertFalse((self.root / 'hosts.log').exists())
+
+  def test_invalid_leftovers_listed_and_registration_refused(self):
+    source = self.title_helpers()
+    root = self.device_home() / 'devkit-game'
+    root.mkdir()
+    for name, suffix in (('bad-name', 'argv'), ('bad_name', 'settings')):
+      (root / name).mkdir()
+      (root / f'{name}-{suffix}.json').write_text('{}')
+    (root / 'harmless-folder').mkdir()
+    proc = self.run_cli('title', 'list', '--json')
+    result = json.loads(proc.stdout)
+    self.assertEqual(result['invalid_leftovers'], ['bad-name', 'bad_name'])
+    self.assertIn('bad-name', self.run_cli('title', 'list').stdout)
+    self.run_cli('lease', 'take', 'titles')
+    proc = self.register(source, code=1)
+    self.assertIn('bad-name', proc.stderr)
+    self.assertIn('bad_name', proc.stderr)
+    self.assertFalse((root / 'Demo1').exists())
+    self.assertTrue((root / 'bad-name-argv.json').exists())
+
+  def test_remove_only_own_title_and_reports_sync_failure(self):
+    self.title_helpers()
+    root = self.device_home() / 'devkit-game'
+    for name in ('Demo1', 'Other2'):
+      (root / name).mkdir(parents=True)
+      for suffix in ('argv', 'env', 'settings'):
+        (root / f'{name}-{suffix}.json').write_text('keep')
+    self.run_cli('lease', 'take', 'titles')
+    result = json.loads(self.run_cli('title', 'remove', 'Demo1',
+                                     '--json').stdout)
+    self.assertTrue(result['steam_sync'])
+    self.assertEqual(sorted(p.name for p in root.iterdir()),
+                     ['Other2', 'Other2-argv.json', 'Other2-env.json',
+                      'Other2-settings.json'])
+    (root / 'Demo1').mkdir()
+    self.env['FAKE_SYNC_FAIL'] = '1'
+    proc = self.run_cli('title', 'remove', 'Demo1', '--json', code=1)
+    self.assertFalse(json.loads(proc.stdout)['steam_sync'])
+
+  def test_remove_refuses_named_invalid_leftovers_before_deleting(self):
+    self.title_helpers()
+    root = self.device_home() / 'devkit-game'
+    (root / 'Demo1').mkdir(parents=True)
+    (root / 'bad-name').mkdir()
+    (root / 'bad-name-argv.json').write_text('{}')
+    self.run_cli('lease', 'take', 'titles')
+    proc = self.run_cli('title', 'remove', 'Demo1', code=1)
+    self.assertIn('bad-name', proc.stderr)
+    self.assertTrue((root / 'Demo1').is_dir())
+    self.assertTrue((root / 'bad-name-argv.json').is_file())
+
+  def test_remove_cleans_configs_after_nonzero_helper_exit(self):
+    self.title_helpers()
+    root = self.device_home() / 'devkit-game'
+    for name in ('Demo1', 'Other2'):
+      (root / name).mkdir(parents=True)
+      for suffix in ('argv', 'env', 'settings'):
+        (root / f'{name}-{suffix}.json').write_text('keep')
+    self.run_cli('lease', 'take', 'titles')
+    self.env['FAKE_DELETE_EXIT'] = '7'
+    proc = self.run_cli('title', 'remove', 'Demo1', '--json', code=1)
+    self.assertEqual(sorted(p.name for p in root.iterdir()),
+                     ['Other2', 'Other2-argv.json', 'Other2-env.json',
+                      'Other2-settings.json'])
+    result = json.loads(proc.stdout)
+    self.assertFalse(result['steam_sync'])
+    self.assertIn('RPC unavailable', result['stderr'])
+
+  def test_register_again_mirrors_source_only_in_prepared_title(self):
+    source = self.title_helpers()
+    (source / 'obsolete').write_text('old')
+    self.run_cli('lease', 'take', 'titles')
+    self.register(source)
+    root = self.device_home() / 'devkit-game'
+    (root / 'Other2').mkdir()
+    (root / 'Other2' / 'keep').write_text('keep')
+    (root / 'Demo1-settings.json').write_text('keep config')
+    (source / 'obsolete').unlink()
+    (source / 'new').write_text('new')
+    self.register(source)
+    title = root / 'Demo1'
+    self.assertEqual(sorted(p.name for p in title.iterdir()), ['new', 'run.sh'])
+    self.assertEqual((root / 'Other2' / 'keep').read_text(), 'keep')
+    self.assertEqual((root / 'Demo1-settings.json').read_text(), 'keep config')
+
+  def test_register_refuses_unsafe_remote_path_before_rsync(self):
+    source = self.title_helpers()
+    self.run_cli('lease', 'take', 'titles')
+    unsafe = self.root / 'unsafe home'
+    unsafe.mkdir()
+    (self.root / 'devices').rename(unsafe / 'devices')
+    self.env['FAKE_SSH_ROOT'] = str(unsafe)
+    proc = self.register(source, code=1)
+    self.assertIn('unsafe remote path', proc.stderr)
+    home = unsafe / 'devices' / '10.0.0.5'
+    self.assertFalse((home / 'devkit-game' / 'Demo1' / 'run.sh').exists())
+
+  def test_launch_reports_device_time_and_needs_running_steam(self):
+    self.title_helpers()
+    self.run_cli('lease', 'take', 'launch')
+    proc = self.run_cli('title', 'launch', 'Demo1', code=1)
+    self.assertIn('Game Mode', proc.stderr)
+    steam = self.device_home() / '.steam'
+    steam.mkdir()
+    (steam / 'steam.pid').write_text(str(os.getpid()))
+    result = json.loads(self.run_cli('--json', 'title', 'launch', 'Demo1',
+                                     '--device', 'unit').stdout)
+    launched = int((self.device_home() / 'launch-time').read_text())
+    self.assertLessEqual(result['device_time'], launched)
+    self.assertLess(launched - result['device_time'], 3)
+    self.assertIn('device time',
+                  self.run_cli('title', 'launch', 'Demo1').stdout.lower())
+    self.env['FAKE_LAUNCH_FAIL'] = '1'
+    result = json.loads(self.run_cli('title', 'launch', 'Demo1', '--json',
+                                     code=1).stdout)
+    self.assertFalse(result['launched'])
+    self.assertIsInstance(result['device_time'], int)
+    self.assertIn('Steam RPC failed', result['stderr'])
+
+  def test_wake_packet_and_ssh_wait_are_offline(self):
+    module = runpy.run_path(str(BIN))
+    self.configure({'devices': {'unit': {
+      'mac': '02:00:00:00:00:01', 'broadcast': '192.0.2.255'}}})
+    sock = mock.MagicMock()
+    options = ['wake', '--wait', '0', '--json']
+    with mock.patch.dict(os.environ, self.env), \
+        mock.patch.object(module['socket'], 'socket', return_value=sock), \
+        mock.patch.dict(module['main'].__globals__, {
+          'ssh': mock.Mock(return_value=subprocess.CompletedProcess(
+            [], 0, 'connected=1\nawake=1\n', ''))}), \
+        mock.patch.object(module['time'], 'sleep') as sleep, \
+        mock.patch('sys.stdout'):
+      self.assertEqual(module['main'](options), 0)
+    packet = b'\xff' * 6 + bytes.fromhex('020000000001') * 16
+    self.assertEqual(sock.__enter__.return_value.sendto.call_args_list,
+                     [mock.call(packet, ('192.0.2.255', 9))] * 3)
+    self.assertEqual(sleep.call_args_list, [mock.call(0.1)] * 2)
+    sock.__enter__.return_value.setsockopt.assert_called_once_with(
+      module['socket'].SOL_SOCKET, module['socket'].SO_BROADCAST, 1)
+    with mock.patch.dict(os.environ, self.env), \
+        mock.patch.object(module['socket'], 'socket', return_value=sock), \
+        mock.patch.dict(module['main'].__globals__, {
+          'ssh': mock.Mock(side_effect=module['Failure'](3, 'asleep'))}), \
+        mock.patch('sys.stdout'):
+      self.assertEqual(module['main'](options), 3)
+
+  def test_wake_config_validation_precedes_socket_or_ssh(self):
+    for entry in ({}, {'mac': 'garbage'}, {'mac': '00:00:00:00:00:GG'},
+                  {'mac': '02:00:00:00:00:01', 'broadcast': 'not-an-ip'}):
+      self.configure({'devices': {'unit': entry}})
+      self.run_cli('wake', '--wait', '0', code=2)
+    self.assertFalse((self.root / 'hosts.log').exists())
 
   def test_status_reports_unpinned_devkit_utils(self):
     (self.device_home() / 'devkit-utils').mkdir(parents=True)

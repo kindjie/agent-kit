@@ -7,6 +7,7 @@ steamos.md beside this file.
 """
 import argparse
 import getpass
+import ipaddress
 import json
 import os
 import re
@@ -27,6 +28,7 @@ DEVKIT_COMMIT = 'a00ceb7d91ea44a0c3e714a91a06417d6e5cdb33'
 DEVKIT_PIN_FILE = '.agent-kit-pin'
 COMMIT = re.compile(r'[0-9a-f]{40}')
 SAFE_PATH = re.compile(r'[A-Za-z0-9._-][A-Za-z0-9._/-]*')
+TITLE_NAME = re.compile(r'[A-Za-z0-9]+')
 
 # Every device script starts by printing this line, so a dropped
 # connection after the script began is not mistaken for one that never
@@ -284,14 +286,21 @@ def ssh_options(entry):
   return options
 
 
-def ssh(entry, script, args):
+def ssh(entry, script, args, timeout=None):
   options = ssh_options(entry)
   remote = 'sh -s -- ' + ' '.join(shlex.quote(str(a)) for a in args)
   errors = []
+  deadline = time.monotonic() + timeout if timeout is not None else None
   for address in targets(entry):
-    proc = subprocess.run(
-      ['ssh', *options, f'{entry["user"]}@{address}', remote],
-      input=PREAMBLE + script, capture_output=True, text=True)
+    remaining = max(0.01, deadline - time.monotonic()) if deadline else None
+    try:
+      proc = subprocess.run(
+        ['ssh', *options, f'{entry["user"]}@{address}', remote],
+        input=PREAMBLE + script, capture_output=True, text=True,
+        timeout=remaining)
+    except subprocess.TimeoutExpired:
+      errors.append(f'{address}: ssh timed out')
+      continue
     if proc.returncode != 255:
       return proc
     if 'connected=1' in proc.stdout.splitlines():
@@ -537,14 +546,9 @@ def devkit_command(options):
   config = load_config()
   name, entry = device(config, options.device)
   source, commit = devkit_pin(config)
-  _, grace, legacy = lease_policy(config)
   # Replacing the helpers can break a title another agent is running, so
   # this needs the lease like any other change to the device.
-  proc = ssh(entry, LEASE_SCRIPT,
-             ['check', holder(config), '', 0, grace, '', *legacy])
-  if proc.returncode != 0:
-    raise Failure(REFUSED, f'installing the helpers needs the {name} '
-                  'lease: run `steamos lease take PURPOSE` first')
+  require_lease(config, name, entry, 'installing the helpers')
   utils = devkit_cache(source, commit)
   proc = ssh(entry, DEVKIT_PREPARE, [DEVKIT_PIN_FILE])
   if proc.returncode == 1:
@@ -553,24 +557,7 @@ def devkit_command(options):
   if proc.returncode != 0:
     raise Failure(UNREACHABLE, f'device script failed: '
                   f'{proc.stderr.strip()}')
-  if not shutil.which('rsync'):
-    raise Failure(USAGE, 'rsync is needed to copy the helpers')
-  remote_shell = ' '.join(shlex.quote(o) for o in ['ssh', *ssh_options(entry)])
-  errors = []
-  for address in targets(entry):
-    proc = subprocess.run(
-      ['rsync', '-a', '--delete', '-e', remote_shell, f'{utils}/',
-       f'{entry["user"]}@{address}:devkit-utils/'],
-      capture_output=True, text=True)
-    if proc.returncode == 0:
-      break
-    errors.append(f'{address}: {proc.stderr.strip()}')
-    if proc.returncode != 255:
-      raise Failure(UNREACHABLE, 'copying the helpers failed:\n  ' +
-                    '\n  '.join(errors))
-  else:
-    raise Failure(UNREACHABLE, 'cannot reach the device over ssh:\n  ' +
-                  '\n  '.join(errors))
+  copy_directory(entry, utils, 'devkit-utils/', 'the helpers', delete=True)
   proc = ssh(entry, 'printf "%s\\n" "$1" >"$HOME/devkit-utils/$2"\n',
              [commit, DEVKIT_PIN_FILE])
   if proc.returncode != 0:
@@ -578,6 +565,263 @@ def devkit_command(options):
                   f'{proc.stderr.strip()}')
   print(f'Installed Valve devkit-utils {commit[:7]} on {name}.')
   return OK
+
+
+def require_lease(config, name, entry, purpose):
+  _, grace, legacy = lease_policy(config)
+  proc = ssh(entry, LEASE_SCRIPT,
+             ['check', holder(config), '', 0, grace, '', *legacy])
+  if proc.returncode != 0:
+    raise Failure(REFUSED, f'{purpose} needs the {name} lease: '
+                  'run `steamos lease take PURPOSE` first')
+
+
+def copy_directory(entry, directory, destination, label, delete=False):
+  """Share ssh options and address fallback for helper and title copies."""
+  if not re.fullmatch(r'[A-Za-z0-9._/-]+', destination):
+    raise Failure(REFUSED, 'unsafe remote path for rsync')
+  if not shutil.which('rsync'):
+    raise Failure(USAGE, f'rsync is needed to copy {label}')
+  remote_shell = ' '.join(shlex.quote(o) for o in ['ssh', *ssh_options(entry)])
+  errors = []
+  for address in targets(entry):
+    proc = subprocess.run(
+      ['rsync', '-a', *(['--delete'] if delete else []), '-e', remote_shell,
+       '--', f'{directory}/',
+       f'{entry["user"]}@{address}:{destination}'],
+      capture_output=True, text=True)
+    if proc.returncode == 0:
+      break
+    errors.append(f'{address}: {proc.stderr.strip()}')
+    if proc.returncode != 255:
+      raise Failure(UNREACHABLE, f'copying {label} failed:\n  ' +
+                    '\n  '.join(errors))
+  else:
+    raise Failure(UNREACHABLE, 'cannot reach the device over ssh:\n  ' +
+                  '\n  '.join(errors))
+
+
+def last_json(proc, label, kind=dict):
+  """Valve helpers may print progress before their final JSON reply."""
+  if proc.returncode != 0:
+    raise Failure(REFUSED, f'{label} failed: {proc.stderr.strip()} '
+                  f'{proc.stdout.strip()}')
+  try:
+    reply = json.loads(proc.stdout.strip().splitlines()[-1])
+  except (ValueError, IndexError):
+    raise Failure(UNREACHABLE, f'{label} returned no valid JSON reply')
+  if not isinstance(reply, kind):
+    raise Failure(UNREACHABLE, f'{label} returned an unexpected JSON type')
+  if isinstance(reply, dict) and 'error' in reply:
+    raise Failure(REFUSED, f'{label}: {reply["error"]}')
+  return reply
+
+
+def helper(entry, script, args):
+  # Valve's RPC exits -1 (255) for Steam errors; normalize that so ssh
+  # does not mistake an application refusal for a dropped connection.
+  return ssh(entry, 'tool=$1; shift\n'
+             'if python3 "$HOME/devkit-utils/$tool" "$@"; then exit 0\n'
+             'else exit 1; fi\n', [script, *args])
+
+
+TITLE_INVENTORY = r'''
+python3 - <<'PY'
+import json, re
+from pathlib import Path
+root = Path.home() / 'devkit-game'
+invalid = []
+if root.is_dir():
+  for folder in root.iterdir():
+    if folder.is_dir() and not re.fullmatch(r'[A-Za-z0-9]+', folder.name):
+      if any((root / (folder.name + '-' + suffix + '.json')).is_file()
+             for suffix in ('argv', 'settings')):
+        invalid.append(folder.name)
+print(json.dumps({'root': str(root), 'invalid_leftovers': sorted(invalid)}))
+PY
+'''
+
+TITLE_PREPARE = r'''
+if [ -L "$HOME/devkit-game" ] || [ -L "$HOME/devkit-game/$1" ]; then
+  echo 'title destination is a symlink' >&2; exit 1
+fi
+if python3 "$HOME/devkit-utils/steamos-prepare-upload" --gameid "$1"; then
+  exit 0
+else exit 1; fi
+'''
+
+TITLE_LAUNCH = r'''
+pid=$(cat "$HOME/.steam/steam.pid" 2>/dev/null)
+case $pid in
+  ''|*[!0-9]*|0) echo 'Steam must be running in Game Mode' >&2; exit 1 ;;
+esac
+if ! kill -0 "$pid" 2>/dev/null; then
+  echo 'Steam must be running in Game Mode' >&2; exit 1
+fi
+echo "device_time=$(date +%s)"
+if python3 "$HOME/devkit-utils/steam-devkit-rpc" run-game "gameid=$1"; then
+  exit 0
+else exit 1; fi
+'''
+
+TITLE_REMOVE = r'''
+if [ -L "$HOME/devkit-game" ] || [ -L "$HOME/devkit-game/$1" ]; then
+  echo 'title destination is a symlink' >&2; exit 1
+fi
+status=0
+python3 "$HOME/devkit-utils/steamos-delete" --delete-title "$1" || status=$?
+rm -f -- "$HOME/devkit-game/$1-argv.json" "$HOME/devkit-game/$1-env.json" \
+  "$HOME/devkit-game/$1-settings.json" || exit 1
+echo configs_removed=1
+if [ "$status" -ne 0 ]; then exit 1; fi
+'''
+
+
+def title_command(options):
+  gameid = getattr(options, 'name', None)
+  if gameid is not None and not TITLE_NAME.fullmatch(gameid):
+    raise Failure(USAGE, 'title NAME must contain only letters and digits')
+  if options.action == 'register':
+    directory = Path(options.directory).expanduser().resolve()
+    start = Path(options.start)
+    if not directory.is_dir() or start.is_absolute() or \
+        '..' in start.parts or not (directory / start).is_file() or \
+        directory not in (directory / start).resolve().parents:
+      raise Failure(USAGE, '--start must name a file inside DIR')
+  config = load_config()
+  name, entry = device(config, options.device)
+  if options.action != 'list':
+    require_lease(config, name, entry, f'title {options.action}')
+  _, commit = devkit_pin(config)
+  proc = ssh(entry, STATUS_SCRIPT, [])
+  if proc.returncode != 0:
+    raise Failure(UNREACHABLE, f'device status failed: {proc.stderr.strip()}')
+  facts = parse(proc.stdout)
+  if facts.get('devkit_commit') != commit:
+    raise Failure(REFUSED, 'the device needs pinned devkit-utils; '
+                  'run `steamos devkit install`')
+  if options.action in ('list', 'register', 'remove'):
+    inventory = last_json(ssh(entry, TITLE_INVENTORY, []), 'title inventory')
+  if options.action == 'list':
+    games = last_json(helper(entry, 'steamos-list-games', []), 'title list',
+                      list)
+    result = {'device': name, 'games': games,
+              'invalid_leftovers': inventory['invalid_leftovers']}
+    if options.json:
+      print(json.dumps(result, indent=2))
+    else:
+      print(json.dumps(games, indent=2))
+      for invalid in result['invalid_leftovers']:
+        print(f'Invalid leftover: {invalid!r} (blocks Steam re-sync)')
+    return OK
+  if options.action in ('register', 'remove'):
+    if inventory['invalid_leftovers']:
+      invalid = ', '.join(repr(n) for n in inventory['invalid_leftovers'])
+      raise Failure(REFUSED, f'invalid title leftovers block Steam re-sync: '
+                    f'{invalid}; inspect with `steamos title list`')
+  if options.action == 'register':
+    require_lease(config, name, entry, 'preparing the title')
+    prepared = last_json(ssh(entry, TITLE_PREPARE, [gameid]), 'title prepare')
+    destination = str(Path(inventory['root']) / gameid)
+    if not isinstance(prepared, dict) or \
+        prepared.get('directory') != destination:
+      raise Failure(REFUSED, 'title prepare returned an unexpected directory')
+    require_lease(config, name, entry, 'copying the title')
+    copy_directory(entry, directory, destination + '/', 'the title',
+                   delete=True)
+    # Valve's helper reads compat_tool unconditionally; an empty string is
+    # what its own GUI sends for no runtime.
+    settings = {'steam_play': '0', 'compat_tool': (
+      'SteamLinuxRuntime_4' if options.runtime == 'slr4' else '')}
+    parms = {'gameid': gameid, 'directory': destination,
+             'argv': [options.start, *options.arg], 'env': {},
+             'settings': settings, 'clear_settings': True,
+             'force_appid': None, 'lepton_args': ''}
+    require_lease(config, name, entry, 'registering the title')
+    reply = last_json(helper(entry, 'steam-client-create-shortcut',
+                             ['--parms', json.dumps(parms)]), 'title register')
+    if 'success' not in reply:
+      raise Failure(UNREACHABLE, 'title register returned no success result')
+    result = {'device': name, 'gameid': gameid, 'reply': reply}
+    text = f'Registered {gameid} on {name}.'
+    code = OK
+  elif options.action == 'launch':
+    proc = ssh(entry, TITLE_LAUNCH, [gameid])
+    epoch = parse(proc.stdout).get('device_time')
+    if not epoch or not epoch.isdigit():
+      raise Failure(REFUSED, proc.stderr.strip() or
+                    'Steam must be running in Game Mode')
+    result = {'device': name, 'gameid': gameid, 'device_time': int(epoch),
+              'launched': proc.returncode == 0,
+              'output': remote_output(proc), 'stderr': proc.stderr.strip()}
+    code = OK if proc.returncode == 0 else REFUSED
+    text = (f'{gameid} on {name}: device time {epoch}; '
+            f'launch {"succeeded" if code == OK else "failed"}.')
+  else:
+    proc = ssh(entry, TITLE_REMOVE, [gameid])
+    if parse(proc.stdout).get('configs_removed') != '1':
+      raise Failure(REFUSED, f'title remove failed: {proc.stderr.strip()}')
+    synced = proc.returncode == 0 and \
+      'Steam client sync of devkit games failed' not in (
+        proc.stdout + proc.stderr)
+    result = {'device': name, 'gameid': gameid, 'removed': True,
+              'steam_sync': synced, 'output': remote_output(proc),
+              'stderr': proc.stderr.strip()}
+    code = OK if synced else REFUSED
+    text = (f'Removed {gameid} on {name}; Steam re-sync '
+            f'{"succeeded" if synced else "failed"}.')
+  print(json.dumps(result, indent=2) if options.json else text)
+  return code
+
+
+def remote_output(proc):
+  return '\n'.join(line for line in proc.stdout.splitlines()
+                   if line not in ('connected=1', 'configs_removed=1') and
+                   not line.startswith('device_time='))
+
+
+def wake_command(options):
+  config = load_config()
+  name, entry = device(config, options.device)
+  mac = entry.get('mac', '')
+  if not isinstance(mac, str) or not re.fullmatch(
+      r'[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}', mac):
+    raise Failure(USAGE, 'wake needs a configured mac (XX:XX:XX:XX:XX:XX)')
+  broadcast = entry.get('broadcast', '255.255.255.255')
+  try:
+    broadcast = str(ipaddress.IPv4Address(broadcast))
+  except (ValueError, TypeError):
+    raise Failure(USAGE, 'broadcast must be an IPv4 address')
+  if not 0 <= options.wait <= 3600:
+    raise Failure(USAGE, '--wait must be between 0 and 3600 seconds')
+  packet = b'\xff' * 6 + bytes.fromhex(mac.replace(':', '')) * 16
+  try:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+      sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+      for attempt in range(3):
+        if attempt:
+          time.sleep(0.1)
+        sock.sendto(packet, (broadcast, 9))
+  except OSError as error:
+    raise Failure(UNREACHABLE, f'could not send wake packet: {error}')
+  deadline = time.monotonic() + options.wait
+  awake = False
+  while True:
+    try:
+      remaining = max(0.1, deadline - time.monotonic())
+      proc = ssh(entry, 'echo awake=1\n', [], timeout=min(2, remaining))
+      awake = proc.returncode == 0 and parse(proc.stdout).get('awake') == '1'
+    except Failure as failure:
+      if failure.code != UNREACHABLE:
+        raise
+    if awake or time.monotonic() >= deadline:
+      break
+    time.sleep(min(1, max(0, deadline - time.monotonic())))
+  result = {'device': name, 'awake': awake, 'broadcast': broadcast}
+  print(json.dumps(result, indent=2) if options.json else
+        f'Sent wake packet to {name}; '
+        f'{"ssh is answering" if awake else "ssh did not answer"}.')
+  return OK if awake else UNREACHABLE
 
 
 def status_command(options):
@@ -630,9 +874,9 @@ def status_command(options):
 def main(argv=None):
   parser = argparse.ArgumentParser(prog='steamos', description=__doc__)
   parser.add_argument('--device', help='configured device name')
+  parser.add_argument('--json', action='store_true')
   commands = parser.add_subparsers(dest='command', required=True)
   status = commands.add_parser('status', help='device facts and its lease')
-  status.add_argument('--json', action='store_true')
   lease = commands.add_parser('lease', help='share a device between agents')
   actions = lease.add_subparsers(dest='action', required=True)
   for action, text in (('take', 'take or renew the lease'),
@@ -648,25 +892,50 @@ def main(argv=None):
       sub.add_argument('--hours', type=float)
     if action == 'break':
       sub.add_argument('--reason')
-    sub.add_argument('--json', action='store_true')
+    common_options(sub)
   devkit = commands.add_parser('devkit', help="Valve's device-side helpers")
   devkit_actions = devkit.add_subparsers(dest='action', required=True)
-  devkit_actions.add_parser(
+  install = devkit_actions.add_parser(
     'install', help='copy the pinned devkit-utils to the device')
-  for sub in (status, lease, devkit):
-    sub.add_argument('--device', dest='device_sub', help=argparse.SUPPRESS)
+  title = commands.add_parser('title', help='register and run Steam titles')
+  title_actions = title.add_subparsers(dest='action', required=True)
+  for action in ('register', 'launch', 'remove', 'list'):
+    sub = title_actions.add_parser(action)
+    if action != 'list':
+      sub.add_argument('name')
+    if action == 'register':
+      sub.add_argument('directory')
+      sub.add_argument('--start', required=True, help='start path inside DIR')
+      sub.add_argument('--arg', action='append', default=[])
+      sub.add_argument('--runtime', choices=('slr4', 'none'), default='slr4')
+    common_options(sub)
+  wake = commands.add_parser('wake', help='wake a wired device over LAN')
+  wake.add_argument('--wait', type=int, default=60, help='seconds to await ssh')
+  for sub in (status, lease, devkit, install, title, wake):
+    common_options(sub)
   options = parser.parse_args(argv)
-  options.device = options.device_sub or options.device
   options.hours = getattr(options, 'hours', None)
   try:
     if options.command == 'status':
       return status_command(options)
     if options.command == 'devkit':
       return devkit_command(options)
+    if options.command == 'title':
+      return title_command(options)
+    if options.command == 'wake':
+      return wake_command(options)
     return lease_command(options)
   except Failure as failure:
     print(f'steamos: {failure}', file=sys.stderr)
     return failure.code
+
+
+def common_options(parser):
+  # Suppress subparser defaults so global options survive at every level.
+  parser.add_argument('--device', default=argparse.SUPPRESS,
+                      help=argparse.SUPPRESS)
+  parser.add_argument('--json', action='store_true',
+                      default=argparse.SUPPRESS)
 
 
 if __name__ == '__main__':

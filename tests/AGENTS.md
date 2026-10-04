@@ -1,5 +1,21 @@
 # Focused Tests
 
+## SteamOS
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_steamos
+```
+
+Fake ssh runs remote commands locally with a separate HOME per host.
+Valve helpers are small fixture scripts; title tests cover lease/pin/name
+refusals, exact shortcut arguments, exit-0 JSON errors, invalid leftovers,
+exact re-registration mirrors, unsafe remote-path refusal, scoped removal
+after non-zero helper exits and Steam sync failures, and device-clock
+launch timestamps.
+Wake tests stub sockets and ssh to check packet bytes, broadcast targeting,
+three packets spaced 100 ms apart, validation and unreachable results
+without sending packets. Never use real devices or the network for this suite.
+
 ## Read-only installation doctor
 
 ```sh

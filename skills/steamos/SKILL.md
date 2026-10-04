@@ -12,8 +12,8 @@ description: >-
 
 Use the `steamos` command (see `steamos.md` beside it in agent-kit's
 `bin/`). It reaches devices over ssh and changes nothing on them except
-the lease, its log (`~/.agent-kit-steamos-lease.log` on the device) and,
-when asked, Valve's helpers in `~/devkit-utils`.
+the lease and its log, and, when asked, Valve's helpers in `~/devkit-utils`
+and uploaded titles in `~/devkit-game`. `wake` sends a UDP broadcast.
 If it is not configured, say so and ask the user for the device's name
 or address rather than guessing.
 
@@ -35,6 +35,28 @@ Reading status needs no lease. When `status` says Valve's
 `devkit-utils` are missing or not at the pinned commit and the work needs
 them, run `steamos devkit install` while holding the lease; it replaces
 the helpers another agent's title may be using.
+
+## Titles and wake
+
+- With the lease, `steamos title register Demo1 DIR --start ./run.sh`
+  uploads DIR and registers a Steam shortcut. Names must contain only ASCII
+  letters and digits. Repeat `--arg ARG` (use `--arg=--flag` for flags).
+  Runtime defaults to `slr4`; `--runtime none` clears the compatibility tool.
+- `steamos title list` is read-only and needs no lease. It also reports
+  invalid leftovers that block registration and Steam re-sync. Never delete
+  another title to work around these; refer the named leftovers to the owner.
+- `steamos title launch Demo1 --json` needs the lease and Steam running in
+  Game Mode. Its `device_time` is the device epoch immediately before launch;
+  use it to bound `journalctl --user` output. Check `launched` and exit status.
+- `steamos title remove Demo1` needs the lease and deletes only that title
+  and its sibling argv/env/settings files. Check the reported Steam re-sync
+  status: exit 1 may mean files were removed but re-sync failed.
+- Title commands refuse helpers without the configured pinned commit.
+- `steamos wake --wait 60` needs configured `mac`, sends a broadcast to
+  port 9, then waits for ssh (exit 0 awake, 3 unreachable). Optional
+  `broadcast` defaults to `255.255.255.255`; on macOS, subnet broadcast may
+  work where unicast fails, and Python needs Local Network permission.
+  A Steam Deck on Wi-Fi does not wake this way.
 
 ## When the lease is held
 
