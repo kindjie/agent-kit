@@ -56,11 +56,11 @@ mutex=$lock.mutex
 log=$HOME/.agent-kit-steamos-lease.log
 now=$(date +%s)
 token=$$.$now
-fresh='' owned='' pending_pid=''
+fresh='' owned='' pending_unit=''
+unit=agent-kit-steamos-lease-inhibit
 cleanup() {
-  if [ -n "$pending_pid" ]; then
-    inhibit_pid=$pending_pid inhibit_ticks=''
-    if inhibitor_matches; then kill "$pending_pid" 2>/dev/null || true; fi
+  if [ -n "$pending_unit" ]; then
+    systemctl --user stop "$unit" >/dev/null 2>&1 || true
   fi
   if [ -n "$fresh" ]; then rm -rf -- "$lock"; fi
   if [ -n "$owned" ] && [ "$(cat "$mutex/owner" 2>/dev/null)" = "$token" ]
@@ -70,53 +70,26 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 field() { sed -n "s/^$1=//p" "$info" 2>/dev/null | head -n 1; }
-inhibit_field() {
-  sed -n "s/^$1=//p" "$lock/inhibit" 2>/dev/null | head -n 1
+user_manager_available() {
+  command -v systemctl >/dev/null 2>&1 &&
+    systemctl --user show-environment >/dev/null 2>&1
 }
-proc_ticks() {
-  # comm may contain spaces or parentheses; strip through its final ')'.
-  cat "/proc/$1/stat" 2>/dev/null | sed 's/.*) //' | awk '{print $20}'
-}
-inhibitor_matches() {
-  case $inhibit_pid in ''|*[!0-9]*|0|1) return 1 ;; esac
-  ticks=$(proc_ticks "$inhibit_pid")
-  [ -n "$ticks" ] || return 1
-  [ -z "$inhibit_ticks" ] || [ "$ticks" = "$inhibit_ticks" ] || return 1
-  # Exact argv entries, not a substring of an unrelated command. Start
-  # ticks prevent signalling a reused PID, even of another inhibitor.
-  cat "/proc/$inhibit_pid/cmdline" 2>/dev/null | tr '\000' '\n' |
-    awk '
-      NR == 1 && ($0 == "systemd-inhibit" || $0 ~ /\/systemd-inhibit$/) {cmd=1}
-      $0 == "--who=agent-kit-steamos" {who=1}
-      $0 == "--what=sleep:idle" {what=1}
-      $0 == "--mode=block" {mode=1}
-      /^--why=steamos lease: / {why=1}
-      END {exit !(cmd && who && what && mode && why)}'
-}
-recorded_inhibitor() {
-  inhibit_pid=$(inhibit_field pid) inhibit_ticks=$(inhibit_field ticks)
-  [ -n "$inhibit_ticks" ] && inhibitor_matches
+inhibitor_active() {
+  [ "$(systemctl --user is-active "$unit" 2>/dev/null)" = active ]
 }
 stop_inhibitor() {
-  if recorded_inhibitor; then
-    kill "$inhibit_pid" 2>/dev/null || {
-      inhibitor_matches && return 1
-    }
-    attempts=0
-    while inhibitor_matches; do
-      [ "$attempts" -lt 3 ] || return 1
-      sleep 1
-      attempts=$((attempts + 1))
-    done
+  user_manager_available || return 0
+  # A missing collected unit also returns nonzero from stop. Refuse only
+  # if the unit is still active; never signal a PID from a lease record.
+  if ! systemctl --user stop "$unit" >/dev/null 2>&1; then
+    inhibitor_active && return 1
   fi
-  rm -f -- "$lock/inhibit" || return 1
   return 0
 }
 inhibit_available() {
-  command -v systemd-inhibit >/dev/null 2>&1 &&
-    command -v setsid >/dev/null 2>&1 &&
-    command -v nohup >/dev/null 2>&1 &&
-    [ -n "$(proc_ticks self)" ]
+  command -v systemd-run >/dev/null 2>&1 &&
+    command -v systemd-inhibit >/dev/null 2>&1 &&
+    user_manager_available
 }
 start_inhibitor() {
   stop_inhibitor || return 1
@@ -124,26 +97,15 @@ start_inhibitor() {
   inhibit_available || return 0
   left=$(( $(field expires) - $(date +%s) ))
   [ "$left" -gt 0 ] || return 0
-  # nohup ignores ssh session SIGHUP; setsid leaves its process group and
-  # controlling terminal. Redirect all three streams so ssh can close.
-  # Noninteractive sh starts this child outside a new process group, so
-  # setsid execs without forking and $! remains systemd-inhibit's PID.
-  # This survives sshd's session hangup, but not logind KillUserProcesses
-  # or a reboot: check the device after ssh disconnect when validating.
-  nohup setsid systemd-inhibit --what=sleep:idle --who=agent-kit-steamos \
+  # The user manager owns this process outside sshd's session scope, so
+  # logind session cleanup cannot kill it. sleep bounds its lifetime.
+  pending_unit=1
+  systemd-run --user --unit="$unit" --collect --quiet \
+    systemd-inhibit --what=sleep:idle --who=agent-kit-steamos \
     --why="steamos lease: $holder" --mode=block sleep "$left" \
-    </dev/null >/dev/null 2>&1 &
-  pending_pid=$!
-  inhibit_pid=$pending_pid inhibit_ticks=''
-  attempts=0
-  until inhibitor_matches; do
-    if [ "$attempts" -ge 3 ]; then return 1; fi
-    sleep 1
-    attempts=$((attempts + 1))
-  done
-  printf 'pid=%s\nstart=%s\nticks=%s\n' "$inhibit_pid" "$(date +%s)" \
-    "$ticks" >"$lock/inhibit" || return 1
-  pending_pid=''
+    >/dev/null 2>&1 || return 1
+  inhibitor_active || return 1
+  pending_unit=''
   return 0
 }
 # state: free, broken (a lock without info: being taken, or left behind),
@@ -175,7 +137,7 @@ emit() {
   printf 'state=%s\nnow=%s\n' "$(state)" "$now"
   # Reads without the mutex may race a removal; a vanished file is free.
   sed 's/^/lease_/' "$info" 2>/dev/null || true
-  if recorded_inhibitor; then echo inhibit=active
+  if user_manager_available && inhibitor_active; then echo inhibit=active
   elif [ ! -d "$lock" ]; then echo inhibit=inactive
   elif [ "$prevent_sleep" != true ]; then echo inhibit=disabled
   elif ! inhibit_available; then echo inhibit=unavailable
@@ -1222,13 +1184,21 @@ FRAMETIMES_FILES = r'''
 python3 - <<'PY'
 import json, re
 from pathlib import Path
-files = [(path.stat().st_mtime_ns, str(path))
-         for path in Path.home().glob('mangoapp_*.csv')
-         if not path.is_symlink() and path.is_file() and
-         re.fullmatch(r'mangoapp_[A-Za-z0-9._-]+\.csv', path.name)]
-latest = max((stamp for stamp, _ in files), default=None)
-print(json.dumps({'files': sorted(path for stamp, path in files
-                                 if stamp == latest)}))
+sessions = {}
+for path in Path.home().glob('mangoapp_*.csv'):
+  if path.is_symlink() or not path.is_file() or not re.fullmatch(
+      r'mangoapp_[A-Za-z0-9._-]+\.csv', path.name):
+    continue
+  session = path.name[:-4]
+  if session.endswith('_summary'):
+    session = session[:-8]
+  sessions.setdefault(session, []).append((path.stat().st_mtime_ns, path))
+# Summary is normally written last. Select the newest session by either
+# member's mtime, then return all its members regardless of their mtimes.
+latest = max(sessions, key=lambda session: (
+    max(stamp for stamp, _ in sessions[session]), session), default=None)
+files = sorted(str(path) for _, path in sessions.get(latest, []))
+print(json.dumps({'files': files}))
 PY
 '''
 
@@ -1260,6 +1230,8 @@ def frametimes_command(options):
     if not files:
       raise Failure(REFUSED, 'no MangoHud CSV logs in the device home; '
                     'start and stop a logging session first')
+    if not any(not Path(path).stem.endswith('_summary') for path in files):
+      raise Failure(REFUSED, 'newest MangoHud session is missing its base CSV')
     try:
       output.mkdir(parents=True, exist_ok=True)
     except OSError as error:

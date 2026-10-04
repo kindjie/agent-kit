@@ -33,16 +33,18 @@ or address rather than guessing.
 4. `steamos lease release` when done, including when you stop early.
 
 Taking or renewing a lease prevents sleep/idle by default until its expiry.
-The detached `systemd-inhibit` is replaced on refresh/renew and stopped on
-release, break or reclaim; normal sleep policy applies afterwards. This
-avoids waking into a PIN screen during leased display/performance work.
-`lease.prevent_sleep: false` opts out in `steamos.json`. Missing Linux
-support is skipped with `inhibit=unavailable`; `lease show --json` and the
-`lease` object in `status --json` report `sleep_inhibited` as true, false
-or null (unavailable). A verified process does not prove logind acquired
-the lock: verify `systemd-inhibit --list` on the device after ssh closes,
-then after release/expiry. `nohup`/`setsid` survive session hangup, but a
-device's logind `KillUserProcesses` policy may still remove the process.
+The transient user unit `agent-kit-steamos-lease-inhibit` runs
+`systemd-inhibit` outside the ssh session scope. Take/renew stop the old
+unit before starting another; release, break and reclaim stop it with
+`systemctl --user stop`. Its timed sleep ends at expiry. Normal sleep
+policy applies afterwards. This avoids waking into a PIN screen during
+leased display/performance work. `lease.prevent_sleep: false` opts out in
+`steamos.json`. Missing `systemd-run`, `systemd-inhibit` or a user manager
+is skipped with `inhibit=unavailable`; `lease show --json` and the `lease`
+object in `status --json` report `sleep_inhibited` as true, false or null
+(unavailable). Active means `systemctl --user is-active` reports active;
+inspect `systemd-inhibit --list` after ssh closes and after release/expiry
+when validating actual logind locks. No PID files or PID signalling are used.
 
 Reading status needs no lease. When `status` says Valve's
 `devkit-utils` are missing or not at the pinned commit and the work needs
@@ -89,14 +91,15 @@ the helpers another agent's title may be using.
 - `steamos frametimes start` / `stop` require your active lease and use
   `mangohudctl set log_session true` / `false`. MangoHud must already be
   active on the running game; successful control alone proves no frame data.
-  Experimental: not yet shown to produce CSVs on a device (see steamos.md).
 - A device woken over the network shows its lock screen; a title launched
   behind it may never be displayed. Ask the user to unlock it before
   visual or performance work, and check with `steamos capture`.
 - `steamos frametimes pull --out ./frametimes` needs no lease and copies
-  the newest `mangoapp_*.csv` file(s) from the device home (mtime ties
-  included). It preserves device logs, ignores symlinks and refuses if
-  none exist. Inspect the CSV and measured scenario before reporting
+  the newest session from the device home, using either member's mtime.
+  It pulls `mangoapp_<stamp>.csv` and its `_summary.csv` companion even
+  when their mtimes differ; a missing summary is allowed, but a missing
+  base CSV is refused. It preserves device logs and ignores symlinks and
+  unsafe names. Inspect the CSV and measured scenario before reporting
   performance; no quiet-machine or hardware acceptance is implied.
 
 Logs, capture and frametimes do not require pinned Valve helpers. Downloads

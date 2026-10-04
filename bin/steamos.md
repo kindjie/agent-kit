@@ -107,31 +107,30 @@ those tools move to this lease.
 starts `systemd-inhibit --what=sleep:idle --mode=block` for the seconds left
 until expiry, with `--who=agent-kit-steamos` and the holder in its reason.
 This prevents an idle sleep and the PIN screen on waking from interrupting
-display or performance work. Release, break and reclaim stop the recorded
+display or performance work. Release, break and reclaim stop the user-unit
 inhibitor before removing the lease; expiry ends its own `sleep`, with no
 watcher or cleanup command needed. Without a lease, normal sleep policy
 applies. Set `prevent_sleep` to `false` to opt out; a later take or renew
 also stops an existing inhibitor when this option is disabled.
 
-The inhibitor uses `nohup` and `setsid`, with stdin/stdout/stderr redirected,
-to survive ssh session hangup without keeping the connection open. Its PID,
-start epoch and Linux process start ticks live in
-`~/.agent-kit-steamos-lease/inhibit`. Before signalling it, the tool checks
-the recorded ticks and `/proc/PID/cmdline` for its exact inhibitor identity.
-An unrelated or stale PID is never intentionally signalled. Missing
-`systemd-inhibit`, detach tools or procfs are skipped without stderr warnings;
-output reports `inhibit=unavailable`. An installed inhibitor that fails to
-start makes take/renew fail; check the lease before retrying.
+The inhibitor runs in the transient user unit
+`agent-kit-steamos-lease-inhibit`, started with `systemd-run --user --collect`.
+The user manager keeps it outside the ssh session scope, so logind session
+cleanup does not kill it when ssh closes. Take and renew stop the existing
+unit before starting its replacement; release, break and reclaim use
+`systemctl --user stop`. There are no PID files or PID signals.
+Missing `systemd-run`, `systemd-inhibit` or a reachable user manager is
+skipped without stderr warnings; output reports `inhibit=unavailable`.
+An available unit that fails to start or report active makes take/renew
+fail; check the lease before retrying.
 
-`lease show --json` reports `sleep_inhibited`: `true` for a verified live
-inhibitor, `false` when absent, stopped, expired or disabled, and `null` when
-support is unavailable. `status --json` includes it under `lease`; text
-output includes `inhibit=active|inactive|disabled|unavailable`. These are
-process checks, not a query of logind's inhibitor table. During live
-validation, run `systemd-inhibit --list` on the device after the taking ssh
-connection has closed, and again after release or expiry. Session hangup is
-covered locally; logind configured with `KillUserProcesses=yes` can still
-kill detached session processes and requires device-side verification.
+`lease show --json` reports `sleep_inhibited`: `true` when
+`systemctl --user is-active agent-kit-steamos-lease-inhibit` reports active,
+`false` when absent, stopped, expired or disabled, and `null` when support
+is unavailable. `status --json` includes it under `lease`; text output
+includes `inhibit=active|inactive|disabled|unavailable`. Unit state is not a
+query of logind's inhibitor table. For device validation, inspect
+`systemd-inhibit --list` after ssh closes and after release or expiry.
 
 ## Status
 
@@ -269,20 +268,21 @@ PerfOverlay controls. They change logging only; MangoHud must already be
 available on the device and attached to the running game. A successful
 control command does not prove that the game produced frame data.
 
-Not yet verified on a device. In a first test (SteamOS 3.8.27, beta
-Steam client, Game Mode) logging produced no CSV, with the performance
-overlay on or off; the device had just woken and its screen was locked,
-so the title may never have been displayed. Steam writes mangoapp's
-configuration itself (`MANGOHUD_CONFIGFILE`), with no log folder set.
-Treat `frametimes` as experimental until a run with the screen unlocked
-produces data.
+Frametime logging was verified on SteamOS 3.8.27 with the screen unlocked:
+a vkcube run produced a 40 KB per-frame CSV plus its summary at about
+60 fps. A device woken over the network shows its lock screen; unlock it
+before visual or performance work.
 
 `frametimes pull [--out DIR]` needs no lease or Valve helpers. Valve
 downloads `mangoapp_*.csv` from the device user's home; this command copies
-the newest regular matching file(s), including ties in modification time,
-to DIR (default: current directory). It ignores symlinks and unsafe names,
-preserves device files, and refuses when no CSVs exist. It creates DIR as
-needed and uses scp with the same ssh options/address fallback. JSON gives
+the newest session to DIR (default: current directory), selected by the
+latest modification time of either member. It copies both
+`mangoapp_<stamp>.csv` and `mangoapp_<stamp>_summary.csv` when present,
+even when their modification times differ. The base CSV is required; a
+missing summary is allowed. It ignores symlinks and unsafe names, preserves
+device files, and refuses when no CSVs exist or the newest base is missing.
+It creates DIR as needed and uses scp with the same ssh options/address
+fallback. JSON gives
 `device` and `files`; start/stop instead give `device` and `logging`.
 
 ```sh

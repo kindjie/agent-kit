@@ -7,13 +7,12 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_steamos
 ```
 
 Fake ssh runs remote commands locally with a separate HOME per host.
-Lease inhibition tests use a fake systemd-inhibit that records argv and
-runs its sleep command, a setsid shim and simulated Linux procfs reads on
-macOS. Fake ssh can hang up its session process group after the command
-exits. Tests verify detach survival, take/renew replacement, release/break/
-reclaim shutdown, expiry, unrelated/reused PID protection, opt-out and
-unavailable support. Fixture lifecycle markers avoid sandbox-restricted ps;
-they do not establish real logind acquisition or device sleep behavior.
+Lease inhibition tests fake the systemd user manager and record unit
+arguments, expiry and stop/start order across separate ssh invocations.
+Tests cover take/renew replacement, release/break/reclaim shutdown, expiry,
+opt-out, missing tools/user manager, startup/inactive-unit failure cleanup
+and stop failure preservation. No detached processes or PID signalling are
+used; these fixtures do not establish real logind locks or device sleep.
 Valve helpers are small fixture scripts; title tests cover lease/pin/name
 refusals, exact shortcut arguments, exit-0 JSON errors, invalid leftovers,
 exact re-registration mirrors, unsafe remote-path refusal, scoped removal
@@ -25,7 +24,8 @@ epochs. Capture tests fake gamescope/xprop and scp, checking the numeric
 Valve protocol, bounded PNG wait, preservation of existing captures and
 local outputs, scoped temp cleanup, Game Mode refusal and address fallback.
 Frametime tests check lease refusals, exact mangohudctl arguments, newest
-home CSVs (mtime ties), symlink/unsafe-name exclusion and missing logs.
+sessions with unequal member mtimes, base-only and missing-base cases,
+symlink/unsafe-name exclusion and missing logs.
 All new device commands run behind fake ssh; no live capture or MangoHud
 control is performed. Download reply and connection-value tests reject
 unsafe shell-bound values before transfer or deletion.
