@@ -1333,7 +1333,8 @@ def mutate_cross(tasks, changes, task_changes, change_changes, operation,
       change_committed = commit_exists(changes, journal, "changelog")
       cross_recover(tasks, changes)
     except (RecordsError, OSError) as recovery_error:
-      raise RecordsError(str(recovery_error), 5)
+      raise RecordsError(str(exc) + "; recovery failed: " +
+                         str(recovery_error), 5)
     if not change_committed:
       raise RecordsError(str(exc), 5)
   else:

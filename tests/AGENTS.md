@@ -491,6 +491,15 @@ independent test classes in parallel. Its worker count defaults to
 PYTHONDONTWRITEBYTECODE=1 python3 tests/run_agent_records_parallel.py
 ```
 
+Failure-diagnostic tests use direct core functions and temporary unsigned
+repositories; they never invoke records CLIs or production signing. They cover
+single- and cross-record original/recovery failure retention, exit code 5,
+matching preserved journals, first-side commit retention and no retry advice.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_records_failure_diagnostics
+```
+
 ## Coordination and efficiency tools
 
 The structured scheduler pilot has isolated state and real-process tests:
