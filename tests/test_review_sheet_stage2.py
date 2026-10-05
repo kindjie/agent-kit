@@ -416,6 +416,22 @@ class Stage2Test(unittest.TestCase):
                   '--write', '--scope', 'user', code=2)
     self.assertEqual(saved_path.read_bytes(), original)
 
+  def test_preset_save_refuses_local_paths_in_text(self):
+    for field, value in (
+        ('instructions', 'Open /var/tmp/example/video.mov'),
+        ('instructions', 'Open ~/private/video.mov'),
+        ('instructions', 'Open $HOME/private/video.mov'),
+        ('caveats', ['Review at C:\\Users\\example\\private.mov'])):
+      with self.subTest(field=field, value=value):
+        self.description[field] = value
+        self.write_desc()
+        refused = self.run_tool('preset', 'save', 'reusable', '--from',
+          self.desc, '--write', code=2)
+        self.assertIn('path', refused.stderr)
+        self.assertFalse((self.root / '.review-sheet' / 'presets' /
+                          'reusable.json').exists())
+        del self.description[field]
+
   def test_reveal_revision_validation_and_packet_conflict(self):
     png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAf'
       'FcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==')

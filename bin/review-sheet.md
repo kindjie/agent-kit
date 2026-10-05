@@ -168,6 +168,8 @@ The frozen file records every preset path and byte hash.
 `--explain` reports origins and deletions, including deleted paths and earlier
 origins. `preset save` prints only reusable decisions, group defaults,
 instructions, caveats, and allowlisted layout/media/gain/control settings.
+It refuses instructions or caveats containing absolute or home-directory
+paths, including POSIX, Windows drive, and common home-variable forms.
 It omits review ID, title, context, privacy, groups, items, components, and
 evidence. `--write` saves atomically in repo or user scope; `--overwrite`
 is required to replace an existing preset. Shipped presets: `verdict`,

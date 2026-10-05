@@ -646,6 +646,16 @@ def preset_command(args):
     raise ReviewError('unknown description fields for preset save: ' +
                       ', '.join(sorted(unknown)))
   saved = {key: value[key] for key in allowed if key in value}
+  for field in ('instructions', 'caveats'):
+    content = saved.get(field, [])
+    strings = content if isinstance(content, list) else [content]
+    for line in strings:
+      if isinstance(line, str) and re.search(
+          r'file:/+|(?<![\w:/])/(?:[^\s/]+)'
+          r'|(?:~[A-Za-z0-9_-]*|\$HOME|\$\{HOME\})[\\/]'
+          r'|[A-Za-z]:[\\/]|%USERPROFILE%[\\/]|\\\\[^\\\s]+\\',
+          line):
+        raise ReviewError(f'preset {field} contains a local path')
   settings = saved.get('settings', {})
   if not isinstance(settings, dict) or set(settings) - {
       'layout', 'media_mode', 'gain', 'controls'}:
