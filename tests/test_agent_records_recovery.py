@@ -222,8 +222,10 @@ class RecoveryTest(RecordsFixture):
   def test_real_git_signing_timeout_leaves_explicit_index_lock(self):
     self.init()
     task = self.task("Timeout")
-    env, marker = self.ssh_signing(self.tasks, delay=1)
-    env["AGENT_RECORDS_GIT_TIMEOUT"] = "0.5"
+    # Margins tolerate a loaded machine: other git steps must finish within
+    # the timeout, while the signer still outlasts it by a wide gap.
+    env, marker = self.ssh_signing(self.tasks, delay=12)
+    env["AGENT_RECORDS_GIT_TIMEOUT"] = "3"
     self.run_cmd("agent-task", "--agent", "agent-a", "claim", task,
                  env=env, code=5)
     self.assertTrue(marker.exists())
