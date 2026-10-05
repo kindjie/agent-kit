@@ -177,7 +177,8 @@ bucket is binding. Surplus in one bucket does not cancel scarcity in another.
 
 - `Recent burn too high` in the table, or EXHAUSTS BEFORE RESET in verbose
   output: treat as BEHIND whatever the pace label says; it is the more
-  current signal.
+  current signal. When another account is likely ready, see *When
+  another account is likely ready* below before slowing down.
 - BEHIND: slow consumption of that allocation while keeping useful work
   moving. Route suitable work through available independent allocations;
   avoid optional duplicate reviews and quota-expensive speed tiers. Use
@@ -227,6 +228,39 @@ do not claim an account exists that has not been observed. Preserve a
 concise handoff if work must pause. Never switch accounts or manipulate
 saved credentials automatically; existing authorization for necessary
 credit-backed work still applies.
+
+#### When another account is likely ready
+
+The brief report lists other accounts as *Likely available* when their
+windows have reset since they were last checked. Treat that as unverified
+until a live check after a switch, but let it change pacing. Each account's
+weekly allowance is lost at its own reset whether or not it was used, so
+with a ready alternate, active allowance left unspent at its reset is
+waste:
+
+- **Spend down before the reset.** If a ready alternate exists, an active
+  bucket marked BEHIND or *Recent burn too high* need not slow work:
+  running it out before its reset wastes nothing when the next account
+  can carry on. Keep its remaining capacity in use for authorized work as
+  its reset approaches, rather than letting it lapse unused. A ready
+  alternate's short window still limits how fast it can carry on.
+- **Use the allowance that expires first.** Compare reset times. Where the
+  ready alternate's window resets sooner than the active one's, its unused
+  allowance lapses first; suggest switching to it now, before the active
+  account is exhausted, rather than at exhaustion. Where the active
+  account resets sooner, keep using it; the alternate's allowance keeps.
+- **Do not manufacture work.** Faster consumption still means authorized,
+  useful work: parallel independent tasks, deeper review that avoids rework,
+  or a higher effort level, within the approval boundary above, where it
+  plausibly helps. Credits are separate and still need their own
+  justification.
+- **Say what you are assuming.** When pacing depends on an alternate, name
+  it with its plan and reset time from the report, and ask the owner to
+  switch when the active account runs out or the alternate's window is
+  the one about to lapse. You cannot switch accounts yourself.
+
+Without a likely-ready alternate, the BEHIND and SURPLUS rules above apply
+unchanged.
 
 Local chats and transcripts can span accounts. Their presence and lifetime
 token counts are machine-wide observations: they do not identify the active
