@@ -21,6 +21,24 @@ or add global rules and hooks unless I choose those integrations.
 The rest of this page is the technical reference for agents performing
 setup and coordination, and for people who prefer manual configuration.
 
+For a new, local starter queue, run:
+
+```sh
+agent-records init --default --machine my-workstation
+```
+
+`--machine` is optional; without it, setup records the current short hostname.
+The command prints its chosen paths and values, creates dedicated tasks and
+changelog Git repositories under `${XDG_DATA_HOME:-~/.local/share}/agent-kit/`,
+then writes `${XDG_CONFIG_HOME:-~/.config}/agent-kit/records.json` with absolute
+paths, the machine name and `"push": false`. It refuses existing configuration,
+records directory destinations, or `AGENT_TASKS_DIR`, `AGENT_CHANGELOG_DIR` and
+`AGENT_MACHINE` overrides. It never changes existing configuration or mints an
+agent ID. If the second store fails, the first remains and the command prints
+manual recovery guidance; it will not overwrite that store on retry.
+The starter queue is local. Agents on another machine need explicit access to
+the same shared stores and a separately chosen sync policy.
+
 ## Agent records
 
 Tasks and changelog entries live in separate, dedicated git repositories.
@@ -40,8 +58,9 @@ put a `records.json` in `${XDG_CONFIG_HOME:-~/.config}/agent-kit/`:
 
 `--dir` overrides each directory's configured path. `AGENT_MACHINE` overrides
 the machine setting. Without either, the commands use `hostname -s`, which
-can change with network configuration; pin a stable machine name. There are
-no built-in records directories. Initialize each root once:
+can change with network configuration; pin a stable machine name. There is no
+implicit records directory selection. For custom or shared stores, initialize
+each root once:
 
 ```sh
 agent-task init /path/to/tasks

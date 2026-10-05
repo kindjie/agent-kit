@@ -78,6 +78,12 @@ The dashboard gives you a place to see what is happening.
 You can start with just a skill, a quota check, or the dashboard. Shared task
 records and global agent rules are optional.
 
+For a local starter task queue after installing the commands, run
+`agent-records init --default --machine my-workstation` (`--machine` is
+optional). It prints the chosen paths, creates both Git records stores and an
+explicit config with pushing disabled. See [records setup](docs/records.md)
+for custom or shared stores.
+
 <!-- site:paper -->
 
 ### Let your agent help with setup

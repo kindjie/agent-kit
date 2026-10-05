@@ -400,7 +400,9 @@ def main():
   root = directory("tasks", args.dir, cfg)
   changes = directory("changelog", cfg=cfg)
   if root is None:
-    raise RecordsError("tasks directory is not configured", 2)
+    raise RecordsError("tasks directory is not configured; run "
+                       "agent-records init --default to set up a local "
+                       "starter queue", 2)
   if args.command in ("show", "close") or (
       args.command == "list" and args.with_changes):
     if changes is None:

@@ -435,6 +435,17 @@ summary through a stubbed `agent-task` and `agent-changelog`.
 
 ## Agent Records
 
+The explicit local starter setup tests run with:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_records_init
+```
+
+They cover XDG and sandbox homes, config and environment precedence,
+overwrite refusal, a failed second store with manual recovery, both Git
+markers, disabled push, machine selection, read-only unconfigured commands,
+and explicit read-only doctor reporting.
+
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
   tests.test_agent_attention tests.test_agent_speak tests.test_agent_activity

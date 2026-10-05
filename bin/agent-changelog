@@ -232,7 +232,9 @@ def main():
   root = directory("changelog", args.dir, cfg)
   tasks = directory("tasks", cfg=cfg)
   if root is None:
-    raise RecordsError("changelog directory is not configured", 2)
+    raise RecordsError("changelog directory is not configured; run "
+                       "agent-records init --default to set up a local "
+                       "starter queue", 2)
   naming_task = (
     (args.command == "new" and bool(args.task)) or
     (args.command == "mistake" and args.mistake_command == "new" and
