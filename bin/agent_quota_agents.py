@@ -95,7 +95,11 @@ ACTION_LIMIT = 160
 
 def stamp(value):
   try:
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    value = value.replace("Z", "+00:00")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}",
+                    value):
+      return datetime.strptime(value, "%Y-%m-%d %H:%M:%S %z").timestamp()
+    return datetime.fromisoformat(value).timestamp()
   except (AttributeError, ValueError, TypeError):
     return None
 

@@ -58,6 +58,40 @@ class ReminderTests(unittest.TestCase):
     self.assertEqual(self.kinds('echo "git stash"'), [])
     self.assertEqual(self.kinds("printf '%s' 'git stash'"), [])
 
+  def test_shell_wrapper_prefixes_and_options(self):
+    for command in (
+        "env X=1 bash -c 'git stash'",
+        "env bash -c 'git stash'",
+        "env -i X=1 bash -c 'git stash'",
+        "sudo -u x bash -c 'git stash'",
+        "sudo -g staff -E bash -c 'git stash'",
+        "nohup sh -c 'git stash'",
+        "time bash -c 'git stash'",
+        "command bash -c 'git stash'",
+        "nice -n 5 bash -c 'git stash'",
+        "xargs sh -c 'git stash'",
+        "bash --norc -c 'git stash'",
+        "bash --rcfile x -c 'git stash'"):
+      with self.subTest(command=command):
+        self.assertEqual(self.kinds(command), ["stash"])
+    self.assertEqual(self.kinds("bash --rcfile c git stash"), [])
+    self.assertEqual(self.kinds("bash --norc 'git stash'"), [])
+
+  def test_nested_shell_wrappers(self):
+    self.assertEqual(self.kinds("bash -c 'bash -c \"git stash\"'"),
+                     ["stash"])
+
+  def test_heredoc_bodies_are_data(self):
+    for command in (
+        "cat <<EOF\ngit stash\nEOF",
+        "cat <<'EOF'\ngit stash\nEOF",
+        "cat <<-EOF\n\tgit stash\n\tEOF"):
+      with self.subTest(command=command):
+        self.assertEqual(self.kinds(command), [])
+    self.assertEqual(self.kinds("cat <<EOF\ngit stash\nEOF\ngit stash"),
+                     ["stash"])
+    self.assertEqual(self.kinds("cat <<EOF\ngit stash"), [])
+
   def test_command_is_found_in_either_tool_shape(self):
     self.assertEqual(HOOK.command_of({"command": "git stash"}), "git stash")
     self.assertEqual(HOOK.command_of({"command": ["bash", "-lc",

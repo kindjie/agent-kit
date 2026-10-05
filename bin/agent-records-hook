@@ -114,6 +114,54 @@ def command_of(tool_input) -> str:
 
 def shell_wrappers(command: str) -> list[str]:
   """Commands passed to shell -c arguments, excluding ordinary literals."""
+  def unwrapped(words):
+    index = 0
+    while index < len(words):
+      word = words[index]
+      name = Path(word).name
+      if re.fullmatch(r"\w+=\S*", word):
+        index += 1
+      elif name == "env":
+        index += 1
+        while index < len(words):
+          option = words[index]
+          if option in ("-u", "--unset", "-C", "--chdir", "-S",
+                        "--split-string"):
+            index += 2
+          elif option.startswith("-") and option != "--":
+            index += 1
+          else:
+            break
+      elif name == "sudo":
+        index += 1
+        while index < len(words):
+          option = words[index]
+          if option in ("-u", "-g", "-h", "-p", "-C", "-r", "-t",
+                        "--user", "--group", "--host", "--prompt",
+                        "--chdir"):
+            index += 2
+          elif option.startswith("-") and option != "--":
+            index += 1
+          else:
+            break
+      elif name == "nice":
+        index += 1
+        if index < len(words) and words[index] == "-n":
+          index += 2
+        elif index < len(words) and re.fullmatch(r"-\d+", words[index]):
+          index += 1
+      elif name in ("nohup", "time", "command", "xargs"):
+        index += 1
+        if name == "time":
+          while index < len(words) and words[index] in ("-p", "--portability"):
+            index += 1
+        elif name == "command":
+          while index < len(words) and words[index] in ("-p", "-v", "-V"):
+            index += 1
+      else:
+        break
+    return words[index:]
+
   try:
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
     lexer.whitespace_split = True
@@ -131,25 +179,53 @@ def shell_wrappers(command: str) -> list[str]:
   segments.append(segment)
   inner = []
   for words in segments:
-    while words and (words[0] == "sudo" or
-                     re.fullmatch(r"\w+=\S*", words[0])):
-      words = words[1:]
+    words = unwrapped(words)
     if not words or Path(words[0]).name not in ("sh", "bash", "dash", "zsh"):
       continue
-    for index, arg in enumerate(words[1:], 1):
-      if arg == "-c" or (arg.startswith("-") and "c" in arg[1:]):
+    index = 1
+    while index < len(words):
+      arg = words[index]
+      if arg in ("--rcfile", "--init-file"):
+        index += 2
+        continue
+      if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", arg):
         if index + 1 < len(words):
           inner.append(words[index + 1])
         break
+      index += 1
   return inner
+
+
+def without_heredoc_bodies(command: str) -> str:
+  """Remove data lines, retaining commands after a terminator."""
+  lines = command.splitlines(keepends=True)
+  output = []
+  pending = []
+  for line in lines:
+    if pending:
+      delimiter, tabs = pending[0]
+      if line.rstrip("\r\n").lstrip("\t" if tabs else "\0") == delimiter:
+        pending.pop(0)
+      output.append("\n")
+      continue
+    output.append(line)
+    for match in re.finditer(r"<<(-?)(['\"]?)([A-Za-z_][\w]*)\2", line):
+      pending.append((match.group(3), bool(match.group(1))))
+  return "".join(output)
 
 
 def reminders(command: str) -> list[tuple[str, str]]:
   """(kind, message) for each kind of lasting state the command creates.
   Quoted text is ignored, so `echo "git stash"` does not count."""
+  command = without_heredoc_bodies(command)
   plain = QUOTED.sub('""', command)
-  for inner in shell_wrappers(command):
-    plain += "\n" + QUOTED.sub('""', inner)
+  pending = [command]
+  for _ in range(4):
+    pending = [inner for outer in pending for inner in shell_wrappers(outer)]
+    if not pending:
+      break
+    for inner in pending:
+      plain += "\n" + QUOTED.sub('""', without_heredoc_bodies(inner))
   found = []
   for kind, pattern in STATE:
     if re.search(START + pattern.removeprefix(r"\b"), plain):

@@ -294,7 +294,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_quota_agents
 This covers per-agent token normalization and deduplication, copied/forked
 history, model and effort metadata, image omission and newest-first text
 limits, local seven-day token averages, source-cache reuse and deletion,
-expired claim exclusion from Work and summary inputs,
+expired claim exclusion from Work and summary inputs, Python 3.9 parsing of
+agent-task claim timestamps,
 quota/authentication gates, summary cooldown and failure retention, two-call
 concurrency across all displayed rows, batches of three with exact ID matching
 and per-thread bounds, background quota refresh, unused Claude session
@@ -425,7 +426,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_records_hook
 
 `test_agent_records_hook.py` covers which shell commands count as lasting
 state (worktree, stash, new branch, tool install, service) and which do
-not (listing, cleanup, quoted or echoed text), shell wrapper arguments,
+not (listing, cleanup, quoted or echoed text), shell wrapper prefixes and
+options, nested wrappers, heredoc bodies,
 escaped quotes in Codex command input, finding the command in Claude Code
 and Codex tool inputs, the PostToolUse context JSON, silence
 without records configuration or on bad input, and the session-start

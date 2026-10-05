@@ -1430,6 +1430,10 @@ class AgentViewTest(unittest.TestCase):
     body = json.loads(prompt[prompt.index("\n") + 1:])
     self.assertEqual(body["claimed_tasks"], [])
 
+  def test_stamp_accepts_agent_task_timestamp_on_python_39(self):
+    self.assertEqual(AGENTS.stamp("2026-10-04 19:15:47 -0700"),
+                     AGENTS.stamp("2026-10-05T02:15:47Z"))
+
   def test_activity_refreshes_labels_at_most_every_fifteen_minutes(self):
     agent = {"messages": ["Fix parser"], "activity": ["Bash: Build"],
              "last_seen": 0}
