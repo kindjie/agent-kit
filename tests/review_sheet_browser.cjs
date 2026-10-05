@@ -148,6 +148,13 @@ async function checkPage(browser, name) {
   await page.keyboard.press('Control+j');
   assert.equal(await page.locator('.item.focused').getAttribute('data-item-id'),
     'motion');
+  for (const modifier of ['Control', 'Meta', 'Alt']) {
+    for (const key of ['j', 'k', 'n']) {
+      await page.keyboard.press(modifier + '+' + key);
+      assert.equal(await page.locator('.item.focused')
+        .getAttribute('data-item-id'), 'motion');
+    }
+  }
   await page.keyboard.press('n');
   assert.equal(await page.locator('.item.focused').getAttribute('data-item-id'),
     'sound');
@@ -261,6 +268,31 @@ async function checkPage(browser, name) {
   await authorityPage.getByRole('button', {name: /Confirm true/}).click();
   assert.equal(await authorityPage.locator(
     '[data-scope-state="item:one:approve"]').textContent(), 'answered');
+  const delayedPage = await context.newPage();
+  await delayedPage.addInitScript(() => {
+    const digest = crypto.subtle.digest.bind(crypto.subtle);
+    crypto.subtle.digest = async (...args) => {
+      await new Promise(resolve => setTimeout(resolve, 750));
+      return digest(...args);
+    };
+  });
+  await delayedPage.goto('file://' + path.join(temp, 'authority.html'));
+  const delayedDownload = delayedPage.waitForEvent('download');
+  await delayedPage.getByRole('button', {name: 'Export results'}).click();
+  const delayedPacket = JSON.parse(fs.readFileSync(
+    await (await delayedDownload).path(), 'utf8'));
+  assert.equal(delayedPacket.answers['item:one:approve'].state, 'answered');
+  await delayedPage.evaluate(() => localStorage.removeItem(
+    'review-sheet:authority-fixture'));
+  await delayedPage.reload();
+  await delayedPage.locator('#import-file').setInputFiles({
+    name: 'authority.json', mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(authorityPacket))});
+  await delayedPage.getByText('inherited', {exact: true}).waitFor();
+  await authorityPage.evaluate(packet => localStorage.setItem(
+    'review-sheet:authority-fixture', JSON.stringify(packet)),
+    {schema_version: 1, review: 'authority-fixture',
+      answers: authorityPacket.answers});
   const corruptedPage = await context.newPage();
   await corruptedPage.goto('file://' + path.join(temp,
     'authority-corrupt.html'));
@@ -269,6 +301,22 @@ async function checkPage(browser, name) {
   await corruptedPage.getByRole('button', {name: /Confirm true/}).click();
   assert.equal(await corruptedPage.locator(
     '[data-scope-state="item:one:approve"]').textContent(), 'invalid');
+  const failedDownload = corruptedPage.waitForEvent('download');
+  await corruptedPage.getByRole('button', {name: 'Export results'}).click();
+  const failedPacket = JSON.parse(fs.readFileSync(
+    await (await failedDownload).path(), 'utf8'));
+  assert.equal(failedPacket.answers['item:one:approve'].state, 'unanswered');
+  assert.match(await corruptedPage.locator('#messages').textContent(),
+    /exported as unanswered/);
+  const noStoragePage = await context.newPage();
+  await noStoragePage.addInitScript(() => {
+    Object.defineProperty(window, 'localStorage', {get() {
+      throw Error('storage denied');
+    }});
+  });
+  await noStoragePage.goto(url);
+  assert.match(await noStoragePage.locator('#messages').textContent(),
+    /Draft storage is unavailable/);
   const missingPage = await context.newPage();
   await missingPage.goto('file://' + path.join(temp, 'missing.html'));
   await missingPage.getByText('Media could not load. Decisions disabled.')

@@ -476,6 +476,17 @@ def build(args):
                       'use an ignored path or --allow-tracked')
   limits = limits_from(args)
   resolved, scripts, embedded, page_core = resolve(path, limits)
+  items = resolved['description'].get('items', []) + [
+    item for group in resolved['description'].get('groups', [])
+    for item in group['items']]
+  inputs = {path, *(Path(name).resolve() for name in resolved['files'])}
+  inputs.update((path.parent / media['src']).resolve()
+                for item in items for media in item.get('media', [])
+                if media['kind'] != 'link')
+  if (output.name.endswith('.resolved.json') or output == resolved_path or
+      output in inputs or
+      resolved_path in inputs):
+    raise ReviewError('output or resolved file would overwrite an input')
   description = resolved['description']
   page_desc = copy.deepcopy(description)
   page_items = page_desc.get('items', []) + [
@@ -602,7 +613,7 @@ def result_import(args):
       if not isinstance(entry, dict):
         entry = {'state': 'invalid'}
       frozen_scope = frozen['scopes'].get(key) if frozen else None
-      if entry.get('state') == 'answered':
+      if entry.get('state') in ('answered', 'inherited'):
         if (packet_stale or (frozen and
             (not isinstance(frozen_scope, dict) or
              entry.get('digest') != frozen_scope.get('digest'))) or
@@ -652,7 +663,7 @@ def result_import(args):
     values = {canonical(entry['value']) for entry in valid_answers}
     if 'invalid' in states:
       bad = True
-    if len(values) > 1 or len(reviewers) > 1:
+    if len(values) > 1:
       state = 'conflict'
       conflicts.append({'scope': key, 'entries': reported})
     elif 'invalid' in states:
@@ -699,7 +710,8 @@ def status(args):
   packet = read_json(args.results, LIMITS['results'])
   answers = packet.get('answers', {})
   counts = {name: 0 for name in
-            ('answered', 'unanswered', 'inherited', 'stale', 'invalid')}
+            ('answered', 'unanswered', 'inherited', 'stale', 'conflict',
+             'invalid')}
   for entry in answers.values():
     counts[entry.get('state', 'invalid')] = counts.get(
       entry.get('state', 'invalid'), 0) + 1

@@ -11,6 +11,7 @@
   const answers = {};
   const mediaState = new Map();
   const mediaViews = new Map();
+  const mediaPending = [];
   const history = [];
   const pendingNotes = [];
   let focused = 0;
@@ -400,7 +401,8 @@
       }
       card.append(fields);
     }
-    for (const media of item.media || []) renderMedia(media, card, item);
+    for (const media of item.media || [])
+      mediaPending.push(renderMedia(media, card, item));
     for (const key of allScopes(item)) card.append(decision(key));
     card.addEventListener('click', () => focusItem(allItems.indexOf(item)));
     return card;
@@ -480,18 +482,27 @@
   }
   function packet() {
     const exported = {};
+    let unverified = 0;
     for (const key of scopeKeys) {
       const answer = answers[key];
-      exported[key] = answer ? {...answer, state: state(key)} :
+      if (answer && answer.state === 'answered' &&
+          (blocked(key) || (data.scopes[key].authority && !mediaFor(key)))) {
+        exported[key] = {state: 'unanswered',
+          digest: data.scopes[key].digest};
+        unverified++;
+      } else exported[key] = answer ? {...answer, state: state(key)} :
         {state: 'unanswered', digest: data.scopes[key].digest};
     }
+    if (unverified) note(unverified + ' answers could not be verified '
+      + 'because media failed to load or hash; exported as unanswered.', true);
     const result = {schema_version: 1, review: desc.review,
       resolved_sha256: data.resolved_sha256,
       context: desc.context || {}, reviewer: document.getElementById(
         'reviewer').value, answers: exported};
     return result;
   }
-  function exportResults() {
+  async function exportResults() {
+    await Promise.allSettled(mediaPending);
     const result = packet();
     const incomplete = scopeKeys.filter(key => data.scopes[key].definition
       .required && result.answers[key].state !== 'answered');
@@ -516,6 +527,7 @@
     let packet;
     try { packet = JSON.parse(await file.text()); }
     catch (_) { note('Results file is not valid JSON.', true); return; }
+    await Promise.allSettled(mediaPending);
     if (!packet || packet.schema_version !== 1 ||
         packet.review !== desc.review || !packet.answers ||
         typeof packet.answers !== 'object' ||

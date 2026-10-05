@@ -320,14 +320,58 @@ class ReviewSheetTest(unittest.TestCase):
     result = json.loads(self.run_tool('import', self.packet, second,
                                      '--description', self.desc,
                                      code=3).stdout)
-    self.assertEqual(result['answers'][key], {'state': 'conflict'})
+    self.assertEqual(result['answers'][key]['state'], 'answered')
     self.assertEqual(result['conflicts'][0], {
       'scope': 'reviewer', 'entries': [
         {'reviewer': 'Reviewer A'}, {'reviewer': 'Reviewer B'}]})
-    self.assertEqual(result['conflicts'][1]['scope'], key)
-    self.assertEqual([entry['reviewer'] for entry in
-                      result['conflicts'][1]['entries']],
-                     ['Reviewer A', 'Reviewer B'])
+    self.assertEqual(len(result['conflicts']), 1)
+
+  def test_different_reviewers_only_conflict_on_different_answers(self):
+    resolved = self.build()
+    key = 'item:one:verdict'
+    packets = []
+    for reviewer, answers in (
+        ('A', {key: {'state': 'answered', 'value': 'keep',
+                     'digest': resolved['scopes'][key]['digest']}}),
+        ('B', {})):
+      path = self.root / f'{reviewer}.json'
+      path.write_text(json.dumps({'schema_version': 1,
+        'review': 'sample-1', 'resolved_sha256': '0' * 64,
+        'reviewer': reviewer, 'answers': answers}))
+      packets.append(path)
+    result = json.loads(self.run_tool('import', *packets,
+      '--description', self.desc, code=3).stdout)
+    self.assertEqual([c['scope'] for c in result['conflicts']], ['reviewer'])
+    self.assertEqual(result['answers'][key]['state'], 'answered')
+    self.assertEqual(result['answers']['item:one:note']['state'], 'unanswered')
+
+  def test_frozen_mismatch_stales_inherited_answer(self):
+    resolved = self.build()
+    key = 'item:one:verdict'
+    self.packet.write_text(json.dumps({'schema_version': 1,
+      'review': 'sample-1', 'resolved_sha256': '0' * 64,
+      'answers': {key: {'state': 'inherited', 'value': 'keep',
+        'digest': resolved['scopes'][key]['digest']}}}))
+    result = json.loads(self.run_tool('import', self.packet,
+      '--description', self.desc, '--resolved',
+      self.root / 'review.resolved.json', code=3).stdout)
+    self.assertEqual(result['answers'][key]['state'], 'stale')
+
+  def test_build_refuses_input_output_aliases(self):
+    for output in (self.desc, self.root / 'sample.txt',
+                   self.root / 'review.resolved.json'):
+      with self.subTest(output=output):
+        original = output.read_bytes() if output.exists() else None
+        self.run_tool('build', self.desc, '--output', output, code=2)
+        if original is not None:
+          self.assertEqual(output.read_bytes(), original)
+
+  def test_status_seeds_conflict_in_fixed_order(self):
+    self.packet.write_text(json.dumps({'review': 'sample-1',
+      'answers': {'a': {'state': 'conflict'}}}))
+    self.assertEqual(self.run_tool('status', self.packet).stdout,
+      'sample-1: answered 0, unanswered 0, inherited 0, stale 0, '
+      'conflict 1, invalid 0\n')
 
   def test_symlink_escape_and_schema(self):
     outside = self.root.parent / 'outside-sample.txt'
