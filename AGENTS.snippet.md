@@ -63,15 +63,16 @@ record serious mistakes. Before cleanup, read
 authority. The skill covers handoffs, verification, and cleanup details.
 
 Clean up state once it has served its purpose: worktrees, branches, stashes,
-scratch, temporary assets, traces, and test deployments. Its creator does
-it; otherwise the delegating agent does, or the next agent on the task or
-entry. First verify the work landed on the default branch by searching its
-symbols and introducing commit, not by inference. Verify that no unique
-uncommitted, unpushed, or untracked work remains; nothing running uses it;
-and no open entry or active agent still needs it. Before removing a directory,
-read every open entry located inside it and preserve or account for each file
-it names; never infer contents from one pattern. Remove exactly that state
-and close its entry with what was verified. Verified cleanup needs no owner
-approval unless the user requires it. Leave anything uncertain and say why.
+scratch and temporary files and folders, generated assets, traces, and test
+deployments. Its creator does it; otherwise the delegating agent does, or the
+next agent on the task or entry. First verify the work landed on the default
+branch by searching its symbols and introducing commit, not by inference. Verify
+that no unique uncommitted, unpushed, or untracked work remains; nothing running
+uses it; and no open entry or active agent still needs it. Before removing a
+directory, read every open entry located inside it and preserve or account for
+each file it names; never infer contents from one pattern. Remove exactly that
+state and close its entry with what was verified. Verified cleanup needs no
+owner approval unless the user requires it. Leave anything uncertain and say
+why.
 <!-- /agent-kit:records -->
 <!-- END agent-kit -->
