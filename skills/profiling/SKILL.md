@@ -1,15 +1,13 @@
 ---
 name: profiling
 description: >-
-  Collects or interprets a performance profile — map a symptom to the signal
-  worth capturing, run the platform profiler on Apple Silicon macOS or x86
-  Linux, and read the numbers without overclaiming cause. Covers NUMA and
-  topology-sensitive scaling: parallel cliffs at core, cache, or socket
-  boundaries, page placement, and coherence traffic. GPU work — frame
-  time, pass cost, shader bottlenecks, GPU memory, CPU↔GPU sync — on
-  Metal, Vulkan/RADV, SteamOS, or NVIDIA, directly or through sokol,
-  raylib, OpenGL, WebGPU, or WebGL. WebAssembly CPU profiling in the
-  browser: tier-up, workers, the JS↔Wasm boundary, sampling profiles.
+  Collects or interprets a performance profile: maps a symptom to a signal,
+  runs the profiler on Apple Silicon macOS or x86 Linux, and reads results
+  without overclaiming cause. Use for NUMA, core/cache/socket scaling, page
+  placement, coherence; GPU frame time, passes, shaders, memory, CPU↔GPU
+  sync on Metal, Vulkan/RADV, SteamOS, NVIDIA, sokol, raylib, OpenGL,
+  WebGPU, WebGL; or browser WebAssembly tier-up, workers, JS↔Wasm boundaries,
+  and sampling profiles.
 ---
 
 # Profiling Reference
