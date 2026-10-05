@@ -178,6 +178,17 @@ Before cleaning anything up, read `agent-changelog list --open --machine`
 (add `--here` for this repository). An entry explains why state exists; it
 never authorizes deleting it.
 
+Clean up state after it serves its purpose. The creator does it; otherwise
+the delegating agent or the next agent on the task or entry does. Verify that
+the work landed on the default branch by searching its symbols and introducing
+commit; no unique uncommitted, unpushed, or untracked work remains; and no
+process, open entry, or active agent still needs it. Before removing a
+directory, read every open entry inside it and preserve or account for each
+file it names; never infer contents from one pattern. Remove exactly the
+verified state and close its entry with the evidence. Verified cleanup needs
+no extra owner approval unless the user requires it. Leave anything uncertain
+in place and say why.
+
 ## Mistakes
 
 Record a serious mistake as soon as you notice it (lost or overwritten
