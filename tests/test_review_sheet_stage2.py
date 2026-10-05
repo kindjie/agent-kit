@@ -97,7 +97,7 @@ class Stage2Test(unittest.TestCase):
     self.description['components'] = {'text': 'component'}
     self.write_desc()
     self.run_tool('build', self.desc, '--output', self.page, code=2)
-    trust = self.run_tool('component', 'trust', folder)
+    trust = self.run_tool('component', 'trust', folder, '--yes')
     self.assertIn('sha256', trust.stdout)
     self.build()
     (self.root / 'linked').symlink_to(self.root, target_is_directory=True)
@@ -112,10 +112,29 @@ class Stage2Test(unittest.TestCase):
     (folder / 'component.js').write_text("ReviewSheet.register({kind:'text',"
       "version:'1.0.0',api:1,keys:{j:'collision'},"
       "render(){return document.createElement('pre')}})")
-    self.run_tool('component', 'trust', folder)
+    self.run_tool('component', 'trust', folder, '--yes')
     self.run_tool('build', self.desc, '--output', self.page, code=2)
     trust_path = self.config / 'review-sheet' / 'trusted-components.json'
     self.assertEqual(trust_path.stat().st_mode & 0o777, 0o600)
+
+  def test_trust_requires_yes_and_literal_registration_fields(self):
+    folder = self.root / 'component'
+    folder.mkdir()
+    (folder / 'component.json').write_text(json.dumps({
+      'kind': 'text', 'version': '1.0.0', 'api': 1}))
+    script = folder / 'component.js'
+    script.write_text("// kind:'text', version:'1.0.0', api:1\n"
+      "ReviewSheet.register({render(){return document.createElement('pre')}})")
+    self.run_tool('component', 'trust', folder, '--yes', code=2)
+    script.write_text("ReviewSheet.register({kind:'text',version:'1.0.0',"
+      "api:1,render(){return document.createElement('pre')}})")
+    preview = self.run_tool('component', 'trust', folder, code=2)
+    inventory = json.loads(preview.stdout)
+    self.assertEqual(inventory['files']['component.js'],
+      hashlib.sha256(script.read_bytes()).hexdigest())
+    self.assertFalse((self.config / 'review-sheet' /
+                      'trusted-components.json').exists())
+    self.run_tool('component', 'trust', folder, '--yes')
 
   def test_frozen_import_rechecks_owner_component_trust(self):
     folder = self.root / 'component'
@@ -126,7 +145,7 @@ class Stage2Test(unittest.TestCase):
       "version:'1.0.0',api:1,render(){return document.createElement('pre')}})")
     self.description['components'] = {'text': 'component'}
     self.write_desc()
-    self.run_tool('component', 'trust', folder)
+    self.run_tool('component', 'trust', folder, '--yes')
     resolved = self.build()
     frozen = self.page.with_suffix('.resolved.json')
     self.packet.write_text(json.dumps({'schema_version': 1,
@@ -164,7 +183,7 @@ class Stage2Test(unittest.TestCase):
                   '--allow-tracked', code=2)
 
     trusted = json.loads(self.run_tool('component', 'trust',
-                                      repo_component).stdout)
+                                      repo_component, '--yes').stdout)
     resolved = self.build('--allow-tracked')
     self.assertEqual(resolved['components']['text']['path'],
                      str(repo_component.resolve()))
@@ -175,7 +194,7 @@ class Stage2Test(unittest.TestCase):
     self.write_desc()
     self.run_tool('build', self.desc, '--output', self.page,
                   '--allow-tracked', code=2)
-    self.run_tool('component', 'trust', explicit)
+    self.run_tool('component', 'trust', explicit, '--yes')
     resolved = self.build('--allow-tracked')
     self.assertEqual(resolved['components']['text']['path'],
                      str(explicit.resolve()))

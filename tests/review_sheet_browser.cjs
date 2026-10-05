@@ -223,7 +223,7 @@ ReviewSheet.register({kind: 'custom', version: '1.0.0', api: 1,
 });`);
 const previousConfig = process.env.XDG_CONFIG_HOME;
 process.env.XDG_CONFIG_HOME = config;
-run('component', 'trust', componentDir);
+run('component', 'trust', componentDir, '--yes');
 const custom = {review: 'custom-fixture',
   components: {custom: 'custom-component'},
   decisions: {accept: {kind: 'boolean'}},
@@ -262,7 +262,7 @@ for (const [fault, prefix, apiValue, version, hooks] of [
       ${hooks} render(media, api) { api.ready();
         return document.createElement('${fault === 'native' ? 'img' : 'div'}');
       }});`);
-  run('component', 'trust', directory);
+  run('component', 'trust', directory, '--yes');
   write('fault-' + fault + '.json', JSON.stringify({review: 'fault-' + fault,
     components: {fault: 'fault-' + fault},
     decisions: {accept: {kind: 'boolean'}},

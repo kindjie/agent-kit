@@ -120,10 +120,12 @@ only for the current generation; components must observe the abort signal.
 
 Components run in the page realm and can read answers: this API is **not a
 sandbox**. Built-ins run by default. Review an external component's code
-before trusting its exact bundle digest:
+before trusting its exact bundle digest. The first command prints the file
+inventory and hashes and refuses to write; pass `--yes` after reviewing it:
 
 ```sh
 ./bin/review-sheet component trust path/to/component
+./bin/review-sheet component trust path/to/component --yes
 ./bin/review-sheet component list
 ./bin/review-sheet component untrust SHA256
 ```
@@ -131,8 +133,12 @@ before trusting its exact bundle digest:
 The owner file is `$XDG_CONFIG_HOME/review-sheet/trusted-components.json`
 or `~/.config/review-sheet/trusted-components.json`, mode `0600`. A bundle
 digest is SHA-256 of canonical JSON mapping each declared relative filename,
-including `README.md` when present, to its byte SHA-256. Trust pins bytes,
-not a changing path. Lookup order: explicit `components` path relative to
+including `README.md` when present, to its byte SHA-256. Trust records the
+bundle kind, version, digest, and path. Registration requires exactly one
+literal `ReviewSheet.register({...})` call with bare top-level `kind`,
+`version`, and `api` fields whose values are literal strings and `1`.
+Comments and nested objects cannot supply those fields. Lookup order:
+explicit `components` path relative to
 the description, nearest repository `.review-sheet/components/`, user config,
 then built-ins. A found untrusted or invalid override fails the build. The
 frozen file records selected manifests, file hashes, and bundle digests.
