@@ -396,7 +396,7 @@ class Stage2Test(unittest.TestCase):
     self.packet.write_text(json.dumps(packet))
     valid = json.loads(self.run_tool('import', self.packet, '--resolved',
       frozen).stdout)
-    self.assertEqual(valid['reveals']['case']['decision_revision'], 1)
+    self.assertEqual(valid['reveals']['case']['']['decision_revision'], 1)
     invalid = copy.deepcopy(packet)
     invalid['reveals']['case']['revealed'] = False
     bad_path = self.root / 'bad.json'
@@ -409,13 +409,34 @@ class Stage2Test(unittest.TestCase):
     bad_path.write_text(json.dumps(invalid))
     self.run_tool('import', bad_path, '--resolved', frozen, code=2)
     other = copy.deepcopy(packet)
-    other['reveals']['case']['first_reveal'] = {
-      'sequence': 2, 'next_decision_revision': 2}
     other['reveals']['case']['decision_revision'] = 2
     other['reveals']['case']['event_sequence'] = 3
     bad_path.write_text(json.dumps(other))
+    packet['reviewer'] = other['reviewer'] = 'alice'
+    self.packet.write_text(json.dumps(packet))
+    bad_path.write_text(json.dumps(other))
     merged = json.loads(self.run_tool('import', self.packet, bad_path,
-      '--resolved', frozen, code=3).stdout)
+      '--resolved', frozen).stdout)
+    self.assertEqual(merged['reveals']['case']['alice'], other['reveals']['case'])
+    self.assertEqual(merged['conflicts'], [])
+    reversed_result = json.loads(self.run_tool('import', bad_path,
+      self.packet, '--resolved', frozen).stdout)
+    self.assertEqual(reversed_result['reveals'], merged['reveals'])
+    independent = copy.deepcopy(packet)
+    independent['reviewer'] = 'bob'
+    independent['reveals']['case']['first_reveal'] = {
+      'sequence': 2, 'next_decision_revision': 2}
+    independent['reveals']['case']['decision_revision'] = 2
+    independent['reveals']['case']['event_sequence'] = 3
+    bad_path.write_text(json.dumps(independent))
+    merged = json.loads(self.run_tool('import', self.packet, bad_path,
+      '--resolved', frozen).stdout)
+    self.assertEqual(set(merged['reveals']['case']), {'alice', 'bob'})
+    divergent = copy.deepcopy(independent)
+    divergent['reviewer'] = 'alice'
+    bad_path.write_text(json.dumps(divergent))
+    merged = json.loads(self.run_tool('import', self.packet, bad_path,
+      '--resolved', frozen, code=2).stdout)
     self.assertEqual(merged['conflicts'][0]['scope'], 'reveal:case')
 
 

@@ -1212,7 +1212,8 @@ def result_import(args):
         invalid_entries.append(f'reveal:{group["id"]}')
         bad = True
       else:
-        reveal_packets.setdefault(group['id'], []).append(reveal)
+        reveal_packets.setdefault(group['id'], {}).setdefault(
+          packet.get('reviewer', ''), []).append(reveal)
     for key, entry in packet['answers'].items():
       if key not in scopes:
         parts = key.split(':')
@@ -1302,14 +1303,39 @@ def result_import(args):
             'invalid_entries': sorted(set(invalid_entries)),
             'conflicts': conflicts, 'incomplete': incomplete}
   result['reveals'] = {}
-  for group_id, entries in reveal_packets.items():
-    histories = {canonical(entry) for entry in entries}
-    if len(histories) > 1:
-      conflicts.append({'scope': f'reveal:{group_id}',
-                        'entries': entries})
-      stale = True
-    else:
-      result['reveals'][group_id] = entries[0]
+  for group_id, reviewers in reveal_packets.items():
+    result['reveals'][group_id] = {}
+    for reviewer, entries in reviewers.items():
+      latest = entries[0]
+      divergent = False
+      for entry in entries[1:]:
+        earlier, later = sorted((latest, entry), key=lambda row:
+          (row['decision_revision'], row['event_sequence']))
+        first = earlier['first_reveal']
+        next_first = later['first_reveal']
+        extends = (later['decision_revision'] >=
+                   earlier['decision_revision'] and
+                   later['event_sequence'] >= earlier['event_sequence'] and
+                   (first == next_first or
+                    (first is None and next_first is not None and
+                     next_first['sequence'] > earlier['event_sequence'] and
+                     next_first['next_decision_revision'] >
+                     earlier['decision_revision'])))
+        if ((earlier['decision_revision'], earlier['event_sequence']) ==
+            (later['decision_revision'], later['event_sequence'])):
+          extends = canonical(earlier) == canonical(later)
+        if not extends:
+          divergent = True
+          break
+        latest = later
+      if divergent:
+        conflicts.append({'scope': f'reveal:{group_id}',
+                          'reviewer': reviewer, 'entries': entries})
+        bad = True
+      else:
+        result['reveals'][group_id][reviewer] = latest
+    if not result['reveals'][group_id]:
+      del result['reveals'][group_id]
   if args.check_current:
     changed = []
     missing_inputs = []

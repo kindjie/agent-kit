@@ -210,7 +210,11 @@ Reveal is optional and records an immutable first-reveal event and monotonic
 best-decision revision. Export includes `revealed`, `first_reveal`,
 `decision_revision`, and derived `revealed_before_decision`. Undo and
 re-import advance revisions; reload hides identities but retains history.
-Import rejects impossible sequences and conflicting histories across packets.
+Import rejects impossible sequences. Reveal histories are keyed by reviewer;
+a later monotone history for the same reviewer supersedes its prefix, while
+divergent histories for that reviewer conflict and exit 2. Independent
+reviewers retain separate histories. A packet without `reviewer` uses the
+empty-string key.
 Draft reveal histories also carry the scope digest; a stale history is
 preserved in storage and requires reconfirming the best decision.
 Anonymity is an interface guard, not secrecy: a page with a reveal mapping
