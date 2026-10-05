@@ -349,7 +349,11 @@ must be closed, mitigated or transferred before their last task closes.
 An entry's `location:` is one or more paths beginning with `~/`, `/`, `./`
 or `../` (or the corresponding single directory marker). Separate paths with
 `; `; a parenthesized note may follow a path. Brace lists such as
-`~/git/{repo-a,repo-b}` expand to paths. The parser also accepts newline
+`~/git/{repo-a,repo-b}` expand to paths; nested lists are accepted as
+written. A `host:` prefix (`device:~/game`) names a path on another machine.
+Entries whose kind includes `service` or `other` may name non-path places,
+such as a port or a cloud project, and are not checked. The parser also
+accepts newline
 separators in existing records; CLI writers keep headers on one line. Use
 repository keys, rather than absolute checkout paths, in `repos:`.
 `agent-changelog lint` prints `WARN` for open entries with unparseable

@@ -26,6 +26,21 @@ class ChangelogLocationTest(RecordsFixture):
     subprocess.run(["git", "init", "-q", str(self.repo)],
                    env=self.env, check=True)
 
+  def test_remote_nested_and_non_path_locations(self):
+    import sys
+    sys.path.insert(0, str(BIN))
+    from agent_records_changelog import location_warning, parse_location
+    self.assertEqual(parse_location("deck:~/game (installed build)"),
+                     ["deck:~/game"])
+    self.assertEqual(parse_location("build-host:/srv/out"),
+                     ["build-host:/srv/out"])
+    self.assertTrue(parse_location("/data/{a/{x,y},b}"))
+    self.assertFalse(parse_location("/data/{a,b"))
+    self.assertIsNone(location_warning("cloud project p1, region r1",
+                                       "service"))
+    self.assertIsNone(location_warning("local port 8000", "tool + service"))
+    self.assertIsNotNone(location_warning("cloud project p1", "scratch"))
+
   def test_location_forms_and_writer_warnings(self):
     valid = (
       "~/git/arenarch-work (kept for review)",

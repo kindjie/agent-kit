@@ -39,14 +39,25 @@ def parse_location(value):
     note = re.search(r"\s+\([^()]+\)$", part)
     if note:
       part = part[:note.start()]
-    if not (part.startswith(("~/", "/", "./", "../")) or
-            part in ("~", ".", "..")):
+    # host:path names state on another machine, such as a device.
+    host = re.match(r"[A-Za-z0-9][\w.-]*:(?=~/|/)", part)
+    path = part[host.end():] if host else part
+    if not (path.startswith(("~/", "/", "./", "../")) or
+            path in ("~", ".", "..")):
       return []
     if re.search(r"\s(?:\+|->|and|branch)\s|\s+->\s*", part):
       return []
-    if part.count("{") != part.count("}") or part.count("{") > 1:
+    depth = 0
+    for char in part:
+      depth += {"{": 1, "}": -1}.get(char, 0)
+      if depth < 0:
+        return []
+    if depth:
       return []
-    if "{" in part:
+    if part.count("{") > 1:
+      # Nested or repeated lists are valid shell braces; keep them whole.
+      paths.append(part)
+    elif "{" in part:
       match = re.search(r"\{([^{}]+)\}", part)
       if not match:
         return []
@@ -62,7 +73,11 @@ def parse_location(value):
   return paths
 
 
-def location_warning(value):
+def location_warning(value, kind=""):
+  # Services and other state may live outside the filesystem (a port, a
+  # cloud project), so only path-based kinds need a parseable path.
+  if set(re.split(r"\s*\+\s*", kind.strip())) & {"service", "other"}:
+    return None
   if not parse_location(value):
     return "WARN: unparseable location: " + value
   return None
@@ -150,7 +165,8 @@ def new_entry(root, tasks_root, args, agent, push, mistake=False):
   mutate(root, {relative: put_record(fields, order, body, mistake)},
          "Create " + relative, agent, push)
   print(relative)
-  if not mistake and (warning := location_warning(fields["location"])):
+  if not mistake and (warning := location_warning(
+      fields["location"], fields.get("kind", ""))):
     print(warning, file=sys.stderr)
 
 
@@ -255,7 +271,8 @@ def update_record(root, tasks_root, args, agent, push, mistake=False):
     mutate(root, change_edits, operation, agent, push)
   if (args.command == "update" and not mistake and
       args.location is not None and
-      (warning := location_warning(fields["location"]))):
+      (warning := location_warning(fields["location"],
+                                   fields.get("kind", "")))):
     print(warning, file=sys.stderr)
 
 
@@ -442,7 +459,8 @@ def lint_warnings(root, tasks_root=None):
     if fields.get("status") != "open":
       continue
     relative = str(path.relative_to(root))
-    if warning := location_warning(fields.get("location", "")):
+    if warning := location_warning(fields.get("location", ""),
+                                    fields.get("kind", "")):
       warnings.append(relative + ": " + warning)
     repos = comma(fields.get("repos", ""))
     scope_and_slug = re.sub(r"^\d{4}-\d{2}-\d{2}-\d{4}-", "",
