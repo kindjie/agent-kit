@@ -239,6 +239,23 @@ def trusted_bundles():
   return trust
 
 
+def frozen_trust_changes(frozen):
+  trusted = trusted_bundles()['components']
+  changed = []
+  for kind, bundle in frozen.get('components', {}).items():
+    if not isinstance(bundle, dict):
+      changed.append(kind)
+      continue
+    if Path(bundle.get('path', '')) == COMPONENTS / kind:
+      continue
+    if not any(all(row.get(key) == value for key, value in (
+        ('kind', kind), ('version', bundle.get('version')),
+        ('sha256', bundle.get('sha256')),
+        ('path', bundle.get('path')))) for row in trusted):
+      changed.append(kind)
+  return sorted(changed)
+
+
 def component_command(args):
   trust_path = owner_root() / 'trusted-components.json'
   trust = trusted_bundles()
@@ -1137,6 +1154,7 @@ def result_import(args):
     raise ReviewError('invalid frozen resolved description')
   scopes = frozen['scopes']
   review = frozen['description']['review']
+  trust_changed = frozen_trust_changes(frozen)
   answers = {}
   bad = False
   stale = False
@@ -1302,6 +1320,11 @@ def result_import(args):
             'missing': missing, 'orphaned': sorted(set(orphaned)),
             'invalid_entries': sorted(set(invalid_entries)),
             'conflicts': conflicts, 'incomplete': incomplete}
+  if trust_changed:
+    bad = True
+    result['trust_refused'] = trust_changed
+    print('review-sheet: component trust revoked or changed: ' +
+          ', '.join(trust_changed), file=sys.stderr)
   result['reveals'] = {}
   for group_id, reviewers in reveal_packets.items():
     result['reveals'][group_id] = {}
@@ -1351,8 +1374,9 @@ def result_import(args):
         changed.append(name)
     result['currency'] = {
       'status': ('missing' if missing_inputs else 'changed' if changed else
-                 'current'), 'changed': sorted(changed),
-      'missing': sorted(missing_inputs)}
+                 'changed' if trust_changed else 'current'),
+      'changed': sorted(changed), 'missing': sorted(missing_inputs),
+      'trust_changed': trust_changed}
   rendered = json.dumps(result, indent=2, ensure_ascii=False) + '\n'
   if args.output:
     args.output.write_text(rendered, encoding='utf-8')

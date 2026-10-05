@@ -17,7 +17,10 @@ its page until results are imported; rebuilding the same output replaces it.
 `import` requires `--resolved` and interprets every packet from that frozen
 file alone. A different resolved-file hash is stale. `--check-current`
 separately reports missing or changed description, preset, component, and
-media inputs without changing answer states. A project adapter must still
+media inputs, plus revoked or changed owner component trust, without changing
+answer states. Import refuses a frozen component whose owner trust has been
+revoked or changed, whether or not `--check-current` is selected. A project
+adapter must still
 check caller evidence against its own current records before applying results.
 
 ## Description and decisions

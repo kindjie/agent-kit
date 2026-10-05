@@ -117,6 +117,44 @@ class Stage2Test(unittest.TestCase):
     trust_path = self.config / 'review-sheet' / 'trusted-components.json'
     self.assertEqual(trust_path.stat().st_mode & 0o777, 0o600)
 
+  def test_frozen_import_rechecks_owner_component_trust(self):
+    folder = self.root / 'component'
+    folder.mkdir()
+    (folder / 'component.json').write_text(json.dumps({
+      'kind': 'text', 'version': '1.0.0', 'api': 1}))
+    (folder / 'component.js').write_text("ReviewSheet.register({kind:'text',"
+      "version:'1.0.0',api:1,render(){return document.createElement('pre')}})")
+    self.description['components'] = {'text': 'component'}
+    self.write_desc()
+    self.run_tool('component', 'trust', folder)
+    resolved = self.build()
+    frozen = self.page.with_suffix('.resolved.json')
+    self.packet.write_text(json.dumps({'schema_version': 1,
+      'review': 'generic', 'resolved_sha256': hashlib.sha256(
+        frozen.read_bytes()).hexdigest(), 'answers': {}}))
+    before = json.loads(self.run_tool('import', self.packet, '--resolved',
+      frozen, '--check-current').stdout)
+    self.assertEqual(before['currency']['status'], 'current')
+    trust_path = self.config / 'review-sheet' / 'trusted-components.json'
+    original_trust = json.loads(trust_path.read_text())
+    altered = copy.deepcopy(original_trust)
+    altered['components'][0]['version'] = '2.0.0'
+    trust_path.write_text(json.dumps(altered))
+    changed = self.run_tool('import', self.packet, '--resolved', frozen,
+      '--check-current', code=2)
+    self.assertIn('text', json.loads(changed.stdout)
+                  ['currency']['trust_changed'])
+    trust_path.write_text(json.dumps(original_trust))
+    self.run_tool('component', 'untrust',
+      resolved['components']['text']['sha256'])
+    refused = self.run_tool('import', self.packet, '--resolved', frozen,
+      '--check-current', code=2)
+    result = json.loads(refused.stdout)
+    self.assertEqual(result['currency']['status'], 'changed')
+    self.assertIn('text', result['currency']['trust_changed'])
+    self.assertIn('component trust', refused.stderr)
+    self.run_tool('import', self.packet, '--resolved', frozen, code=2)
+
   def test_untrusted_shadow_blocks_builtin_and_explicit_path_wins(self):
     subprocess.run(['git', 'init', '-q', str(self.root)], check=True)
     source = TOOL.parent / 'review_sheet_components' / 'text'
