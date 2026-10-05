@@ -28,16 +28,19 @@ agent-records init --default --machine my-workstation
 ```
 
 `--machine` is optional; without it, setup records the current short hostname.
-The command prints its chosen paths and values, creates dedicated tasks and
-changelog Git repositories under `${XDG_DATA_HOME:-~/.local/share}/agent-kit/`,
-then writes `${XDG_CONFIG_HOME:-~/.config}/agent-kit/records.json` with absolute
-paths, the machine name and `"push": false`. It refuses existing configuration,
-records directory destinations, or `AGENT_TASKS_DIR`, `AGENT_CHANGELOG_DIR` and
+Git needs a commit identity (`user.name` and `user.email`); setup checks for
+one, and for the refusals below, before it prints or creates anything. It then
+prints its chosen paths and values, creates dedicated tasks and changelog Git
+repositories under `${XDG_DATA_HOME:-~/.local/share}/agent-kit/`, then writes
+`${XDG_CONFIG_HOME:-~/.config}/agent-kit/records.json` with absolute paths, the
+machine name and `"push": false`. It refuses existing configuration, records
+directory destinations, or nonempty `AGENT_TASKS_DIR`, `AGENT_CHANGELOG_DIR` and
 `AGENT_MACHINE` overrides. It never changes existing configuration or mints an
-agent ID. If the second store fails, the first remains and the command prints
-manual recovery guidance; it will not overwrite that store on retry.
-The starter queue is local. Agents on another machine need explicit access to
-the same shared stores and a separately chosen sync policy.
+agent ID. If the second store or the configuration write fails, the stores
+already created remain and the command prints manual recovery guidance; it will
+not overwrite them on retry. The starter queue is local. Agents on another
+machine need explicit access to the same shared stores and a separately chosen
+sync policy.
 
 ## Agent records
 

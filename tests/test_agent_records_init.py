@@ -55,6 +55,26 @@ class RecordsInitTest(RecordsFixture):
     self.assertEqual(self.invoke("agent-task", "list").returncode, 0)
     self.assertEqual(self.invoke("agent-changelog", "list").returncode, 0)
 
+  def test_refusals_happen_before_reporting_and_create_nothing(self):
+    cfg, tasks, changes = self.paths()
+    empty = self.base / "empty-gitconfig"
+    empty.write_text("")
+    no_identity = {key: value for key, value in self.env.items()
+                   if not key.startswith(("GIT_AUTHOR_", "GIT_COMMITTER_",
+                                          "EMAIL"))}
+    no_identity.update(GIT_CONFIG_GLOBAL=str(empty))
+    result = self.invoke("agent-records", "init", "--default", env=no_identity)
+    self.assertEqual(result.returncode, 2, result.stderr)
+    self.assertIn("git identity", result.stderr)
+    self.assertNotIn("push: false", result.stdout)
+    for path in (cfg, tasks, changes):
+      self.assertFalse(path.exists())
+
+  def test_empty_override_counts_as_unset(self):
+    env = dict(self.env, AGENT_TASKS_DIR="")
+    result = self.invoke("agent-records", "init", "--default", env=env)
+    self.assertEqual(result.returncode, 0, result.stderr)
+
   def test_distinct_homes_and_xdg_paths_never_share_default_state(self):
     first = dict(self.env, HOME=str(self.base / "first"))
     second = dict(self.env, HOME=str(self.base / "second"))

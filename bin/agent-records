@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import subprocess
 import sys
 
 # Reading records must not create bytecode caches beside installed modules.
@@ -42,15 +43,8 @@ def init_default(name):
   if not chosen_machine or "\n" in chosen_machine or "\r" in chosen_machine:
     raise RecordsError("machine name must be one nonempty line", 2)
 
-  print("config: " + str(config))
-  print("tasks: " + str(tasks))
-  print("changelog: " + str(changes))
-  print("machine: " + chosen_machine)
-  print("push: false")
-  print("scope: local starter queue")
-
   for key in ("AGENT_TASKS_DIR", "AGENT_CHANGELOG_DIR", "AGENT_MACHINE"):
-    if key in os.environ:
+    if os.environ.get(key):
       raise RecordsError(key + " is set; remove the override before setup", 2)
   for label, raw, path in (("configuration", raw_config, config),
                            ("tasks", raw_tasks, tasks),
@@ -58,6 +52,19 @@ def init_default(name):
     if os.path.lexists(raw) or os.path.lexists(path):
       raise RecordsError(label + " destination already exists: " +
                          str(path) + "; existing state is untouched", 2)
+  # Each store's first commit needs one; check before creating anything.
+  identity = subprocess.run(["git", "var", "GIT_COMMITTER_IDENT"],
+                            capture_output=True, text=True)
+  if identity.returncode != 0:
+    raise RecordsError("no git identity: set user.name and user.email "
+                       "(git config --global) before setup", 2)
+
+  print("config: " + str(config))
+  print("tasks: " + str(tasks))
+  print("changelog: " + str(changes))
+  print("machine: " + chosen_machine)
+  print("push: false")
+  print("scope: local starter queue")
 
   initialized = []
   try:
