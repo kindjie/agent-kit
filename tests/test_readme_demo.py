@@ -78,9 +78,11 @@ class DemoTest(unittest.TestCase):
     data = self.demo.fixture()
     reply = SimpleNamespace(returncode=0, stdout=json.dumps({
       'tasks': [row['fields'] for row in data['tasks'].values()]}))
+    moment = self.demo.datetime.fromisoformat(
+      data['clock'].replace('Z', '+00:00')).timestamp()
     with patch.object(agents.shutil, 'which', return_value='demo-agent-task'), \
          patch.object(agents.subprocess, 'run', return_value=reply):
-      claims = agents.claimed_tasks()
+      claims = agents.claimed_tasks(now=moment)
     rows = self.demo.associated_agents(data['agents'], claims)
     parent = next(a for a in rows if a['id'] == 'demo-brewing')
     helper = next(a for a in rows if a['id'] == 'demo-timer')

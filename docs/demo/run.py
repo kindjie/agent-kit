@@ -170,7 +170,8 @@ def pane(kind, argv):
     activity.time = SimpleNamespace(time=lambda: moment.timestamp())
     args = SimpleNamespace(interval=2, color_on=True, verbose=False, notify=False)
     import agent_quota_agents as agent_data
-    rows = associated_agents(data['agents'], agent_data.claimed_tasks())
+    rows = associated_agents(
+      data['agents'], agent_data.claimed_tasks(now=moment.timestamp()))
     frame = {'agents': rows, 'cache': {'sessions': {}}, 'command': None}
     activity.run_agent_live(args, stage / 'cache/quota.json', quota,
       loader=lambda: (copy.deepcopy(frame), copy.deepcopy(document)))

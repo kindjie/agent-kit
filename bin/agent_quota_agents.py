@@ -741,7 +741,7 @@ def records_id(agent):
           + hashlib.sha256(str(agent["id"]).encode()).hexdigest()[:16])
 
 
-def claimed_tasks(binary="agent-task"):
+def claimed_tasks(binary="agent-task", now=None):
   """{records ID: [{id, title, status}]} for live tasks each ID owns or
   helps with; None when agent-task is absent, unconfigured or slow."""
   command = shutil.which(binary)
@@ -758,8 +758,12 @@ def claimed_tasks(binary="agent-task"):
   if not isinstance(tasks, list):
     return None
   claims = {}
+  now = time.time() if now is None else now
   for task in tasks if isinstance(tasks, list) else []:
     if not isinstance(task, dict) or task.get("status") not in CLAIMED:
+      continue
+    expiry = stamp(task.get("expires"))
+    if expiry is None or expiry <= now:
       continue
     holders = [task.get("owner")] + [
       name.strip() for name in str(task.get("helpers") or "").split(",")]

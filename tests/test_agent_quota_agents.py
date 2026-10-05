@@ -1380,15 +1380,17 @@ class AgentViewTest(unittest.TestCase):
                                "parent_id": None})
     listing = {"tasks": [
       {"id": "T-0007", "title": "Fix the HUD", "status": "in-progress",
-       "owner": owner, "helpers": ""},
+       "owner": owner, "helpers": "",
+       "expires": "2026-10-03T00:00:00Z"},
       {"id": "T-0008", "title": "Help out", "status": "in-review",
-       "owner": "someone", "helpers": f"x, {owner}"},
+       "owner": "someone", "helpers": f"x, {owner}",
+       "expires": "2026-10-03T00:00:00Z"},
       {"id": "T-0009", "title": "Unowned", "status": "open",
        "owner": "none", "helpers": ""}]}
     result = subprocess.CompletedProcess([], 0, json.dumps(listing), "")
     with patch.object(AGENTS.shutil, "which", return_value="/x"), \
          patch.object(AGENTS.subprocess, "run", return_value=result):
-      claims = AGENTS.claimed_tasks()
+      claims = AGENTS.claimed_tasks(now=AGENTS.stamp("2026-10-02T00:00:00Z"))
     self.assertEqual([t["id"] for t in claims[owner]], ["T-0007", "T-0008"])
     self.assertEqual([t["role"] for t in claims[owner]], ["owner", "helper"])
     with patch.object(AGENTS.shutil, "which", return_value=None):
@@ -1404,6 +1406,29 @@ class AgentViewTest(unittest.TestCase):
     self.assertEqual(body["claimed_tasks"][0],
                      {"id": "T-0007", "title": "Fix the HUD",
                       "status": "in-progress"})
+
+  def test_expired_claims_do_not_reach_work_or_summary(self):
+    owner = AGENTS.records_id({"provider": "claude", "id": "s1",
+                               "parent_id": None})
+    listing = {"tasks": [
+      {"id": "T-0007", "title": "Expired owner", "status": "in-progress",
+       "owner": owner, "helpers": "",
+       "expires": "2026-10-01T00:00:00Z"},
+      {"id": "T-0008", "title": "Expired helper", "status": "in-review",
+       "owner": "someone", "helpers": owner,
+       "expires": "2026-10-02T00:00:00Z"}]}
+    result = subprocess.CompletedProcess([], 0, json.dumps(listing), "")
+    with patch.object(AGENTS.shutil, "which", return_value="/x"), \
+         patch.object(AGENTS.subprocess, "run", return_value=result):
+      claims = AGENTS.claimed_tasks(now=AGENTS.stamp("2026-10-02T00:00:00Z"))
+    self.assertNotIn(owner, claims)
+    agent = dict(self.work_row("s1", "Fix HUD layout", "Fix HUD"),
+                 messages=["Fix HUD layout"])
+    AGENTS.associate_tasks(agent, claims)
+    self.assertEqual(agent["tasks"], [])
+    prompt = AGENTS.summary_prompt(agent, {})
+    body = json.loads(prompt[prompt.index("\n") + 1:])
+    self.assertEqual(body["claimed_tasks"], [])
 
   def test_activity_refreshes_labels_at_most_every_fifteen_minutes(self):
     agent = {"messages": ["Fix parser"], "activity": ["Bash: Build"],

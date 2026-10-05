@@ -294,6 +294,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_quota_agents
 This covers per-agent token normalization and deduplication, copied/forked
 history, model and effort metadata, image omission and newest-first text
 limits, local seven-day token averages, source-cache reuse and deletion,
+expired claim exclusion from Work and summary inputs,
 quota/authentication gates, summary cooldown and failure retention, two-call
 concurrency across all displayed rows, batches of three with exact ID matching
 and per-thread bounds, background quota refresh, unused Claude session
