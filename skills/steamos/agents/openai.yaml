@@ -1,0 +1,4 @@
+interface:
+  display_name: "SteamOS"
+  short_description: "Coordinate work on shared SteamOS devices"
+  default_prompt: "Use $steamos to prepare this SteamOS device work."

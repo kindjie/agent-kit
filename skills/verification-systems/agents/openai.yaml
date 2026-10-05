@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verification Systems"
+  short_description: "Review checker and manifest semantics"
+  default_prompt: "Use $verification-systems to assess what this check proves."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repository Records"
+  short_description: "Maintain lasting engineering records"
+  default_prompt: "Use $repository-records to record this engineering decision."

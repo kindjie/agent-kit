@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pull Requests"
+  short_description: "Plan and verify pull request delivery"
+  default_prompt: "Use $pull-requests to take this change through review."

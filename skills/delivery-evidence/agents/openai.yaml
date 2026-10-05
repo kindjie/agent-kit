@@ -1,0 +1,4 @@
+interface:
+  display_name: "Delivery Evidence"
+  short_description: "Set CI and release evidence authority"
+  default_prompt: "Use $delivery-evidence to assess this delivery gate."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Delegation"
+  short_description: "Choose delegation, model, and effort"
+  default_prompt: "Use $delegation to choose the right delegate and handoff."

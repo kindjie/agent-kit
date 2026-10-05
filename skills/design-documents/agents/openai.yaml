@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design Documents"
+  short_description: "Decide whether a design record is needed"
+  default_prompt: "Use $design-documents to assess this design record."

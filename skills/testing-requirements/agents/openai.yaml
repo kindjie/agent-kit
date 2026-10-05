@@ -1,0 +1,4 @@
+interface:
+  display_name: "Testing Requirements"
+  short_description: "Choose meaningful test evidence"
+  default_prompt: "Use $testing-requirements to define the test strategy."

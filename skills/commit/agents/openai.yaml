@@ -1,0 +1,4 @@
+interface:
+  display_name: "Commit"
+  short_description: "Validate and commit scoped local changes"
+  default_prompt: "Use $commit to validate and commit these local changes."

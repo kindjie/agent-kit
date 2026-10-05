@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Records"
+  short_description: "Track tasks and lasting machine state"
+  default_prompt: "Use $agent-records to track this task and lasting state."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Profiling"
+  short_description: "Capture and interpret performance profiles"
+  default_prompt: "Use $profiling to investigate this performance symptom."

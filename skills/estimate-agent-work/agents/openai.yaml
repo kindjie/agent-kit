@@ -1,0 +1,4 @@
+interface:
+  display_name: "Estimate Agent Work"
+  short_description: "Estimate tracked work and resources"
+  default_prompt: "Use $estimate-agent-work to size this tracked task."

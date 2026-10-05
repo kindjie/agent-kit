@@ -1,0 +1,4 @@
+interface:
+  display_name: "Approach Review"
+  short_description: "Choose an approach and authority boundary"
+  default_prompt: "Use $approach-review to assess the approach for this change."

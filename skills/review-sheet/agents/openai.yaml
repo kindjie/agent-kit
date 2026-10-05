@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Sheet"
+  short_description: "Build a local decision review sheet"
+  default_prompt: "Use $review-sheet to build a sheet for these candidates."
