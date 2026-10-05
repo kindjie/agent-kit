@@ -1,7 +1,7 @@
 ---
 name: pull-requests
 description: >-
-  Take a change through a pull-request workflow: scope and plan PR-bound work,
+  Takes a change through a pull-request workflow: scope and plan PR-bound work,
   publish or update a PR, verify its current head, address CI and review, merge
   when authorized, and verify the result. Use when asked to push, open, or
   update a pull request, when planning a change that will be submitted as one,

@@ -1,7 +1,7 @@
 ---
 name: commit
 description: >-
-  Review, validate, stage, and commit an intended set of local changes. Use
+  Reviews, validates, stages, and commits an intended set of local changes. Use
   when asked to commit, or immediately before committing on request. Never
   pushes, opens a pull request, or merges; use `pull-requests` for work headed
   to review.

@@ -1,7 +1,7 @@
 ---
 name: preview-markdown
 description: >-
-  Serve and visually validate Markdown with the local GitHub-style browser
+  Serves and visually validates Markdown with the local GitHub-style browser
   preview. Use when asked to preview a README or Markdown file, show how
   Markdown will look on GitHub, provide a local preview URL, or inspect
   rendered headings, tables, code blocks, links, images, and relative assets.

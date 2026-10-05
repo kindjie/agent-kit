@@ -1,7 +1,7 @@
 ---
 name: review-sheet
 description: >-
-  Build a local keyboard-first sheet for a person to review many comparable
+  Builds a local keyboard-first sheet for a person to review many comparable
   items, then validate and record the exported decisions. Use when a person
   must inspect many similar candidates, compare them side by side, and export
   one decision per item for later processing.

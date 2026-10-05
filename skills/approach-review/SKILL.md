@@ -1,7 +1,7 @@
 ---
 name: approach-review
 description: >-
-  Choose the conceptual approach and authority boundary for work with
+  Chooses the conceptual approach and authority boundary for work with
   nontrivial impact, uncertainty, irreversibility, boundary crossing, or
   behavioural variety — a new abstraction, cache, parser, gate, or policy.
   Use while selecting the approach, again when scope expands, before granting

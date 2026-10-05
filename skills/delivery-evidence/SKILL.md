@@ -1,7 +1,7 @@
 ---
 name: delivery-evidence
 description: >-
-  Decide the CI placement and authority of delivery evidence, or materially
+  Decides the CI placement and authority of delivery evidence, or materially
   change CI tiers, advisory or blocking gates, performance calibration and
   thresholds, compatibility fixtures, or release evidence. Use when choosing
   whether a CI check blocks delivery, setting a performance threshold, or

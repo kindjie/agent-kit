@@ -1,7 +1,7 @@
 ---
 name: delegation
 description: >-
-  Decide whether to delegate work and at what model and effort, when spawning
+  Decides whether to delegate work and at what model and effort, when spawning
   a subagent, running `claude -p` or `codex exec`, or sizing an independent
   review. Also use when a task needs capabilities available in the other
   agent. Covers capability routing, quota, effort, and delegated context.

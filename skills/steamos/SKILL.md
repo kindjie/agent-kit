@@ -1,7 +1,7 @@
 ---
 name: steamos
 description: >-
-  Work on a SteamOS device (Steam Deck, Steam Machine) shared with other
+  Works on a SteamOS device (Steam Deck, Steam Machine) shared with other
   agents and people: check its status, take and release the device lease,
   and hand off what needs a person at the device. Use before deploying,
   launching, benchmarking or changing anything on such a device, and when

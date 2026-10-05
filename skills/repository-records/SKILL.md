@@ -1,7 +1,7 @@
 ---
 name: repository-records
 description: >-
-  Create or materially change persistent engineering records — changelogs,
+  Creates or materially changes persistent engineering records — changelogs,
   decisions, ADRs, experiments, incidents, audits, calibration history,
   release or migration records — or redraw the boundary between current and
   historical documentation. Use when recording a lasting design decision,

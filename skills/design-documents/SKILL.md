@@ -1,7 +1,7 @@
 ---
 name: design-documents
 description: >-
-  Decide whether a design document is warranted and which kind, before a
+  Decides whether a design document is warranted and which kind, before a
   substantial cross-cutting design, public contract, migration, persistence
   or wire format, concurrency mechanism, or other difficult-to-reverse
   architectural change. Also covers keeping design intent, current truth,

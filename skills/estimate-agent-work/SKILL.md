@@ -1,7 +1,7 @@
 ---
 name: estimate-agent-work
 description: >-
-  Estimate points, wall time and tokens for new or materially refined tracked
+  Estimates points, wall time and tokens for new or materially refined tracked
   work, before starting unestimated work, or when asked for sizing or useful
   decomposition. Skip unchanged scope and routine status updates.
 ---

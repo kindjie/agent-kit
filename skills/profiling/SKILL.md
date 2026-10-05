@@ -1,7 +1,7 @@
 ---
 name: profiling
 description: >-
-  Collect or interpret a performance profile — map a symptom to the signal
+  Collects or interprets a performance profile — map a symptom to the signal
   worth capturing, run the platform profiler on Apple Silicon macOS or x86
   Linux, and read the numbers without overclaiming cause. Covers NUMA and
   topology-sensitive scaling: parallel cliffs at core, cache, or socket

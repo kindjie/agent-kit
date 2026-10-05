@@ -1,7 +1,7 @@
 ---
 name: testing-requirements
 description: >-
-  Design or materially change a test strategy: what to verify before, during,
+  Designs or materially changes a test strategy: what to verify before, during,
   and after a change, and what evidence a suite must provide before the change
   can land. Use for projects with automated tests; where no relevant automated
   coverage exists, use the project's applicable smoke checks.

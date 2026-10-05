@@ -1,7 +1,7 @@
 ---
 name: agent-records
 description: >-
-  Track work and lasting machine state with agent-task and agent-changelog.
+  Tracks work and lasting machine state with agent-task and agent-changelog.
   Use when starting, claiming, handing off, coordinating on or closing a
   task; when delegating to another agent; when creating state that outlives
   the session (worktrees, stashes, kept branches, large scratch output,
