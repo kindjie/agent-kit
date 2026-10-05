@@ -488,6 +488,9 @@ initialization, task claims, permissions, help, checklist corrections
 added-check marker text, invalid value markers, legacy ambiguous values,
 exact and ambiguous text lookup, non-empty correction reasons,
 closing and watch cursors.
+`test_agent_records_changelog_locations.py` checks accepted paths and brace
+lists, rejected prose and separators, writer stderr warnings, and advisory
+lint diagnostics for unparseable locations and repository fields.
 The planning suite covers dependency declaration/revocation, graph validation,
 prerequisite and dependent status views, `next` readiness across closure and
 reopening, per-model estimate updates/removal, storypoints, permissions,

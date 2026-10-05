@@ -17,7 +17,8 @@ from agent_records_core import (
   duration, one_line, record_locks, require_agent, sync, unexpected_error,
 )
 from agent_records_changelog import (
-  lint_records, list_records, migrate, new_entry, show_record, update_record,
+  lint_records, lint_warnings, list_records, migrate, new_entry, show_record,
+  update_record,
   watch_record,
 )
 
@@ -283,6 +284,8 @@ def main():
       errors = lint_records(root, tasks)
       for error in errors:
         print(error)
+      for warning in lint_warnings(root, tasks):
+        print(warning)
       return 1 if errors else 0
     elif args.command == "migrate":
       migrate(root, args, agent, push_policy(cfg, tasks, root))

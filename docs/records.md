@@ -346,6 +346,18 @@ Changelog entries are `entries/YYYY-MM-DD-HHMM-scope-slug.md`; mistakes are
 reason, cleanup plan, repository keys and associated task IDs. The `tasks:`
 field is the association authority: tasks do not duplicate it. Open records
 must be closed, mitigated or transferred before their last task closes.
+An entry's `location:` is one or more paths beginning with `~/`, `/`, `./`
+or `../` (or the corresponding single directory marker). Separate paths with
+`; `; a parenthesized note may follow a path. Brace lists such as
+`~/git/{repo-a,repo-b}` expand to paths. The parser also accepts newline
+separators in existing records; CLI writers keep headers on one line. Use
+repository keys, rather than absolute checkout paths, in `repos:`.
+`agent-changelog lint` prints `WARN` for open entries with unparseable
+locations, empty `repos:` when the scope names a known repository, or
+absolute paths in `repos:`. Warnings alone exit 0; existing lint errors
+retain their exit codes. `new` and `update --location` print the same
+location warning to stderr but still save the entry, so older forms can be
+repaired without blocking other record edits.
 `agent-changelog update` and `mistake update` accept repeated `--add-task`,
 `--remove-task`, `--add-repo` and `--remove-repo` options. All requested edits
 are validated before writing; removing tasks from an open record must leave

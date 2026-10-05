@@ -14,7 +14,7 @@ from agent_records_core import (
   one_line,
   parse_document, parse_record_date, record_locks, render_document,
   repo_key, slug,
-  stamp, lint_layout,
+  stamp, lint_layout, config,
 )
 
 
@@ -27,6 +27,45 @@ MISTAKE_ORDER = ("date", "machine", "agent", "severity", "status", "scope",
                  "tasks")
 KINDS = ("worktree", "stash", "branch", "scratch", "asset", "backup",
          "tool", "service", "other")
+
+
+def parse_location(value):
+  """Return expanded paths, or an empty list for an unparseable location."""
+  paths = []
+  for part in re.split(r"; |\n", value):
+    part = part.strip()
+    if not part or ";" in part:
+      return []
+    note = re.search(r"\s+\([^()]+\)$", part)
+    if note:
+      part = part[:note.start()]
+    if not (part.startswith(("~/", "/", "./", "../")) or
+            part in ("~", ".", "..")):
+      return []
+    if re.search(r"\s(?:\+|->|and|branch)\s|\s+->\s*", part):
+      return []
+    if part.count("{") != part.count("}") or part.count("{") > 1:
+      return []
+    if "{" in part:
+      match = re.search(r"\{([^{}]+)\}", part)
+      if not match:
+        return []
+      choices = match.group(1).split(",")
+      if len(choices) < 2 or any(not choice.strip() for choice in choices):
+        return []
+      paths.extend(part[:match.start()] + choice.strip() +
+                   part[match.end():] for choice in choices)
+    elif "}" in part:
+      return []
+    else:
+      paths.append(part)
+  return paths
+
+
+def location_warning(value):
+  if not parse_location(value):
+    return "WARN: unparseable location: " + value
+  return None
 
 
 def record_path(root, value):
@@ -111,6 +150,8 @@ def new_entry(root, tasks_root, args, agent, push, mistake=False):
   mutate(root, {relative: put_record(fields, order, body, mistake)},
          "Create " + relative, agent, push)
   print(relative)
+  if not mistake and (warning := location_warning(fields["location"])):
+    print(warning, file=sys.stderr)
 
 
 def edit_associations(fields, args, tasks_root, is_open):
@@ -212,6 +253,10 @@ def update_record(root, tasks_root, args, agent, push, mistake=False):
                  operation, agent, push)
   else:
     mutate(root, change_edits, operation, agent, push)
+  if (args.command == "update" and not mistake and
+      args.location is not None and
+      (warning := location_warning(fields["location"]))):
+    print(warning, file=sys.stderr)
 
 
 def list_records(root, args, authoritative=True):
@@ -370,3 +415,41 @@ def lint_records(root, tasks_root=None):
     except (RecordsError, KeyError) as exc:
       errors.append(str(path) + ": " + str(exc))
   return errors
+
+
+def lint_warnings(root, tasks_root=None):
+  """Advisory diagnostics that do not affect records validation."""
+  paths = sorted((root / "entries").glob("*.md"))
+  records = []
+  for path in paths:
+    try:
+      records.append((path, read_record(path)[0]))
+    except RecordsError:
+      continue  # The existing error validator reports malformed records.
+  known = set(config().get("repos", {}).values())
+  for _, fields in records:
+    known.update(comma(fields.get("repos", "")))
+  if tasks_root:
+    for path in tasks_root.glob("T-*.md"):
+      try:
+        fields, _, _ = read_record(path)
+        known.update(comma(fields.get("repos", "")))
+      except RecordsError:
+        pass
+  known = {key for key in known if key and not key.startswith("/")}
+  warnings = []
+  for path, fields in records:
+    if fields.get("status") != "open":
+      continue
+    relative = str(path.relative_to(root))
+    if warning := location_warning(fields.get("location", "")):
+      warnings.append(relative + ": " + warning)
+    repos = comma(fields.get("repos", ""))
+    scope_and_slug = re.sub(r"^\d{4}-\d{2}-\d{2}-\d{4}-", "",
+                            path.stem)
+    if not repos and any(scope_and_slug.startswith(key + "-")
+                         for key in known):
+      warnings.append(relative + ": WARN: empty repos for known repo scope")
+    if any(repo.startswith("/") for repo in repos):
+      warnings.append(relative + ": WARN: absolute path in repos")
+  return warnings
