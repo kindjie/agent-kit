@@ -18,17 +18,26 @@ cannot be mistaken for release or purchase approval. Start audio at low gain.
 Write a JSON description using `review-sheet schema` and the
 [command reference](../../bin/review-sheet.md). Choose stable item IDs and
 include current caller evidence when decisions depend on revisions, files or
-views. Keep media local. Build to an ignored, private output location and
-spot-check a sample in the browser before handing it to the person. Tell
-them the page path, what they will judge, estimated time, and where the
-results download will land. Never publish a private page or send its media
-to a third-party service.
+views. Reuse a shipped or repository preset when it fits; save a new preset
+only for fields reusable across batches. A project component is executable
+code: review its files, then trust its exact bundle digest with
+`review-sheet component trust PATH`. Never let a description grant trust.
+
+Keep media local. Build to an ignored, private output location and preserve
+the page with its `review.resolved.json`. Spot-check a sample in Chrome
+before handing it to the person. For synchronized frame comparisons, verify
+the adapter's extracted source indices, crops, image fidelity, page size,
+and browser memory on the actual review cases. The generic builder does not
+extract video frames. Tell the person the page path, what they will judge,
+estimated time, and where results download. Never publish a private page or
+send its media to a third-party service.
 
 The downloaded `review-results.json` is the handoff, not the browser draft.
-Run `review-sheet import RESULTS --description DESCRIPTION`, using
-`--require-complete` when required answers must be present. Treat stale,
-invalid, inherited and unanswered entries as needing work; do not infer an
-approval from them. Check caller evidence against current project authority,
-then put confirmed results in the project's own catalogue or record. Remove
-temporary review output only after that record and any needed evidence are
-preserved.
+Run `review-sheet import RESULTS --resolved PAGE.resolved.json
+--check-current`, using `--require-complete` when required answers must be
+present. Embedded media verification is separate from a decision's authority;
+a verified visual preference is still only a preference. Treat stale,
+invalid, inherited and unanswered entries as needing work. Check current
+input currency and caller evidence against the project's own authority,
+then put confirmed results in its catalogue or record. Remove temporary
+review output only after that record and any needed evidence are preserved.
