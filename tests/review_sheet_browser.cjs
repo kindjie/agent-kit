@@ -241,10 +241,12 @@ pendingCustom.groups[0].items[1].media[0].alt = 'held';
 write('pending-custom.json', JSON.stringify(pendingCustom));
 run('build', path.join(temp, 'pending-custom.json'), '--output',
   path.join(temp, 'pending-custom.html'));
-assert.match(fs.readFileSync(path.join(temp, 'custom.html'), 'utf8'),
-  /wasm-unsafe-eval/);
-assert.doesNotMatch(fs.readFileSync(path.join(temp, 'review.html'), 'utf8'),
-  /wasm-unsafe-eval/);
+function csp(file) {
+  return fs.readFileSync(path.join(temp, file), 'utf8')
+    .match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)"/)[1];
+}
+assert.match(csp('custom.html'), /script-src [^;]*'wasm-unsafe-eval'/);
+assert.doesNotMatch(csp('review.html'), /wasm-unsafe-eval/);
 for (const [fault, prefix, apiValue, version, hooks] of [
   ['missing', 'if (false)', '1', "'1.0.0'", ''],
   ['duplicate', 'for (let i = 0; i < 2; i++)', '1', "'1.0.0'", ''],
@@ -449,6 +451,31 @@ async function checkSyntheticSize(browser, name) {
   assert.deepEqual(await first.locator('.comparison-panel .frame-sequence')
     .evaluateAll(nodes => nodes.map(node => node.dataset.frameIndex)),
   ['20', '20']);
+  await first.getByLabel('View').selectOption('front');
+  await status.getByText(/Display 20 ·/).waitFor();
+  // Frame 1 was evicted above. A delayed scrub to it must not overwrite a
+  // subsequent exact step, even when the decode resolves after the step.
+  await page.evaluate(() => {
+    const decode = Image.prototype.decode;
+    let remaining = 2;
+    window.evictedDecodes = 0;
+    Image.prototype.decode = function () {
+      if (remaining-- > 0) {
+        window.evictedDecodes++;
+        return new Promise((resolve, reject) => setTimeout(() =>
+          decode.call(this).then(resolve, reject), 250));
+      }
+      return decode.call(this);
+    };
+  });
+  await first.getByLabel('Exact display frame').fill('1');
+  await page.waitForFunction(() => window.evictedDecodes === 2);
+  await first.getByRole('button', {name: 'Next frame'}).click();
+  await status.getByText(/Display 21 ·/).waitFor();
+  await page.waitForTimeout(300);
+  assert.deepEqual(await first.locator('.comparison-panel .frame-sequence')
+    .evaluateAll(nodes => nodes.map(node => node.dataset.frameIndex)),
+  ['21', '21']);
   await first.getByRole('button', {name: 'Play', exact: true}).click();
   await page.waitForTimeout(200); await sample();
   await page.evaluate(() => document.activeElement.blur());
