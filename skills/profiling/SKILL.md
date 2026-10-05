@@ -3,11 +3,12 @@ name: profiling
 description: >-
   Collects or interprets a performance profile: maps a symptom to a signal,
   runs the profiler on Apple Silicon macOS or x86 Linux, and reads results
-  without overclaiming cause. Use for NUMA, core/cache/socket scaling, page
-  placement, coherence; GPU frame time, passes, shaders, memory, CPU↔GPU
-  sync on Metal, Vulkan/RADV, SteamOS, NVIDIA, sokol, raylib, OpenGL,
-  WebGPU, WebGL; or browser WebAssembly tier-up, workers, JS↔Wasm boundaries,
-  and sampling profiles.
+  without overclaiming cause. Use for NUMA, topology-sensitive core/cache/
+  socket scaling, parallel cliffs, page placement, coherence; GPU frame time,
+  passes, shaders, GPU memory, CPU↔GPU sync on Metal, Vulkan/RADV, SteamOS,
+  NVIDIA, OpenGL, WebGPU, WebGL, directly or through sokol or raylib; or
+  browser WebAssembly tier-up, workers, JS↔Wasm boundaries, and sampling
+  profiles.
 ---
 
 # Profiling Reference

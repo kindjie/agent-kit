@@ -3,7 +3,7 @@ name: verification-systems
 description: >-
   Defines or reviews the semantics and completeness of manifests, inventories,
   repository checkers, generated-documentation checks, or test catalogues,
-  and judge whether a green result means the expected work happened. Use when
+  and judges whether a green result means the expected work happened. Use when
   creating or changing a manifest, inventory, repository checker, generated
   documentation check, or test catalogue, especially if its passing result
   will authorize another action.

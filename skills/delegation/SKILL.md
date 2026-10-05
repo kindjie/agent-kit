@@ -9,8 +9,11 @@ description: >-
 
 # Delegation
 
-Follow the always-loaded effort defaults and approval boundaries. This skill
-helps choose and brief a delegate within them.
+Use `high` reasoning effort by default, or `medium` for mechanical work.
+Anything above `xhigh` requires a task that `xhigh` has demonstrably failed
+on and the owner's agreement. Security relevance or high stakes alone do not
+establish that failure. This skill helps choose and brief a delegate within
+those boundaries.
 
 ## Whether to delegate
 

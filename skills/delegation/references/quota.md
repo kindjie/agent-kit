@@ -7,7 +7,7 @@ Account for retries and rework: a stronger model can finish more work per
 unit of quota than a cheaper model that needs repeated attempts.
 
 Run `agent-quota --brief` outside the sandbox (approval if required, so
-Codex can update its cache): before substantial review or
+Codex can write its SQLite state): before substantial review or
 second-opinion delegation, for the delegate's model; at the start of
 substantial autonomous work, for your own. Use the plain command for a live
 check; `--cached` only reads existing observations. Routine in-process
@@ -41,9 +41,9 @@ bucket is binding. Surplus in one bucket does not cancel scarcity in another.
   (`-c service_tier=priority`) when supported, independent parallel work,
   or deeper reasoning and review when they avoid rework. Claude fast mode
   bills usage credits, so quota surplus alone does not authorize it.
-  `xhigh` may be worthwhile when it plausibly improves completion, a lower
-  bar than "likely" in the effort guidance. Never exceed the existing
-  approval boundary above `xhigh`, invent work to consume quota, or expand
+  `xhigh` may be worthwhile when it plausibly improves completion. Anything
+  above `xhigh` still requires a task that `xhigh` has demonstrably failed on
+  and the owner's agreement. Do not invent work to consume quota or expand
   the authorized scope.
 - ON_PACE, EARLY, or UNKNOWN: no quota-driven change.
 
