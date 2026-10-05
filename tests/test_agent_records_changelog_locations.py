@@ -40,6 +40,9 @@ class ChangelogLocationTest(RecordsFixture):
                                        "service"))
     self.assertIsNone(location_warning("local port 8000", "tool + service"))
     self.assertIsNotNone(location_warning("cloud project p1", "scratch"))
+    self.assertFalse(parse_location("https://example.com/a"))
+    self.assertIsNone(location_warning("port 80", "Service"))
+    self.assertEqual(parse_location(None), [])
 
   def test_location_forms_and_writer_warnings(self):
     valid = (

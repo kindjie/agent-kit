@@ -32,7 +32,7 @@ KINDS = ("worktree", "stash", "branch", "scratch", "asset", "backup",
 def parse_location(value):
   """Return expanded paths, or an empty list for an unparseable location."""
   paths = []
-  for part in re.split(r"; |\n", value):
+  for part in re.split(r"; |\n", value or ""):
     part = part.strip()
     if not part or ";" in part:
       return []
@@ -42,6 +42,8 @@ def parse_location(value):
     # host:path names state on another machine, such as a device.
     host = re.match(r"[A-Za-z0-9][\w.-]*:(?=~/|/)", part)
     path = part[host.end():] if host else part
+    if host and path.startswith("//"):
+      return []  # A URL, not a host path.
     if not (path.startswith(("~/", "/", "./", "../")) or
             path in ("~", ".", "..")):
       return []
@@ -76,7 +78,8 @@ def parse_location(value):
 def location_warning(value, kind=""):
   # Services and other state may live outside the filesystem (a port, a
   # cloud project), so only path-based kinds need a parseable path.
-  if set(re.split(r"\s*\+\s*", kind.strip())) & {"service", "other"}:
+  if set(re.split(r"\s*\+\s*", (kind or "").strip().lower())) & {
+      "service", "other"}:
     return None
   if not parse_location(value):
     return "WARN: unparseable location: " + value
