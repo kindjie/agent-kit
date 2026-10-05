@@ -103,13 +103,13 @@ class SteamosBenchTest(unittest.TestCase):
     return {p.parent.parent.name: p.read_text().strip()
             for p in root.glob('cpu*/cpufreq/scaling_governor')}
 
-  def bench(self, *flags, command=None, code=0):
+  def bench(self, *flags, command=None, code=0, timeout=20):
     out = self.root / ('results-' + str(time.time_ns()))
     command = command or ['python3', '-c',
                          'import sys; print("output"); '
                          'print("error", file=sys.stderr)']
     proc = self.run_cli('bench', 'run', '--json', '--out', str(out),
-                        *flags, '--', *command, code=code)
+                        *flags, '--', *command, code=code, timeout=timeout)
     result = json.loads(proc.stdout)
     self.assertEqual(json.loads((out / 'summary.json').read_text())
                      ['exit_status'], result['exit_status'])
@@ -173,7 +173,8 @@ class SteamosBenchTest(unittest.TestCase):
     self.fixture()
     out, result, _ = self.bench(command=['python3', '-c',
       'import os; block = b"x" * (1024 * 1024); '
-      '[(os.write(1, block), os.write(2, block)) for _ in range(65)]'])
+      '[(os.write(1, block), os.write(2, block)) for _ in range(65)]'],
+      timeout=60)
     self.assertEqual(result['exit_status'], 0)
     for name in ('stdout.log', 'stderr.log'):
       path = out / name

@@ -110,10 +110,11 @@ automatic lock release after interruption, with no directory for a refused
 overlap. Retention cases check default/custom counts, mtime ordering and
 preservation of files, other directories and external symlink targets.
 Log fixtures write over 64 MiB to each stream and verify size and truncation
-notes. Helper tests check default/custom absolute paths, invalid configuration
-before ssh and sudo's exact password refusal. Heartbeat cases cover timeout
-with an open idle stdin and closed stdin; partial restoration failure still
-attempts later CPUs.
+notes. Only that high-volume case allows a 60-second child timeout; other CLI
+cases keep the 20-second default. Helper tests check default/custom absolute
+paths, invalid configuration before ssh, and sudo's exact password refusal.
+Heartbeat cases cover timeout with an open idle stdin and closed stdin;
+partial restoration failure still attempts later CPUs.
 
 ## Read-only installation doctor
 

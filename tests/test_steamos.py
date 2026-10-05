@@ -81,12 +81,12 @@ class SteamosTest(unittest.TestCase):
   def device_home(self, host='10.0.0.5'):
     return self.root / 'devices' / host
 
-  def run_cli(self, *args, holder=None, code=0):
+  def run_cli(self, *args, holder=None, code=0, timeout=20):
     env = dict(self.env)
     if holder:
       env['STEAMOS_LEASE_HOLDER'] = holder
     proc = subprocess.run([sys.executable, str(BIN), *args], env=env,
-                          capture_output=True, text=True, timeout=20)
+                          capture_output=True, text=True, timeout=timeout)
     self.assertEqual(proc.returncode, code, proc.stdout + proc.stderr)
     return proc
 
