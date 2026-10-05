@@ -17,10 +17,12 @@ the agent-kit README.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -44,7 +46,7 @@ QUOTED = re.compile(r"""(["'])(?:\\.|(?!\1).)*\1""")
 # A command starts a line or follows ; & | or (, optionally after sudo and
 # VAR=value assignments; `echo git stash` is not a git command.
 START = r"(?:^|[;&|(\n])\s*(?:sudo\s+)?(?:\w+=\S*\s+)*"
-CMD_RE = re.compile(r"""\bcmd\s*:\s*(["'`])(.+?)\1""", re.S)
+CMD_KEY = re.compile(r"\b(?:cmd|command)\s*:\s*")
 WHY = {
   "worktree": "a worktree",
   "stash": "a stash",
@@ -70,20 +72,84 @@ def command_of(tool_input) -> str:
   for key in ("command", "cmd"):
     value = tool_input.get(key)
     if isinstance(value, list):
-      return " ".join(str(part) for part in value)
+      return shlex.join(str(part) for part in value)
     if isinstance(value, str):
       return value
-  text = json.dumps(tool_input)
-  found = CMD_RE.findall(tool_input.get("input", "")
-                         if isinstance(tool_input.get("input"), str)
-                         else text)
-  return "\n".join(command for _, command in found)
+  source = tool_input.get("input")
+  if not isinstance(source, str):
+    return ""
+  try:
+    parsed = json.loads(source)
+  except ValueError:
+    parsed = None
+  if isinstance(parsed, dict):
+    return command_of(parsed)
+  commands = []
+  for match in CMD_KEY.finditer(source):
+    start = match.end()
+    if start >= len(source) or source[start] not in "\"'`":
+      continue
+    quote = source[start]
+    end = start + 1
+    while end < len(source):
+      if source[end] == "\\":
+        end += 2
+      elif source[end] == quote:
+        break
+      else:
+        end += 1
+    if end >= len(source):
+      continue
+    literal = source[start:end + 1]
+    try:
+      command = (json.loads(literal) if quote == '"' else
+                 ast.literal_eval(literal) if quote == "'" else
+                 literal[1:-1].replace("\\`", "`"))
+    except (ValueError, SyntaxError):
+      continue
+    if isinstance(command, str):
+      commands.append(command)
+  return "\n".join(commands)
+
+
+def shell_wrappers(command: str) -> list[str]:
+  """Commands passed to shell -c arguments, excluding ordinary literals."""
+  try:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+  except ValueError:
+    return []
+  segments = []
+  segment = []
+  for token in tokens:
+    if token and all(char in ";&|()" for char in token):
+      segments.append(segment)
+      segment = []
+    else:
+      segment.append(token)
+  segments.append(segment)
+  inner = []
+  for words in segments:
+    while words and (words[0] == "sudo" or
+                     re.fullmatch(r"\w+=\S*", words[0])):
+      words = words[1:]
+    if not words or Path(words[0]).name not in ("sh", "bash", "dash", "zsh"):
+      continue
+    for index, arg in enumerate(words[1:], 1):
+      if arg == "-c" or (arg.startswith("-") and "c" in arg[1:]):
+        if index + 1 < len(words):
+          inner.append(words[index + 1])
+        break
+  return inner
 
 
 def reminders(command: str) -> list[tuple[str, str]]:
   """(kind, message) for each kind of lasting state the command creates.
   Quoted text is ignored, so `echo "git stash"` does not count."""
   plain = QUOTED.sub('""', command)
+  for inner in shell_wrappers(command):
+    plain += "\n" + QUOTED.sub('""', inner)
   found = []
   for kind, pattern in STATE:
     if re.search(START + pattern.removeprefix(r"\b"), plain):

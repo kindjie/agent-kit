@@ -51,14 +51,31 @@ class ReminderTests(unittest.TestCase):
                     "docker run --rm alpine true", "echo git worktree add"):
       self.assertEqual(self.kinds(command), [], command)
 
+  def test_shell_wrappers_inspect_inner_command_only(self):
+    self.assertEqual(self.kinds("bash -lc 'git stash'"), ["stash"])
+    self.assertEqual(self.kinds('sh -c "git worktree add ../x"'),
+                     ["worktree"])
+    self.assertEqual(self.kinds('echo "git stash"'), [])
+    self.assertEqual(self.kinds("printf '%s' 'git stash'"), [])
+
   def test_command_is_found_in_either_tool_shape(self):
     self.assertEqual(HOOK.command_of({"command": "git stash"}), "git stash")
     self.assertEqual(HOOK.command_of({"command": ["bash", "-lc",
                                                    "git stash"]}),
-                     "bash -lc git stash")
+                     "bash -lc 'git stash'")
     self.assertEqual(HOOK.command_of({"cmd": "git stash"}), "git stash")
     script = 'await tools.exec_command({cmd:"git worktree add ../x"})'
     self.assertIn("worktree add", HOOK.command_of({"input": script}))
+
+  def test_codex_command_with_escaped_quote(self):
+    script = 'await tools.exec_command({cmd:"git -C \\"repo\\" stash"})'
+    self.assertEqual(HOOK.command_of({"input": script}),
+                     'git -C "repo" stash')
+    self.assertEqual(self.kinds(HOOK.command_of({"input": script})),
+                     ["stash"])
+    structured = json.dumps({"cmd": 'git -C "repo" stash'})
+    self.assertEqual(HOOK.command_of({"input": structured}),
+                     'git -C "repo" stash')
 
 
 class HookTests(unittest.TestCase):
