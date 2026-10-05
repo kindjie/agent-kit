@@ -81,6 +81,30 @@ class ReminderTests(unittest.TestCase):
     self.assertEqual(self.kinds("bash -c 'bash -c \"git stash\"'"),
                      ["stash"])
 
+  def test_heredoc_edge_forms(self):
+    # Space after <<, data bodies stay quiet.
+    self.assertEqual(self.kinds("cat << EOF\ngit stash\nEOF"), [])
+    self.assertEqual(self.kinds("cat <<- 'EOF'\n\tgit stash\n\tEOF"), [])
+    # A herestring is not a heredoc; the next line is a real command.
+    self.assertEqual(self.kinds("cat <<<EOF\ngit stash"), ["stash"])
+    # << inside quotes starts nothing.
+    self.assertEqual(self.kinds("echo 'a <<EOF'\ngit stash"), ["stash"])
+    # A heredoc fed to a shell is commands, not data.
+    for shell in ("bash -s", "sh", "/bin/zsh", "dash -e", "sudo bash",
+                  "env X=1 sh"):
+      with self.subTest(shell=shell):
+        self.assertEqual(
+          self.kinds(shell + " <<EOF\ngit stash\nEOF"), ["stash"])
+
+  def test_command_prefixes_before_direct_commands(self):
+    for command in ("env FOO=1 git stash", "env -i git stash",
+                    "nohup git stash", "sudo -u bob git stash",
+                    "sudo -E git stash", "time git stash",
+                    "command git stash", "nice -n 5 git stash"):
+      with self.subTest(command=command):
+        self.assertEqual(self.kinds(command), ["stash"])
+    self.assertEqual(self.kinds("env echo git stash"), [])
+
   def test_heredoc_bodies_are_data(self):
     for command in (
         "cat <<EOF\ngit stash\nEOF",

@@ -45,7 +45,10 @@ STATE = (
 QUOTED = re.compile(r"""(["'])(?:\\.|(?!\1).)*\1""")
 # A command starts a line or follows ; & | or (, optionally after sudo and
 # VAR=value assignments; `echo git stash` is not a git command.
-START = r"(?:^|[;&|(\n])\s*(?:sudo\s+)?(?:\w+=\S*\s+)*"
+PREFIX = (r"(?:sudo(?:\s+-[A-Za-z]+(?:\s+(?!-)\S+)?)*"
+          r"|env(?:\s+-[A-Za-z]+)*|nohup|time|command"
+          r"|nice(?:\s+-n\s*\S+)?)\s+")
+START = (r"(?:^|[;&|(\n])\s*(?:" + PREFIX + r"|\w+=\S*\s+)*")
 CMD_KEY = re.compile(r"\b(?:cmd|command)\s*:\s*")
 WHY = {
   "worktree": "a worktree",
@@ -180,7 +183,7 @@ def shell_wrappers(command: str) -> list[str]:
   inner = []
   for words in segments:
     words = unwrapped(words)
-    if not words or Path(words[0]).name not in ("sh", "bash", "dash", "zsh"):
+    if not words or Path(words[0]).name not in SHELLS:
       continue
     index = 1
     while index < len(words):
@@ -196,6 +199,10 @@ def shell_wrappers(command: str) -> list[str]:
   return inner
 
 
+SHELLS = ("sh", "bash", "dash", "zsh")
+HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)\s*(['\"]?)([A-Za-z_]\w*)\2")
+
+
 def without_heredoc_bodies(command: str) -> str:
   """Remove data lines, retaining commands after a terminator."""
   lines = command.splitlines(keepends=True)
@@ -203,14 +210,26 @@ def without_heredoc_bodies(command: str) -> str:
   pending = []
   for line in lines:
     if pending:
-      delimiter, tabs = pending[0]
+      delimiter, tabs, keep = pending[0]
       if line.rstrip("\r\n").lstrip("\t" if tabs else "\0") == delimiter:
         pending.pop(0)
-      output.append("\n")
+        output.append("\n")
+      else:
+        output.append(line if keep else "\n")
       continue
     output.append(line)
-    for match in re.finditer(r"<<(-?)(['\"]?)([A-Za-z_][\w]*)\2", line):
-      pending.append((match.group(3), bool(match.group(1))))
+    quoted = [match.span() for match in QUOTED.finditer(line)]
+    for match in HEREDOC.finditer(line):
+      if any(start <= match.start() < end for start, end in quoted):
+        continue
+      # A heredoc fed to a shell holds commands, so its body stays.
+      segment = re.split(r"[;&|(]", line[:match.start()])[-1]
+      words = re.sub(r"^\s*(?:" + PREFIX + r"|\w+=\S*\s+)*", "",
+                     segment).split()
+      if words and Path(words[0]).name in SHELLS:
+        pending.append((match.group(3), bool(match.group(1)), True))
+      else:
+        pending.append((match.group(3), bool(match.group(1)), False))
   return "".join(output)
 
 
