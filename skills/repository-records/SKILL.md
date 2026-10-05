@@ -4,7 +4,9 @@ description: >-
   Create or materially change persistent engineering records — changelogs,
   decisions, ADRs, experiments, incidents, audits, calibration history,
   release or migration records — or redraw the boundary between current and
-  historical documentation.
+  historical documentation. Use when recording a lasting design decision,
+  experiment, incident, audit, calibration, release, or migration, or when
+  separating current guidance from historical records.
 ---
 
 # Repository Records
