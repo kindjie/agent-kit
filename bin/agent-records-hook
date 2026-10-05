@@ -45,9 +45,16 @@ STATE = (
 QUOTED = re.compile(r"""(["'])(?:\\.|(?!\1).)*\1""")
 # A command starts a line or follows ; & | or (, optionally after sudo and
 # VAR=value assignments; `echo git stash` is not a git command.
-PREFIX = (r"(?:sudo(?:\s+-[A-Za-z]+(?:\s+(?!-)\S+)?)*"
-          r"|env(?:\s+-[A-Za-z]+)*|nohup|time|command"
-          r"|nice(?:\s+-n\s*\S+)?)\s+")
+# Prefixes that run the next word as a command. Option arguments are only
+# taken by options known to need one, and never look like a prefix, so each
+# word has one reading and matching stays linear.
+WORDS = r"(?:sudo|env|nohup|time|command|nice|xargs)\b"
+ARG = r"(?!" + WORDS + r")[^\s-]\S*"
+PREFIX = (r"(?:sudo(?:\s+-[A-Za-z]*[ugCDhprtT]\s+" + ARG +
+          r"|\s+-[A-Za-z]+)*"
+          r"|env(?:\s+-[A-Za-z]*[uCS]\s+" + ARG + r"|\s+-[A-Za-z]+)*"
+          r"|nice(?:\s+-n\s*" + ARG + r"|\s+-\d+)?"
+          r"|xargs(?:\s+-[A-Za-z]+)*|nohup|time|command)\s+")
 START = (r"(?:^|[;&|(\n])\s*(?:" + PREFIX + r"|\w+=\S*\s+)*")
 CMD_KEY = re.compile(r"\b(?:cmd|command)\s*:\s*")
 WHY = {
@@ -226,7 +233,10 @@ def without_heredoc_bodies(command: str) -> str:
       segment = re.split(r"[;&|(]", line[:match.start()])[-1]
       words = re.sub(r"^\s*(?:" + PREFIX + r"|\w+=\S*\s+)*", "",
                      segment).split()
-      if words and Path(words[0]).name in SHELLS:
+      piped = re.match(r"[^|]*\|\s*(?:" + PREFIX + r"|\w+=\S*\s+)*(\S+)",
+                       line[match.end():])
+      if ((words and Path(words[0]).name in SHELLS) or
+          (piped and Path(piped.group(1)).name in SHELLS)):
         pending.append((match.group(3), bool(match.group(1)), True))
       else:
         pending.append((match.group(3), bool(match.group(1)), False))

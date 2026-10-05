@@ -105,6 +105,23 @@ class ReminderTests(unittest.TestCase):
         self.assertEqual(self.kinds(command), ["stash"])
     self.assertEqual(self.kinds("env echo git stash"), [])
 
+  def test_prefix_matching_stays_fast(self):
+    import time
+    for command in ("sudo -a " * 40 + "x", "sudo -u sudo " * 40 + "x",
+                    "env -u env " * 40 + "x", "nice -n nice " * 40 + "x"):
+      start = time.monotonic()
+      self.kinds(command)
+      self.assertLess(time.monotonic() - start, 0.5, command[:30])
+
+  def test_more_prefix_and_shell_heredoc_forms(self):
+    for command in ("env -u X git stash", "nice -5 git stash",
+                    "echo | xargs git stash", "sudo -u bob -E git stash",
+                    "cat <<EOF | bash\ngit stash\nEOF",
+                    "cat <<EOF | sudo sh -s\ngit stash\nEOF"):
+      with self.subTest(command=command):
+        self.assertEqual(self.kinds(command), ["stash"])
+    self.assertEqual(self.kinds("cat <<EOF | grep x\ngit stash\nEOF"), [])
+
   def test_heredoc_bodies_are_data(self):
     for command in (
         "cat <<EOF\ngit stash\nEOF",
