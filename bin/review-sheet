@@ -5,7 +5,7 @@
 # ///
 """Build a local review page and validate exported answers.
 
-See review-sheet.md. Stage 1 supports built-in components only.
+See review-sheet.md for the frozen build and component contracts.
 """
 from __future__ import annotations
 
@@ -19,13 +19,17 @@ import mimetypes
 import math
 import os
 from pathlib import Path
+import re
 import subprocess
+import struct
 import sys
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parent
 COMPONENTS = ROOT / 'review_sheet_components'
-KINDS = ('image', 'animated', 'video', 'audio', 'text', 'link')
+KINDS = ('image', 'animated', 'video', 'audio', 'text', 'link',
+         'frame-sequence')
 DECISIONS = ('choice', 'boolean', 'flags', 'text', 'number')
 LIMITS = {'items': 5000, 'component_file': 2 * 1024 * 1024,
           'component': 8 * 1024 * 1024,
@@ -87,11 +91,232 @@ def confined(base, name):
   if '..' in source.parts or source.is_absolute():
     raise ReviewError(f'path escape refused: {name}')
   path = base / source
+  if any((base / Path(*source.parts[:n])).is_symlink() for n in
+         range(1, len(source.parts) + 1)):
+    raise ReviewError(f'symlink refused: {name}')
   if not path.resolve().is_relative_to(base.resolve()):
     raise ReviewError(f'symlink escape refused: {name}')
   if not path.is_file():
     raise ReviewError(f'missing media: {name}')
   return path
+
+
+def config_root():
+  base = os.environ.get('XDG_CONFIG_HOME')
+  return Path(base) if base else Path.home() / '.config'
+
+
+def owner_root():
+  return config_root() / 'review-sheet'
+
+
+def nearest_repo(path):
+  for parent in (path.parent, *path.parent.parents):
+    if (parent / '.git').exists():
+      return parent
+  return None
+
+
+def safe_file(base, name):
+  if (not isinstance(name, str) or not name or Path(name).is_absolute() or
+      '..' in Path(name).parts):
+    raise ReviewError(f'path escape refused: {name}')
+  path = base / name
+  if any(piece.is_symlink() for piece in (path, *path.parents) if
+         piece != base.parent and piece != base):
+    raise ReviewError(f'symlink refused: {name}')
+  if not path.resolve().is_relative_to(base.resolve()):
+    raise ReviewError(f'path escape refused: {name}')
+  if not path.is_file():
+    raise ReviewError(f'missing file: {name}')
+  return path
+
+
+def atomic_json(path, value, mode=None, overwrite=True):
+  path.parent.mkdir(parents=True, exist_ok=True)
+  if not overwrite and path.exists():
+    raise ReviewError(f'existing file: {path}')
+  with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+    temporary = Path(stream.name)
+    try:
+      if mode is not None:
+        os.fchmod(stream.fileno(), mode)
+      stream.write(canonical(value) + b'\n')
+      stream.flush()
+      os.fsync(stream.fileno())
+    except BaseException:
+      temporary.unlink(missing_ok=True)
+      raise
+  try:
+    if not overwrite and path.exists():
+      raise ReviewError(f'existing file: {path}')
+    os.replace(temporary, path)
+  finally:
+    temporary.unlink(missing_ok=True)
+
+
+def component_kind(value):
+  if (not isinstance(value, str) or
+      not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', value)):
+    raise ReviewError('component kind must be a simple name')
+  return value
+
+
+def component_bundle(folder, limits):
+  if folder.is_symlink() or not folder.is_dir():
+    raise ReviewError(f'component directory missing or linked: {folder}')
+  manifest_path = safe_file(folder, 'component.json')
+  manifest = read_json(manifest_path, limits['component_file'])
+  keys_only(manifest, ('kind', 'version', 'api', 'workers', 'wasm'),
+            'component manifest')
+  kind = component_kind(manifest.get('kind'))
+  version = manifest.get('version')
+  if (not isinstance(kind, str) or not kind or
+      not isinstance(version, str) or
+      not re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?', version)
+      or manifest.get('api') != 1 or isinstance(manifest.get('api'), bool)):
+    raise ReviewError(f'invalid component manifest: {folder}')
+  names = ['component.json', 'component.js']
+  if (folder / 'README.md').exists():
+    names.append('README.md')
+  for field in ('workers', 'wasm'):
+    assets = manifest.get(field, {})
+    if not isinstance(assets, dict):
+      raise ReviewError(f'{field} must be an object')
+    for asset, name in assets.items():
+      identifier(asset, f'{field} name')
+      names.append(name)
+  if len(names) != len(set(names)):
+    raise ReviewError('duplicate component asset path')
+  inventory = {}
+  contents = {}
+  total = 0
+  for name in names:
+    path = safe_file(folder, name)
+    raw = path.read_bytes()
+    if len(raw) > limits['component_file']:
+      raise ReviewError(f'component file too large: {path}')
+    total += len(raw)
+    inventory[name] = hashlib.sha256(raw).hexdigest()
+    contents[name] = raw
+  if total > limits['component']:
+    raise ReviewError(f'component too large: {folder}')
+  try:
+    script = contents['component.js'].decode('utf-8')
+  except UnicodeError as exc:
+    raise ReviewError('component script must be UTF-8') from exc
+  if len(re.findall(r'\bReviewSheet\.register\s*\(\s*\{', script)) != 1:
+    raise ReviewError('component must have one literal registration')
+  for field, expected in (('kind', kind), ('version', version)):
+    found = re.search(r'\b' + field + r'\s*:\s*[\'\"]([^\'\"]+)[\'\"]',
+                      script)
+    if not found or found.group(1) != expected:
+      raise ReviewError(f'component registration {field} differs: {folder}')
+  if not re.search(r'\bapi\s*:\s*1\b', script):
+    raise ReviewError(f'component registration api differs: {folder}')
+  keys_match = re.search(r'\bkeys\s*:\s*\{([^{}]*)\}', script)
+  keys = []
+  if keys_match:
+    keys = [quoted or bare for quoted, bare in re.findall(
+      r'(?:[\'\"]([^\'\"]+)[\'\"]|([A-Za-z_$][\w$]*))\s*:',
+      keys_match.group(1))]
+    if any(len(key) != 1 for key in keys) or len(keys) != len(set(keys)):
+      raise ReviewError(f'invalid component keys: {folder}')
+  return {'kind': kind, 'version': version, 'api': 1,
+          'path': str(folder.resolve()), 'manifest': manifest,
+          'files': inventory, 'sha256': digest(inventory),
+          'keys': keys}, contents
+
+
+def trusted_bundles():
+  path = owner_root() / 'trusted-components.json'
+  if not path.exists():
+    return {'schema_version': 1, 'components': []}
+  trust = read_json(path, LIMITS['component'])
+  if (not isinstance(trust, dict) or trust.get('schema_version') != 1 or
+      not isinstance(trust.get('components'), list)):
+    raise ReviewError('invalid trusted-components.json')
+  return trust
+
+
+def component_command(args):
+  trust_path = owner_root() / 'trusted-components.json'
+  trust = trusted_bundles()
+  if args.operation == 'list':
+    rows = []
+    for entry in trust['components']:
+      try:
+        current, _ = component_bundle(Path(entry['path']), LIMITS)
+        matches = current['sha256'] == entry['sha256']
+      except (ReviewError, OSError, KeyError):
+        matches = False
+      rows.append({**entry, 'current': matches})
+    print(json.dumps(rows, indent=2))
+    return
+  if args.operation == 'trust':
+    bundle, _ = component_bundle(args.value.resolve(), LIMITS)
+    print(json.dumps(bundle, indent=2))
+    if not any(row.get('sha256') == bundle['sha256'] for row in
+               trust['components']):
+      trust['components'].append({key: bundle[key] for key in
+                                  ('kind', 'version', 'sha256', 'path')})
+  else:
+    before = len(trust['components'])
+    trust['components'] = [row for row in trust['components'] if
+      row.get('sha256') != args.value]
+    if len(trust['components']) == before:
+      raise ReviewError(f'untrusted digest absent: {args.value}')
+  atomic_json(trust_path, trust, mode=0o600)
+
+
+def component_folder(kind, explicit, description_path):
+  component_kind(kind)
+  if explicit is not None:
+    if (not isinstance(explicit, str) or not explicit or
+        Path(explicit).is_absolute() or
+        '..' in Path(explicit).parts):
+      raise ReviewError(f'component path escape refused: {kind}')
+    for depth in range(1, len(Path(explicit).parts) + 1):
+      if (description_path.parent /
+          Path(*Path(explicit).parts[:depth])).is_symlink():
+        raise ReviewError(f'component symlink refused: {kind}')
+    return description_path.parent / explicit, False
+  repo = nearest_repo(description_path)
+  candidates = []
+  if repo:
+    candidates.append(repo / '.review-sheet' / 'components' / kind)
+  candidates += [owner_root() / 'components' / kind, COMPONENTS / kind]
+  for folder in candidates:
+    if folder.exists():
+      return folder, folder == COMPONENTS / kind
+  raise ReviewError(f'unknown media component: {kind}')
+
+
+def selected_components(description, description_path, limits):
+  kinds = {media['kind'] for item in description.get('items', []) for media
+           in item.get('media', [])}
+  kinds.update(media['kind'] for group in description.get('groups', [])
+               for item in group['items'] for media in item.get('media', []))
+  kinds.update(description.get('components', {}))
+  trust = trusted_bundles()
+  selected = {}
+  scripts = []
+  files = {}
+  for kind in sorted(kinds):
+    folder, builtin = component_folder(kind,
+      description.get('components', {}).get(kind), description_path)
+    bundle, contents = component_bundle(folder, limits)
+    if bundle['kind'] != kind:
+      raise ReviewError(f'component kind mismatch: {kind}')
+    if not builtin and not any(row.get('sha256') == bundle['sha256'] and
+      row.get('kind') == kind and row.get('version') == bundle['version']
+      for row in trust['components']):
+      raise ReviewError(f'untrusted component: {folder} ({bundle["sha256"]})')
+    selected[kind] = bundle
+    scripts.append((bundle, contents))
+    files.update({str(folder / name): hash_ for name, hash_ in
+                  bundle['files'].items()})
+  return selected, scripts, files
 
 
 def check_definition(name, definition):
@@ -153,7 +378,7 @@ def check_value(definition, value, limits):
           definition.get('max', float('inf')))
 
 
-def check_hotkeys(description, groups, items):
+def check_hotkeys(description, groups, items, component_keys):
   reserved = set('jkJKnfu?/')
   for item in items:
     definitions = dict(description.get('decisions_review', {}))
@@ -178,36 +403,177 @@ def check_hotkeys(description, groups, items):
           raise ReviewError(f'hotkey {key} conflicts between {used[key]} '
                             f'and {name} on item {item["id"]}')
         used[key] = name
+    for kind in {media['kind'] for media in item.get('media', [])}:
+      for key in component_keys.get(kind, []):
+        if key in reserved or key in used:
+          raise ReviewError(f'component {kind} key {key} collides on '
+                            f'item {item["id"]}')
+        used[key] = 'component ' + kind
 
 
-def component_files(limits):
-  files = {}
-  scripts = []
-  for kind in KINDS:
-    folder = COMPONENTS / kind
-    size = 0
-    contents = {}
-    for name in ('component.json', 'component.js', 'README.md'):
-      path = folder / name
+def preset_path(name, source_path):
+  if not isinstance(name, str) or not name or '..' in Path(name).parts:
+    raise ReviewError(f'invalid preset path: {name}')
+  if '/' in name or name.endswith('.json'):
+    return safe_file(source_path.parent, name).resolve()
+  sibling = source_path.parent / (name + '.json')
+  if source_path.parent.name == 'presets' and sibling.is_file():
+    if sibling.is_symlink():
+      raise ReviewError(f'linked preset: {sibling}')
+    return sibling.resolve()
+  repo = nearest_repo(source_path)
+  roots = ([repo / '.review-sheet' / 'presets'] if repo else
+           [source_path.parent / '.review-sheet' / 'presets']) + [
+    owner_root() / 'presets', ROOT / 'review_sheet_presets']
+  for folder in roots:
+    path = folder / (name + '.json')
+    if path.exists():
       if path.is_symlink() or not path.is_file():
-        raise ReviewError(f'missing or linked built-in component: {path}')
-      raw = path.read_bytes()
-      length = len(raw)
-      if length > limits['component_file']:
-        raise ReviewError(f'component file too large: {path}')
-      size += length
-      files[str(path)] = hashlib.sha256(raw).hexdigest()
-      contents[name] = raw
-    if size > limits['component']:
-      raise ReviewError(f'component too large: {kind}')
-    try:
-      manifest = json.loads(contents['component.json'])
-    except (UnicodeError, ValueError) as exc:
-      raise ReviewError(f'invalid component manifest: {kind}') from exc
-    if manifest.get('kind') != kind:
-      raise ReviewError(f'component manifest mismatch: {kind}')
-    scripts.append((kind, contents['component.js'].decode('utf-8')))
-  return files, scripts
+        raise ReviewError(f'linked or invalid preset: {path}')
+      return path.resolve()
+  raise ReviewError(f'preset not found: {name}')
+
+
+def preset_merge(base, addition, origin, source, deleted):
+  def clear(path):
+    for key in list(origin):
+      if key == path or key.startswith(path + '.') or key.startswith(
+          path + '['):
+        del origin[key]
+
+  def mark(path, value):
+    origin[path] = source
+    if isinstance(value, dict):
+      for name, nested in value.items():
+        mark(path + '.' + name, nested)
+    elif isinstance(value, list):
+      for index, nested in enumerate(value):
+        mark(f'{path}[{index}]', nested)
+
+  for key, value in addition.items():
+    if key in ('extends', 'preset_version'):
+      continue
+    if key in ('groups', 'items') and source != 'description':
+      raise ReviewError(f'presets cannot inherit {key}')
+    if key == 'decisions' and value is not None:
+      if not isinstance(value, dict):
+        raise ReviewError('preset decisions must be an object')
+      target = base.setdefault('decisions', {})
+      origin['decisions'] = source
+      for name, definition in value.items():
+        path = f'decisions.{name}'
+        if definition is None:
+          deleted.append({'path': path, 'source': source,
+                          'previous_origin': origin.get(path)})
+          target.pop(name, None)
+          clear(path)
+        else:
+          target[name] = copy.deepcopy(definition)
+          clear(path)
+          mark(path, definition)
+      continue
+    if value is None:
+      deleted.append({'path': key, 'source': source,
+                      'previous_origin': origin.get(key)})
+      base.pop(key, None)
+      clear(key)
+    else:
+      base[key] = copy.deepcopy(value)
+      clear(key)
+      mark(key, value)
+
+
+def resolve_presets(path, source):
+  merged = {}
+  origin = {}
+  deleted = []
+  inventory = []
+  stack = []
+
+  def visit(name, parent):
+    preset = preset_path(name, parent)
+    if preset in stack:
+      raise ReviewError('preset cycle: ' + ' -> '.join(map(str,
+                                                          stack + [preset])))
+    stack.append(preset)
+    value = read_json(preset, LIMITS['component'])
+    if not isinstance(value, dict):
+      raise ReviewError(f'preset must be an object: {preset}')
+    nested_extends = value.get('extends', [])
+    if (not isinstance(nested_extends, list) or
+        any(not isinstance(name, str) for name in nested_extends)):
+      raise ReviewError('extends must be an array of preset names')
+    for nested in nested_extends:
+      visit(nested, preset)
+    preset_merge(merged, value, origin, str(preset), deleted)
+    inventory.append({'path': str(preset), 'sha256': file_hash(preset),
+                      'preset_version': value.get('preset_version')})
+    stack.pop()
+
+  extends = source.get('extends', [])
+  if not isinstance(extends, list) or any(not isinstance(x, str) for x in
+                                           extends):
+    raise ReviewError('extends must be an array of preset names')
+  for name in extends:
+    visit(name, path)
+  preset_merge(merged, source, origin, 'description', deleted)
+  if 'group_defaults' in merged:
+    defaults = merged.pop('group_defaults')
+    if not isinstance(defaults, dict):
+      raise ReviewError('group_defaults must be an object')
+    keys_only(defaults, ('layout', 'pick', 'decisions'), 'group_defaults')
+    for index, group in enumerate(merged.get('groups', [])):
+      for key, value in defaults.items():
+        if key not in group:
+          group[key] = copy.deepcopy(value)
+          origin[f'groups[{index}].{key}'] = origin.get(
+            'group_defaults.' + key)
+    for key in list(origin):
+      if key == 'group_defaults' or key.startswith('group_defaults.'):
+        del origin[key]
+  return merged, inventory, {'origins': origin, 'deleted': deleted}
+
+
+def preset_command(args):
+  if args.operation == 'list':
+    roots = [ROOT / 'review_sheet_presets', owner_root() / 'presets']
+    repo = nearest_repo(Path.cwd() / 'description.json')
+    if repo:
+      roots.insert(0, repo / '.review-sheet' / 'presets')
+    rows = []
+    for folder in roots:
+      for path in sorted(folder.glob('*.json')):
+        value = read_json(path, LIMITS['component'])
+        rows.append({'name': path.stem, 'source': str(path),
+                     'version': value.get('preset_version'),
+                     'sha256': file_hash(path)})
+    print(json.dumps(rows, indent=2))
+    return
+  if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', args.name):
+    raise ReviewError('preset name must be a simple name')
+  value = read_json(args.from_description.resolve(), LIMITS['page'])
+  allowed = {'decisions', 'group_defaults', 'instructions', 'caveats',
+             'settings'}
+  known = allowed | {'review', 'title', 'context', 'privacy', 'items',
+                     'groups', 'components', 'prefill', 'evidence',
+                     'extends', 'decisions_review'}
+  unknown = set(value) - known
+  if unknown:
+    raise ReviewError('unknown description fields for preset save: ' +
+                      ', '.join(sorted(unknown)))
+  saved = {key: value[key] for key in allowed if key in value}
+  settings = saved.get('settings', {})
+  if not isinstance(settings, dict) or set(settings) - {
+      'layout', 'media_mode', 'gain', 'controls'}:
+    raise ReviewError('preset settings contain unsupported fields')
+  print(json.dumps(saved, indent=2, sort_keys=True))
+  if args.write:
+    folder = (owner_root() / 'presets' if args.scope == 'user' else
+              (nearest_repo(args.from_description.resolve()) or
+               args.from_description.resolve().parent) / '.review-sheet' /
+              'presets')
+    atomic_json(folder / (args.name + '.json'), saved,
+                overwrite=args.overwrite)
 
 
 def scopes_for(description, component_hashes, page_core_hashes):
@@ -239,26 +605,31 @@ def scopes_for(description, component_hashes, page_core_hashes):
                  'layout': (
                    [{'group': g['id'], 'title': g.get('title'),
                      'layout': g.get('layout', 'list'),
-                     'members': [i['id'] for i in g['items']]}
+                     'members': [i['id'] for i in g['items']],
+                     'comparison': g.get('comparison')}
                     for g in groups] if scope_kind == 'review' else
                    None if group is None else {
                      'group': group['id'], 'title': group.get('title'),
                      'layout': group.get('layout', 'list'),
-                     'members': [i['id'] for i in group['items']]})}
+                     'members': [i['id'] for i in group['items']],
+                     'comparison': group.get('comparison')})}
       key = f'{scope_kind}:{scope_id}:{name}'
       scopes[key] = {'digest': digest(payload), 'definition': definition,
                      'authority': bool(definition.get('authority')),
-                     'media': {m['src']: m['sha256'] for item in items
+                     'media': {src: hash_ for item in items
                                for m in item.get('media', [])
-                               if m.get('src') and m.get('mode') == 'embed'}}
+                               for src, hash_ in media_hashes(m).items()}}
 
   add('review', description['review'], description.get('decisions_review', {}),
       members)
   for group in groups:
     decisions = group.get('decisions', {}).copy()
     if 'pick' in group:
+      options = ([*group['comparison']['candidates'], 'tie', 'none'] if
+                 group.get('layout') == 'synchronized-comparison' else
+                 [item['id'] for item in group['items']])
       decisions['pick'] = {'kind': 'choice',
-                           'options': [item['id'] for item in group['items']],
+                           'options': options,
                            'required': group['pick'].get('required', False)}
     add('group', group['id'], decisions, group['items'], group)
     for item in group['items']:
@@ -272,16 +643,115 @@ def scopes_for(description, component_hashes, page_core_hashes):
   return scopes
 
 
+def media_hashes(media):
+  if media.get('kind') == 'frame-sequence':
+    return {media['src'] + '#' + frame['src']: frame['sha256']
+            for frame in media.get('frames', [])}
+  if media.get('mode') == 'embed' and media.get('src'):
+    return {media['src']: media['sha256']}
+  return {}
+
+
+def check_comparison(group):
+  info = group.get('comparison')
+  if not isinstance(info, dict):
+    raise ReviewError('synchronized comparison needs comparison object')
+  keys_only(info, ('reference', 'candidates', 'views', 'fps',
+                   'motion_frames', 'hold_start', 'hold_end',
+                   'frame_count', 'key_frames', 'crops', 'reveal'),
+            'comparison')
+  ids = [item['id'] for item in group['items']]
+  candidates = info.get('candidates')
+  if (not isinstance(candidates, list) or not candidates or
+      len(set(candidates)) != len(candidates) or
+      any(x in ('tie', 'none') for x in candidates) or
+      info.get('reference') not in ids or
+      set([info['reference'], *candidates]) != set(ids) or
+      info['reference'] in candidates):
+    raise ReviewError('comparison reference/candidates do not match items')
+  views = info.get('views')
+  if (not isinstance(views, list) or not views or
+      len(set(views)) != len(views)):
+    raise ReviewError('comparison needs unique views')
+  fps = info.get('fps')
+  if (not isinstance(fps, list) or len(fps) != 2 or
+      any(not isinstance(x, int) or isinstance(x, bool) or x <= 0 for x
+          in fps)):
+    raise ReviewError('comparison fps must be [numerator, denominator]')
+  motion = info.get('motion_frames')
+  start, end = info.get('hold_start'), info.get('hold_end')
+  if (not all(isinstance(x, int) and not isinstance(x, bool) and x >= 0
+              for x in (motion, start, end)) or motion < 1 or
+      info.get('frame_count') != motion + start + end):
+    raise ReviewError('comparison frame count or holds are invalid')
+  keys = info.get('key_frames', [])
+  if (not isinstance(keys, list) or keys != sorted(set(keys)) or
+      any(not isinstance(x, int) or x < 0 or x >= motion for x in keys)):
+    raise ReviewError('comparison key frames are invalid')
+  crops = info.get('crops', {})
+  if not isinstance(crops, dict) or not crops:
+    raise ReviewError('comparison needs crops')
+  expected_map = None
+  dimensions = None
+  for item in group['items']:
+    sequences = {m.get('view'): m for m in item.get('media', [])
+                 if m.get('kind') == 'frame-sequence'}
+    if set(sequences) != set(views):
+      raise ReviewError('each comparison item needs every view')
+    for view in views:
+      seq = sequences[view]
+      if seq.get('mode') != 'embed':
+        raise ReviewError('comparison frames must be embedded')
+      dimensions = dimensions or (seq['width'], seq['height'])
+      if dimensions != (seq['width'], seq['height']):
+        raise ReviewError('comparison tile dimensions differ')
+      frames = seq['frames']
+      if len(frames) != info['frame_count']:
+        raise ReviewError('comparison sequence length differs')
+      mapping = [(frame['source_frame'], frame['phase']) for frame in frames]
+      if expected_map is None:
+        expected_map = mapping
+      if mapping != expected_map:
+        raise ReviewError('comparison source frame maps differ')
+      for index, frame in enumerate(frames):
+        phase = ('start_hold' if index < start else 'motion' if
+                 index < start + motion else 'end_hold')
+        source = min(max(index - start, 0), motion - 1)
+        if (frame['index'] != index or frame['phase'] != phase or
+            frame['source_frame'] != source):
+          raise ReviewError('comparison frame mapping is not contiguous')
+      first = frames[start]['src']
+      last = frames[start + motion - 1]['src']
+      if (any(frame['src'] != first for frame in frames[:start]) or
+          any(frame['src'] != last for frame in frames[start + motion:])):
+        raise ReviewError('comparison holds must alias edge frames')
+  for name, rect in crops.items():
+    if (not isinstance(rect, list) or len(rect) != 4 or
+        any(not isinstance(x, int) or x < 0 for x in rect) or
+        rect[2] <= 0 or rect[3] <= 0 or
+        rect[0] + rect[2] > dimensions[0] or
+        rect[1] + rect[3] > dimensions[1]):
+      raise ReviewError(f'comparison crop is outside tile: {name}')
+  pick = group.get('pick', {'kind': 'best'})
+  if pick.get('kind') != 'best':
+    raise ReviewError('comparison supports pick best only')
+
+
 def resolve(path, limits):
   source = read_json(path, limits['page'])
   if not isinstance(source, dict):
     raise ReviewError('description must be an object')
-  if 'extends' in source:
-    raise ReviewError('extends is unsupported in stage 1')
+  description, presets, explain = resolve_presets(path, source)
   keys_only(source, ('review', 'title', 'instructions', 'caveats',
                      'privacy', 'context', 'decisions', 'decisions_review',
-                     'groups', 'items'), 'description')
-  description = copy.deepcopy(source)
+                     'groups', 'items', 'extends', 'components',
+                     'group_defaults', 'settings'), 'description')
+  keys_only(description, ('review', 'title', 'instructions', 'caveats',
+                         'privacy', 'context', 'decisions',
+                         'decisions_review', 'groups', 'items', 'components',
+                         'settings'), 'resolved description')
+  if not isinstance(description.get('components', {}), dict):
+    raise ReviewError('components must be an object')
   identifier(description.get('review'), 'review')
   for name in ('title', 'instructions'):
     if name in description and not isinstance(description[name], str):
@@ -294,6 +764,17 @@ def resolve(path, limits):
   description.setdefault('privacy', 'private')
   if description['privacy'] not in ('private', 'shareable'):
     raise ReviewError('privacy must be private or shareable')
+  settings = description.get('settings', {})
+  keys_only(settings, ('layout', 'media_mode', 'gain', 'controls'),
+            'settings')
+  if settings.get('media_mode', 'reference') not in ('reference', 'embed'):
+    raise ReviewError('settings media_mode must be reference or embed')
+  if ('gain' in settings and (isinstance(settings['gain'], bool) or
+      not isinstance(settings['gain'], (int, float)) or
+      not 0 <= settings['gain'] <= 0.5)):
+    raise ReviewError('settings gain must be between 0 and 0.5')
+  if 'controls' in settings and not isinstance(settings['controls'], dict):
+    raise ReviewError('settings controls must be an object')
   for name in ('decisions', 'decisions_review'):
     definitions = description.get(name, {})
     if not isinstance(definitions, dict):
@@ -307,7 +788,13 @@ def resolve(path, limits):
   ids = set()
   group_ids = set()
   for group in groups:
-    keys_only(group, ('id', 'title', 'layout', 'items', 'decisions', 'pick'),
+    if group.get('layout', settings.get('layout')) == \
+        'synchronized-comparison' and 'pick' not in group:
+      group['pick'] = {'kind': 'best', 'required': False}
+    if 'layout' not in group and 'layout' in settings:
+      group['layout'] = settings['layout']
+    keys_only(group, ('id', 'title', 'layout', 'items', 'decisions', 'pick',
+                      'comparison'),
               'group')
     identifier(group.get('id'), 'group id')
     if 'title' in group and not isinstance(group['title'], str):
@@ -315,8 +802,9 @@ def resolve(path, limits):
     if group['id'] in group_ids:
       raise ReviewError(f'duplicate group id: {group["id"]}')
     group_ids.add(group['id'])
-    if group.get('layout', 'list') not in ('list', 'grid'):
-      raise ReviewError('only list and grid layouts are supported')
+    if group.get('layout', 'list') not in (
+        'list', 'grid', 'synchronized-comparison'):
+      raise ReviewError('unsupported group layout')
     if not isinstance(group.get('items'), list):
       raise ReviewError('group items must be an array')
     if 'pick' in group:
@@ -340,9 +828,9 @@ def resolve(path, limits):
   items = top_items + [i for g in groups for i in g['items']]
   if len(items) > limits['items']:
     raise ReviewError('item count exceeds limit')
-  files, scripts = component_files(limits)
-  component_hashes = {kind: files[str(COMPONENTS / kind / 'component.js')]
-                      for kind in KINDS}
+  selected, scripts, files = selected_components(description, path, limits)
+  component_hashes = {kind: bundle['sha256'] for kind, bundle in
+                      selected.items()}
   page_core = {name: (ROOT / name).read_bytes() for name in
                ('review_sheet_page.js', 'review_sheet_page.css')}
   page_core_hashes = {name: hashlib.sha256(raw).hexdigest()
@@ -402,9 +890,10 @@ def resolve(path, limits):
     authoritative |= any(d.get('authority') for d in
                          description.get('decisions_review', {}).values())
     for media in item.get('media', []):
-      keys_only(media, ('kind', 'src', 'alt', 'fps', 'sha256'), 'media')
+      keys_only(media, ('kind', 'src', 'alt', 'fps', 'sha256', 'mode', 'view'),
+                'media')
       kind = media.get('kind')
-      if kind not in KINDS:
+      if kind not in selected:
         raise ReviewError(f'unsupported media kind: {kind}')
       if 'alt' in media and not isinstance(media['alt'], str):
         raise ReviewError('media alt must be text')
@@ -419,7 +908,47 @@ def resolve(path, limits):
         media['mode'] = 'display'
         continue
       source_file = confined(path.parent, media.get('src'))
-      mode = 'embed' if authoritative or kind == 'text' else 'reference'
+      if kind == 'frame-sequence':
+        index = read_json(source_file, limits['component'])
+        keys_only(index, ('width', 'height', 'frames'), 'frame index')
+        if (not all(isinstance(index.get(x), int) and index[x] > 0 for x
+                    in ('width', 'height')) or
+            not isinstance(index.get('frames'), list)):
+          raise ReviewError('invalid frame index')
+        media.update(index)
+        media['mode'] = 'embed'
+        media['sha256'] = file_hash(source_file)
+        files[str(source_file)] = media['sha256']
+        sequence_sources = set()
+        for frame in media['frames']:
+          keys_only(frame, ('index', 'source_frame', 'phase', 'src',
+                            'sha256'), 'frame')
+          frame_file = safe_file(source_file.parent, frame.get('src'))
+          raw = frame_file.read_bytes()
+          if not raw.startswith(b'\x89PNG\r\n\x1a\n') or len(raw) < 24:
+            raise ReviewError(f'frame image must be PNG: {frame_file}')
+          width, height = struct.unpack('>II', raw[16:24])
+          if (width, height) != (media['width'], media['height']):
+            raise ReviewError(f'frame dimensions differ: {frame_file}')
+          if len(raw) > min(96 * 1024, limits['embedded_file']):
+            raise ReviewError(f'frame image exceeds 96 KiB: {frame_file}')
+          hash_ = hashlib.sha256(raw).hexdigest()
+          if frame.get('sha256') != hash_:
+            raise ReviewError(f'frame hash mismatch: {frame_file}')
+          files[str(frame_file)] = hash_
+          key = media['src'] + '#' + frame['src']
+          if key not in sequence_sources:
+            sequence_sources.add(key)
+            embedded[(item['id'], key)] = raw
+            embedded_total += len(raw)
+        if embedded_total > limits['embedded_total']:
+          raise ReviewError('embedded media total exceeds limit')
+        continue
+      mode = ('embed' if authoritative or kind == 'text' or
+              media.get('mode', settings.get('media_mode')) == 'embed' else
+              'reference')
+      if media.get('mode') not in (None, 'embed', 'reference'):
+        raise ReviewError('media mode must be embed or reference')
       raw = None
       if mode == 'embed':
         with source_file.open('rb') as stream:
@@ -432,6 +961,7 @@ def resolve(path, limits):
         raise ReviewError(f'media hash differs from supplied sha256: '
                           f'{media["src"]}')
       media['sha256'] = hash_
+      files[str(source_file)] = hash_
       media['mode'] = mode
       media['mime'] = mimetypes.guess_type(media['src'])[0] or \
         'application/octet-stream'
@@ -441,10 +971,28 @@ def resolve(path, limits):
         if embedded_total > limits['embedded_total']:
           raise ReviewError('embedded media total exceeds limit')
         embedded[(item['id'], media['src'])] = raw
-  check_hotkeys(description, groups, items)
+  for group in groups:
+    if group.get('layout') == 'synchronized-comparison':
+      check_comparison(group)
+  check_hotkeys(description, groups, items,
+                {kind: bundle['keys'] for kind, bundle in selected.items()})
   scopes = scopes_for(description, component_hashes, page_core_hashes)
-  return {'schema_version': 1, 'description': description,
-          'files': files, 'scopes': scopes}, scripts, embedded, page_core
+  def fill_origins(value, path='', inherited='generated'):
+    source = explain['origins'].setdefault(path, inherited) if path else \
+      inherited
+    if isinstance(value, dict):
+      for key, nested in value.items():
+        fill_origins(nested, path + '.' + key if path else key, source)
+    elif isinstance(value, list):
+      for index, nested in enumerate(value):
+        fill_origins(nested, f'{path}[{index}]', source)
+
+  fill_origins(description)
+  return ({'schema_version': 1, 'description': description,
+           'source': {'path': str(path), 'sha256': file_hash(path)},
+           'presets': presets, 'components': selected,
+           'files': files, 'scopes': scopes}, scripts, embedded, page_core,
+          explain)
 
 
 def git_risk(path):
@@ -475,11 +1023,12 @@ def build(args):
     raise ReviewError('output is in a Git worktree and is not ignored; '
                       'use an ignored path or --allow-tracked')
   limits = limits_from(args)
-  resolved, scripts, embedded, page_core = resolve(path, limits)
+  resolved, scripts, embedded, page_core, explain = resolve(path, limits)
   items = resolved['description'].get('items', []) + [
     item for group in resolved['description'].get('groups', [])
     for item in group['items']]
   inputs = {path, *(Path(name).resolve() for name in resolved['files'])}
+  inputs.update(Path(row['path']) for row in resolved['presets'])
   inputs.update((path.parent / media['src']).resolve()
                 for item in items for media in item.get('media', [])
                 if media['kind'] != 'link')
@@ -494,8 +1043,16 @@ def build(args):
   for item in page_items:
     for media in item.get('media', []):
       if media['mode'] == 'embed':
-        media['data'] = base64.b64encode(
-          embedded[(item['id'], media['src'])]).decode('ascii')
+        if media['kind'] == 'frame-sequence':
+          seen_frames = set()
+          for frame in media['frames']:
+            if frame['src'] not in seen_frames:
+              frame['data'] = base64.b64encode(embedded[(item['id'],
+                media['src'] + '#' + frame['src'])]).decode('ascii')
+              seen_frames.add(frame['src'])
+        else:
+          media['data'] = base64.b64encode(
+            embedded[(item['id'], media['src'])]).decode('ascii')
       elif media['mode'] == 'reference':
         media['src'] = os.path.relpath(path.parent / media['src'],
                                        output.parent)
@@ -509,22 +1066,38 @@ def build(args):
   output.write_bytes(page)
   resolved_path.write_bytes(resolved_bytes)
   print(f'{output}\n{resolved_path}')
+  if args.explain:
+    print(json.dumps(explain, sort_keys=True))
 
 
 def make_page(description, scopes, resolved_hash, scripts, limits, output,
               page_core):
   css = page_core['review_sheet_page.css'].decode('utf-8')
   core = page_core['review_sheet_page.js'].decode('utf-8')
+  component_specs = {}
+  for bundle, contents in scripts:
+    manifest = bundle['manifest']
+    component_specs[bundle['kind']] = {
+      'version': bundle['version'], 'api': bundle['api'],
+      'keys': bundle['keys'],
+      'workers': {name: base64.b64encode(contents[path]).decode('ascii')
+                  for name, path in manifest.get('workers', {}).items()},
+      'wasm': {name: base64.b64encode(contents[path]).decode('ascii')
+               for name, path in manifest.get('wasm', {}).items()}}
   data = {'description': description, 'scopes': scopes,
-          'resolved_sha256': resolved_hash, 'limits': limits}
+          'resolved_sha256': resolved_hash, 'limits': limits,
+          'components': component_specs}
   payload = json.dumps(data, ensure_ascii=False).replace('<', '\\u003c')
   script = 'window.REVIEW_SHEET_DATA=' + payload + ';\n' + core + '\n'
-  script += '\n'.join(code for _, code in scripts)
+  script += '\n'.join(contents['component.js'].decode('utf-8') for _,
+                      contents in scripts)
   script += '\nReviewSheet.start();\n'
   css_hash = base64.b64encode(hashlib.sha256(css.encode()).digest()).decode()
   js_hash = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+  wasm = any(bundle['manifest'].get('wasm') for bundle, _ in scripts)
   csp = ("default-src 'none'; script-src 'sha256-" + js_hash +
-         "'; style-src 'sha256-" + css_hash +
+         "'" + (" 'wasm-unsafe-eval'" if wasm else '') +
+         "; style-src 'sha256-" + css_hash +
          "'; img-src blob: data: 'self'; media-src blob: data: 'self'; "
          "worker-src blob:; connect-src 'none'; form-action 'none'; "
          "base-uri 'none'")
@@ -549,36 +1122,32 @@ def limits_from(args):
 
 def result_import(args):
   limits = limits_from(args)
-  current, _, _, _ = resolve(args.description.resolve(), limits)
-  scopes = current['scopes']
-  review = current['description']['review']
-  frozen = None
-  frozen_hash = None
-  if args.resolved:
-    frozen_bytes = args.resolved.read_bytes()
-    if len(frozen_bytes) > limits['page']:
-      raise ReviewError('resolved description exceeds size limit')
-    frozen_hash = hashlib.sha256(frozen_bytes).hexdigest()
-    try:
-      frozen = json.loads(frozen_bytes)
-    except ValueError as exc:
-      raise ReviewError(f'invalid resolved description: {exc}') from exc
-    if (not isinstance(frozen, dict) or frozen.get('schema_version') != 1 or
-        not isinstance(frozen.get('description'), dict) or
-        frozen['description'].get('review') != review or
-        not isinstance(frozen.get('scopes'), dict)):
-      raise ReviewError('resolved description does not match review')
+  frozen_bytes = args.resolved.read_bytes()
+  if len(frozen_bytes) > limits['page']:
+    raise ReviewError('resolved description exceeds size limit')
+  frozen_hash = hashlib.sha256(frozen_bytes).hexdigest()
+  try:
+    frozen = json.loads(frozen_bytes)
+  except ValueError as exc:
+    raise ReviewError(f'invalid resolved description: {exc}') from exc
+  if (not isinstance(frozen, dict) or frozen.get('schema_version') != 1 or
+      not isinstance(frozen.get('description'), dict) or
+      not isinstance(frozen.get('scopes'), dict) or
+      not isinstance(frozen.get('source'), dict)):
+    raise ReviewError('invalid frozen resolved description')
+  scopes = frozen['scopes']
+  review = frozen['description']['review']
   answers = {}
   bad = False
   stale = False
   conflicts = []
   orphaned = []
   invalid_entries = []
-  reviewers = set()
+  reveal_packets = {}
   current_items = {item['id'] for item in
-                   current['description'].get('items', [])}
+                   frozen['description'].get('items', [])}
   current_items.update(item['id'] for group in
-                       current['description'].get('groups', [])
+                       frozen['description'].get('groups', [])
                        for item in group['items'])
   for path in args.results:
     if git_risk(path.resolve()):
@@ -599,7 +1168,51 @@ def result_import(args):
     packet_stale = bool(frozen_hash and
                         packet['resolved_sha256'] != frozen_hash)
     stale |= packet_stale
-    reviewers.add(packet.get('reviewer') or None)
+    if not isinstance(packet.get('reveals', {}), dict):
+      raise ReviewError(f'{path}: reveals must be an object')
+    for group in frozen['description'].get('groups', []):
+      if group.get('layout') != 'synchronized-comparison':
+        continue
+      reveal = packet.get('reveals', {}).get(group['id'])
+      pick_key = f'group:{group["id"]}:pick'
+      if not isinstance(reveal, dict) or pick_key not in scopes:
+        invalid_entries.append(f'reveal:{group["id"]}')
+        bad = True
+        continue
+      revision = reveal.get('decision_revision')
+      sequence = reveal.get('event_sequence')
+      first = reveal.get('first_reveal')
+      answered = packet['answers'].get(pick_key, {}).get('state') == 'answered'
+      valid = (reveal.get('digest') == scopes[pick_key]['digest'] and
+        isinstance(revision, int) and not isinstance(revision, bool) and
+        revision >= 0 and isinstance(sequence, int) and
+        not isinstance(sequence, bool) and sequence >= revision and
+        isinstance(reveal.get('revealed'), bool) and
+        (not answered or revision > 0))
+      if first is None:
+        valid &= reveal.get('revealed') is False and sequence == revision
+        expected_before = False
+      else:
+        valid &= (isinstance(first, dict) and
+          isinstance(first.get('sequence'), int) and
+          not isinstance(first.get('sequence'), bool) and
+          isinstance(first.get('next_decision_revision'), int) and
+          not isinstance(first.get('next_decision_revision'), bool) and
+          isinstance(revision, int) and isinstance(sequence, int) and
+          first['sequence'] == first['next_decision_revision'] and
+          sequence == revision + 1 and
+          1 <= first['sequence'] <= sequence and
+          1 <= first['next_decision_revision'] <= revision + 1 and
+          reveal.get('revealed') is True)
+        expected_before = (valid and revision >=
+          first['next_decision_revision'])
+      valid &= reveal.get('revealed_before_decision') == (
+        expected_before if answered else None)
+      if not valid:
+        invalid_entries.append(f'reveal:{group["id"]}')
+        bad = True
+      else:
+        reveal_packets.setdefault(group['id'], []).append(reveal)
     for key, entry in packet['answers'].items():
       if key not in scopes:
         parts = key.split(':')
@@ -612,20 +1225,11 @@ def result_import(args):
         continue
       if not isinstance(entry, dict):
         entry = {'state': 'invalid'}
-      frozen_scope = frozen['scopes'].get(key) if frozen else None
       if entry.get('state') in ('answered', 'inherited'):
-        if (packet_stale or (frozen and
-            (not isinstance(frozen_scope, dict) or
-             entry.get('digest') != frozen_scope.get('digest'))) or
-            entry.get('digest') != scopes[key]['digest']):
+        if (packet_stale or entry.get('digest') != scopes[key]['digest']):
           entry = {**entry, 'state': 'stale'}
       answers.setdefault(key, []).append((packet.get('reviewer') or None,
                                           entry))
-  if len(reviewers) > 1:
-    conflicts.append({'scope': 'reviewer', 'entries': [
-      {'reviewer': reviewer} for reviewer in sorted(
-        reviewers, key=lambda value: value or '')]})
-    stale = True
   normalized = {}
   missing = []
   for key, scope in scopes.items():
@@ -647,7 +1251,7 @@ def result_import(args):
           state = 'stale'
         elif (not check_value(scope['definition'], entry.get('value'),
                               limits) or
-              (scope['authority'] and entry.get('media_hashes') !=
+              (scope['media'] and entry.get('media_hashes') !=
                scope['media'])):
           state = 'invalid'
       if state == 'inherited' and not check_value(
@@ -685,7 +1289,7 @@ def result_import(args):
       entry = valid_answers[0]
       normalized[key]['value'] = entry['value']
       normalized[key]['digest'] = entry['digest']
-      normalized[key]['evidence'] = ('verified' if scope['authority'] else
+      normalized[key]['evidence'] = ('verified' if scope['media'] else
                                       'unverified')
       normalized[key]['media_hashes'] = entry.get('media_hashes', {})
       if 'time' in entry:
@@ -697,6 +1301,32 @@ def result_import(args):
             'missing': missing, 'orphaned': sorted(set(orphaned)),
             'invalid_entries': sorted(set(invalid_entries)),
             'conflicts': conflicts, 'incomplete': incomplete}
+  result['reveals'] = {}
+  for group_id, entries in reveal_packets.items():
+    histories = {canonical(entry) for entry in entries}
+    if len(histories) > 1:
+      conflicts.append({'scope': f'reveal:{group_id}',
+                        'entries': entries})
+      stale = True
+    else:
+      result['reveals'][group_id] = entries[0]
+  if args.check_current:
+    changed = []
+    missing_inputs = []
+    inventory = {frozen['source']['path']:
+                 frozen['source']['sha256'], **frozen.get('files', {})}
+    inventory.update({entry['path']: entry['sha256'] for entry in
+                      frozen.get('presets', [])})
+    for name, expected in inventory.items():
+      path = Path(name)
+      if not path.is_file():
+        missing_inputs.append(name)
+      elif file_hash(path) != expected:
+        changed.append(name)
+    result['currency'] = {
+      'status': ('missing' if missing_inputs else 'changed' if changed else
+                 'current'), 'changed': sorted(changed),
+      'missing': sorted(missing_inputs)}
   rendered = json.dumps(result, indent=2, ensure_ascii=False) + '\n'
   if args.output:
     args.output.write_text(rendered, encoding='utf-8')
@@ -726,16 +1356,36 @@ def main(argv=None):
   build_parser.add_argument('description', type=Path)
   build_parser.add_argument('--output', type=Path, required=True)
   build_parser.add_argument('--allow-tracked', action='store_true')
+  build_parser.add_argument('--explain', action='store_true')
   import_parser = sub.add_parser('import', help='validate downloaded answers')
   import_parser.add_argument('results', nargs='+', type=Path)
-  import_parser.add_argument('--description', type=Path, required=True)
-  import_parser.add_argument('--resolved', type=Path,
+  import_parser.add_argument('--resolved', type=Path, required=True,
                              help='frozen <page>.resolved.json from build')
+  import_parser.add_argument('--check-current', action='store_true')
   import_parser.add_argument('--output', type=Path)
   import_parser.add_argument('--require-complete', action='store_true')
   status_parser = sub.add_parser('status', help='summarize result states')
   status_parser.add_argument('results', type=Path)
   sub.add_parser('schema', help='print description JSON Schema')
+  component_parser = sub.add_parser('component',
+    help='manage owner-trusted component bundles')
+  component_sub = component_parser.add_subparsers(dest='operation',
+                                                 required=True)
+  for name in ('trust', 'untrust', 'list'):
+    command = component_sub.add_parser(name)
+    if name != 'list':
+      command.add_argument('value', type=Path if name == 'trust' else str)
+  preset_parser = sub.add_parser('preset', help='list or save presets')
+  preset_sub = preset_parser.add_subparsers(dest='operation', required=True)
+  preset_sub.add_parser('list')
+  save_parser = preset_sub.add_parser('save')
+  save_parser.add_argument('name')
+  save_parser.add_argument('--from', dest='from_description', type=Path,
+                           required=True)
+  save_parser.add_argument('--write', action='store_true')
+  save_parser.add_argument('--scope', choices=('repo', 'user'),
+                           default='repo')
+  save_parser.add_argument('--overwrite', action='store_true')
   for command in (build_parser, import_parser):
     for name, default in LIMITS.items():
       command.add_argument('--max-' + name.replace('_', '-'), type=int,
@@ -749,6 +1399,12 @@ def main(argv=None):
       return result_import(args)
     if args.command == 'status':
       status(args)
+      return 0
+    if args.command == 'component':
+      component_command(args)
+      return 0
+    if args.command == 'preset':
+      preset_command(args)
       return 0
     print((ROOT / 'review-sheet.schema.json').read_text(), end='')
     return 0

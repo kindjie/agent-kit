@@ -3,6 +3,7 @@
   const data = window.REVIEW_SHEET_DATA;
   const desc = data.description;
   const registry = new Map();
+  const registryErrors = [];
   const allItems = [...(desc.items || []),
     ...(desc.groups || []).flatMap(group => group.items)];
   const groups = desc.groups || [];
@@ -10,9 +11,17 @@
   const storageKey = 'review-sheet:' + desc.review;
   const answers = {};
   const mediaState = new Map();
+  const verifiedMedia = new Map();
   const mediaViews = new Map();
+  const mediaHandles = new Map();
+  const failedMedia = new Set();
+  const frameCache = new Map();
+  let cacheEvictions = 0;
   const mediaPending = [];
   const history = [];
+  const reveals = {};
+  const comparisonControllers = new Map();
+  const liveResources = new Set();
   const pendingNotes = [];
   let focused = 0;
   let storageSafe = true;
@@ -20,6 +29,78 @@
   let filter = '';
   let focusMode = false;
   let reviewerValue = '';
+  let pageDisposed = false;
+  let generation = 0;
+
+  function mediaKey(item, index) { return item.id + ':' + index; }
+  function deferred() {
+    let resolve, reject;
+    const promise = new Promise((yes, no) => {
+      resolve = yes; reject = no;
+    });
+    promise.catch(() => {});
+    return {promise, resolve, reject};
+  }
+  function publishHandles() {
+    for (const item of allItems) (item.media || []).forEach((_, index) =>
+      mediaHandles.set(mediaKey(item, index), deferred()));
+  }
+  function clearFrameCache() {
+    for (const entry of frameCache.values()) URL.revokeObjectURL(entry.url);
+    frameCache.clear();
+  }
+  async function frameHandle(media, index, signal) {
+    const frame = media.frames[index];
+    if (!frame || frame.index !== index) throw Error('missing frame');
+    if (signal?.aborted) throw Error('frame request cancelled');
+    const key = media.src + '#' + frame.src;
+    let cached = frameCache.get(key);
+    if (cached) {
+      frameCache.delete(key); frameCache.set(key, cached);
+      return {...cached, source_frame: frame.source_frame,
+        phase: frame.phase, index};
+    }
+    const dataFrame = media.frames.find(row => row.src === frame.src &&
+      row.data);
+    if (!dataFrame) throw Error('missing embedded frame bytes');
+    const raw = bytes(dataFrame.data);
+    if (await sha256(raw) !== frame.sha256)
+      throw Error('embedded frame hash mismatch');
+    if (signal?.aborted) throw Error('frame request cancelled');
+    const url = URL.createObjectURL(new Blob([raw], {type: 'image/png'}));
+    const image = new Image();
+    const cancel = () => image.removeAttribute('src');
+    signal?.addEventListener('abort', cancel, {once: true});
+    try {
+      image.src = url;
+      await image.decode();
+      if (signal?.aborted) throw Error('frame request cancelled');
+    } catch (error) {
+      URL.revokeObjectURL(url);
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', cancel);
+    }
+    // Concurrent preload and foreground requests may decode the same tile.
+    // Keep one cache owner and release the redundant decoded image and URL.
+    if (frameCache.has(key)) {
+      URL.revokeObjectURL(url);
+      image.removeAttribute('src');
+      cached = frameCache.get(key);
+      return {...cached, source_frame: frame.source_frame,
+        phase: frame.phase, index};
+    }
+    cached = {url, hash: frame.sha256, image};
+    frameCache.set(key, cached);
+    while (frameCache.size > 32) {
+      const oldest = frameCache.keys().next().value;
+      URL.revokeObjectURL(frameCache.get(oldest).url);
+      frameCache.delete(oldest);
+      cacheEvictions++;
+    }
+    return {...cached, source_frame: frame.source_frame,
+      phase: frame.phase, index};
+  }
 
   function el(tag, className, label) {
     const node = document.createElement(tag);
@@ -57,8 +138,7 @@
   function mediaFor(key) {
     const scope = data.scopes[key];
     return Object.keys(scope.media || {}).every(src => {
-      const entry = mediaState.get(src);
-      return entry && entry.ready && entry.hash === scope.media[src];
+      return verifiedMedia.get(src) === scope.media[src];
     });
   }
   function matchingHashes(actual, expected) {
@@ -68,13 +148,14 @@
       Object.entries(expected).every(([src, hash]) => actual[src] === hash);
   }
   function itemReady(item) {
-    return (item.media || []).every(media => {
-      if (media.kind === 'link') return true;
-      const state = mediaState.get(media.src);
+    if (!item) return false;
+    return (item.media || []).every((media, index) => {
+      const state = mediaState.get(mediaKey(item, index));
       return state && state.ready;
     });
   }
   function blocked(key) {
+    if (registryErrors.length) return true;
     const [kind, id] = key.split(':');
     if (kind === 'item') return !itemReady(allItems.find(i => i.id === id));
     if (kind === 'group') {
@@ -91,7 +172,7 @@
         data.scopes[key].digest) return 'stale';
     if (answer.state === 'answered' &&
         (!validValue(data.scopes[key].definition, answer.value) ||
-         (data.scopes[key].authority &&
+         (Object.keys(data.scopes[key].media).length &&
           (!matchingHashes(answer.media_hashes, data.scopes[key].media) ||
            !mediaFor(key))))) return 'invalid';
     return answer.state;
@@ -103,7 +184,7 @@
     if (!storageSafe) return;
     try {
       const serialized = JSON.stringify({schema_version: 1,
-        review: desc.review, reviewer: reviewerValue, answers});
+        review: desc.review, reviewer: reviewerValue, answers, reveals});
       localStorage.setItem(storageKey, serialized);
     } catch (_) {
       note('Draft could not be saved. Export your results now.', true);
@@ -118,7 +199,7 @@
     }
     try {
       localStorage.setItem(storageKey, JSON.stringify({schema_version: 1,
-        review: desc.review, reviewer: reviewerValue, answers}));
+        review: desc.review, reviewer: reviewerValue, answers, reveals}));
       storageSafe = true;
       loadedCount = Object.keys(answers).length;
       note('Stale and unmatched draft entries discarded.');
@@ -148,6 +229,23 @@
               value.state)) answers[key] = value;
       }
       if (typeof packet.reviewer === 'string') reviewerValue = packet.reviewer;
+      if (packet.reveals && typeof packet.reveals === 'object') {
+        for (const group of groups) if (packet.reveals[group.id]) {
+          if (group.layout !== 'synchronized-comparison') continue;
+          const pickKey = 'group:' + group.id + ':pick';
+          if (packet.reveals[group.id].digest !== data.scopes[pickKey].digest) {
+            storageSafe = false;
+            if (answers[pickKey]) answers[pickKey] = {
+              ...answers[pickKey], state: 'stale'};
+            note('Stored comparison reveal history is stale and was '
+              + 'preserved. Reconfirm the best decision for this case.', true);
+            continue;
+          }
+          if (!validRevealState(packet.reveals[group.id]))
+            throw Error('corrupt reveal history');
+          reveals[group.id] = packet.reveals[group.id];
+        }
+      }
       loadedCount = Object.keys(packet.answers).length;
       if (loadedCount !== Object.keys(answers).length) {
         storageSafe = false;
@@ -185,7 +283,7 @@
     }
     const answer = {state: 'answered', value,
       digest: data.scopes[key].digest, time: new Date().toISOString()};
-    if (data.scopes[key].authority) {
+    if (Object.keys(data.scopes[key].media).length) {
       if (!mediaFor(key)) {
         note('Embedded media hash has not been verified.', true);
         return;
@@ -196,6 +294,8 @@
     history.push([key, answers[key] ? structuredClone(answers[key]) : null]);
     if (history.length > 100) history.shift();
     answers[key] = answer;
+    const groupId = comparisonPickGroup(key);
+    if (groupId) advanceDecisionRevision(groupId);
     save();
     renderStatus();
   }
@@ -204,8 +304,66 @@
     if (!step) return;
     if (step[1] === null) delete answers[step[0]];
     else answers[step[0]] = step[1];
+    const groupId = comparisonPickGroup(step[0]);
+    if (groupId) advanceDecisionRevision(groupId);
     save();
     renderStatus();
+  }
+  function comparisonPickGroup(key) {
+    if (!key.startsWith('group:') || !key.endsWith(':pick')) return null;
+    const id = key.slice(6, -5);
+    return groups.some(group => group.id === id &&
+      group.layout === 'synchronized-comparison') ? id : null;
+  }
+  function revealState(groupId) {
+    return reveals[groupId] ||= {
+      digest: data.scopes['group:' + groupId + ':pick'].digest,
+      revealed: false, first_reveal: null,
+      decision_revision: 0, event_sequence: 0};
+  }
+  function validRevealState(value) {
+    if (!value || !Number.isInteger(value.decision_revision) ||
+        value.decision_revision < 0 ||
+        !Number.isInteger(value.event_sequence) ||
+        typeof value.revealed !== 'boolean') return false;
+    if (value.first_reveal === null)
+      return !value.revealed &&
+        value.event_sequence === value.decision_revision;
+    const first = value.first_reveal;
+    return value.revealed && first &&
+      Number.isInteger(first.sequence) && first.sequence > 0 &&
+      Number.isInteger(first.next_decision_revision) &&
+      first.sequence === first.next_decision_revision &&
+      first.sequence <= value.event_sequence &&
+      first.next_decision_revision <= value.decision_revision + 1 &&
+      value.event_sequence === value.decision_revision + 1;
+  }
+  function advanceDecisionRevision(groupId) {
+    const value = revealState(groupId);
+    value.decision_revision++;
+    value.event_sequence++;
+  }
+  function reveal(groupId) {
+    const value = revealState(groupId);
+    if (!value.first_reveal) {
+      value.event_sequence++;
+      value.first_reveal = {sequence: value.event_sequence,
+        next_decision_revision: value.decision_revision + 1};
+    }
+    value.revealed = true;
+    save();
+  }
+  function exportReveal(groupId) {
+    const value = revealState(groupId);
+    const answered = state('group:' + groupId + ':pick') === 'answered';
+    return {digest: data.scopes['group:' + groupId + ':pick'].digest,
+      revealed: value.revealed,
+      first_reveal: value.first_reveal,
+      decision_revision: value.decision_revision,
+      event_sequence: value.event_sequence,
+      revealed_before_decision: answered ? Boolean(value.first_reveal &&
+        value.decision_revision >=
+        value.first_reveal.next_decision_revision) : null};
   }
   function allScopes(item) {
     return scopeKeys.filter(key => key.startsWith('item:' + item.id + ':'));
@@ -274,7 +432,11 @@
         definition.options;
       values.forEach((value, index) => {
         const hotkey = definition.keys && definition.keys[index];
-        const control = button((hotkey ? hotkey + ' · ' : '') + String(value),
+        const groupId = comparisonPickGroup(key);
+        const label = groupId && value !== 'tie' && value !== 'none' ?
+          String.fromCharCode(65 + groups.find(group => group.id === groupId)
+            .comparison.candidates.indexOf(value)) : String(value);
+        const control = button((hotkey ? hotkey + ' · ' : '') + label,
           () => choose(value));
         control.dataset.choice = key;
         control.dataset.value = String(value);
@@ -323,71 +485,182 @@
       JSON.stringify(answer.value) + '. Reconfirm to answer.'));
     return wrapper;
   }
-  async function renderMedia(media, parent, item) {
+  async function renderMedia(media, parent, item, index) {
     const shell = el('div', 'media');
     parent.append(shell);
     const component = registry.get(media.kind);
+    const handle = mediaHandles.get(mediaKey(item, index));
+    const stateKey = mediaKey(item, index);
     if (!component) {
-      shell.append(el('p', 'error', 'Unknown media component'));
+      mediaState.set(stateKey, {src: media.src, ready: false});
+      shell.append(el('p', 'error', 'Unknown or invalid media component'));
+      handle.reject(Error('missing component'));
       return;
     }
-    const api = {settings: {gain: 0.15, gainCap: 0.5,
-      privacy: desc.privacy,
-      reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches},
-      note: message => note(message), bytes: null, url: null,
-      comparison: () => {
-        const group = groups.find(g => g.items.includes(item));
-        if (!group) return null;
-        for (const other of group.items) {
-          if (other === item) continue;
-          const otherMedia = (other.media || []).find(m => m.kind === 'image');
-          if (!otherMedia) continue;
-          const state = mediaState.get(otherMedia.src);
-          if (state && state.ready) return state.url || otherMedia.src;
+    const spec = data.components[media.kind];
+    const resources = {urls: [], workers: [], disposed: false};
+    liveResources.add(resources);
+    const group = groups.find(g => g.items.includes(item));
+    let readyCalled = false;
+    let failed = false;
+    let view = null;
+    let display = null;
+    const settleReady = () => {
+      if (failed || resources.disposed || pageDisposed) return;
+      const previous = mediaState.get(stateKey);
+      mediaState.set(stateKey, {...previous, ready: true});
+      handle.resolve(Object.freeze({url: api.url,
+        bytes: api.bytes?.slice() || null,
+        play: () => {
+          if (resources.disposed || pageDisposed) throw Error('media disposed');
+          return display?.play?.();
+        }, pause: () => display?.pause?.()}));
+      renderStatus();
+    };
+    const failMedia = message => {
+      if (failed) return;
+      failed = true;
+      resources.disposed = true;
+      failedMedia.add(stateKey);
+      mediaState.set(stateKey, {src: media.src, ready: false});
+      shell.append(el('p', 'error', message));
+      handle.reject(Error(message));
+      if (view) try { component.dispose?.(view, api); } catch (_) {}
+      for (const worker of resources.workers) worker.terminate();
+      for (const url of resources.urls) URL.revokeObjectURL(url);
+      liveResources.delete(resources);
+      renderStatus();
+    };
+    const api = {
+      url: null, bytes: null,
+      settings: Object.freeze({gain: desc.settings?.gain ?? 0.15,
+        gainCap: 0.5, privacy: desc.privacy,
+        darkMode: matchMedia('(prefers-color-scheme: dark)').matches,
+        reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches}),
+      group: group ? Object.freeze({id: group.id, layout: group.layout,
+        members: Object.freeze(group.items.map(entry => Object.freeze({
+          id: entry.id, label: entry.title || entry.id}))),
+        get focused() {
+          return group.items.includes(allItems[focused]) ?
+            allItems[focused].id : null;
+        }}) : null,
+      media: (itemId, mediaIndex) => {
+        if (resources.disposed || pageDisposed)
+          return Promise.reject(Error('media disposed'));
+        if (!group || !group.items.some(entry => entry.id === itemId))
+          return Promise.reject(Error('missing sibling media'));
+        const siblingKey = itemId + ':' + mediaIndex;
+        if (failedMedia.has(siblingKey))
+          return Promise.reject(Error('failed sibling media'));
+        const sibling = mediaHandles.get(siblingKey);
+        return sibling ? sibling.promise.then(value => {
+          if (resources.disposed || pageDisposed) throw Error('media disposed');
+          if (failedMedia.has(siblingKey)) throw Error('failed sibling media');
+          return value;
+        }) : Promise.reject(Error('missing sibling media'));
+      },
+      frame: (frameIndex, signal) => {
+        if (resources.disposed || pageDisposed)
+          return Promise.reject(Error('media disposed'));
+        return frameHandle(media, frameIndex, signal);
+      },
+      ready: () => {
+        readyCalled = true;
+        if (view && (!display || media.kind === 'frame-sequence'))
+          settleReady();
+      },
+      fail: message => failMedia(String(message)),
+      note: message => note(message),
+      worker: name => {
+        if (resources.disposed || pageDisposed)
+          throw Error('media disposed');
+        if (!Object.hasOwn(spec.workers, name))
+          throw Error('undeclared worker: ' + name);
+        const source = new TextDecoder().decode(bytes(spec.workers[name]));
+        const url = URL.createObjectURL(new Blob([source],
+          {type: 'text/javascript'}));
+        resources.urls.push(url);
+        const worker = new Worker(url);
+        resources.workers.push(worker);
+        return worker;
+      },
+      wasm: (name, imports = {}) => {
+        if (resources.disposed || pageDisposed)
+          return Promise.reject(Error('media disposed'));
+        if (!Object.hasOwn(spec.wasm, name))
+          return Promise.reject(Error('undeclared wasm: ' + name));
+        return WebAssembly.instantiate(bytes(spec.wasm[name]), imports)
+          .then(value => {
+            if (resources.disposed || pageDisposed)
+              throw Error('media disposed');
+            return value;
+          });
+      }
+    };
+    try {
+      if (media.kind === 'frame-sequence') {
+        const seen = new Set();
+        for (const frame of media.frames) {
+          if (seen.has(frame.src)) continue;
+          seen.add(frame.src);
+          const source = media.frames.find(row => row.src === frame.src &&
+            row.data);
+          if (!source || await sha256(bytes(source.data)) !== frame.sha256)
+            throw Error('embedded frame hash mismatch');
+          verifiedMedia.set(media.src + '#' + frame.src, frame.sha256);
         }
-        return null;
-      }};
-    if (media.mode === 'embed') {
-      try {
+        mediaState.set(stateKey, {src: media.src, ready: false,
+          hash: media.sha256});
+      } else if (media.mode === 'embed') {
         const raw = bytes(media.data);
         const hash = await sha256(raw);
         if (hash !== media.sha256) throw Error('embedded hash mismatch');
-        api.bytes = raw;
+        verifiedMedia.set(media.src, hash);
+        api.bytes = raw.slice();
         api.url = URL.createObjectURL(new Blob([raw], {type: media.mime}));
-        mediaState.set(media.src, {ready: true, hash, url: api.url});
-      } catch (_) {
-        mediaState.set(media.src, {ready: false});
-        shell.append(el('p', 'error', 'Embedded media verification failed.'));
-        return;
+        resources.urls.push(api.url);
+        mediaState.set(stateKey, {src: media.src, ready: false, hash,
+          url: api.url});
+      } else if (media.kind !== 'link') {
+        api.url = media.src;
+        mediaState.set(stateKey, {src: media.src, ready: false,
+          hash: null, url: media.src});
+      } else mediaState.set(stateKey, {src: media.src, ready: false});
+      Object.freeze(api);
+      view = await component.render(media, api);
+      if (!(view instanceof Element) || failed || resources.disposed ||
+          pageDisposed)
+        throw Error('component render did not return a live element');
+      display = view.matches('img,audio,video') ? view :
+        view.querySelector('img,audio,video');
+      if (display && media.kind !== 'frame-sequence') {
+        const eventName = display.tagName === 'IMG' ? 'load' :
+          'loadedmetadata';
+        if (display.tagName === 'IMG' && display.complete &&
+            display.naturalWidth || display.readyState >= 1) {
+          settleReady();
+        } else display.addEventListener(eventName, settleReady,
+          {once: true});
       }
-    } else if (media.kind !== 'link') {
-      api.url = media.src;
-      mediaState.set(media.src, {ready: false, hash: null,
-        url: media.src});
-    }
-    const view = component.render(media, api);
-    const display = view.matches('img,audio,video') ? view :
-      view.querySelector('img,audio,video');
-    if (media.mode === 'reference') {
-      if (display) display.addEventListener(
-        display.tagName === 'IMG' ? 'load' : 'loadedmetadata', () => {
-          mediaState.set(media.src, {ready: true, hash: null,
-            url: media.src});
-          renderStatus();
-        }, {once: true});
-    }
-    display?.addEventListener('error', () => {
-      mediaState.set(media.src, {ready: false});
-      shell.append(el('p', 'error',
-        'Media could not load. Decisions disabled.'));
+      display?.addEventListener('error', () => {
+        failMedia('Media could not load. Decisions disabled.');
+      });
+      shell.append(view);
+      if (!mediaViews.has(item.id)) mediaViews.set(item.id, []);
+      mediaViews.get(item.id).push({component, view, api, resources,
+        media, index, fail: failMedia});
+      if (allItems[focused] === item) component.focus?.(view, api);
+      else component.blur?.(view, api);
+      if ((readyCalled && (!display || media.kind === 'frame-sequence')) ||
+          mediaState.get(stateKey)?.ready) settleReady();
       renderStatus();
-    });
-    shell.append(view);
-    if (!mediaViews.has(item.id)) mediaViews.set(item.id, []);
-    mediaViews.get(item.id).push({component, view, api});
-    if (allItems[focused] === item) component.focus?.(view, api);
-    else component.blur?.(view, api);
-    renderStatus();
+    } catch (error) {
+      if (failed && view) try { component.dispose?.(view, api); }
+      catch (_) {}
+      failMedia(media.mode === 'embed' ?
+        'Embedded media verification failed.' :
+        'Media could not load. Decisions disabled.');
+    }
   }
   function renderItem(item) {
     const card = el('article', 'item');
@@ -401,28 +674,287 @@
       }
       card.append(fields);
     }
-    for (const media of item.media || [])
-      mediaPending.push(renderMedia(media, card, item));
+    (item.media || []).forEach((media, index) =>
+      mediaPending.push(renderMedia(media, card, item, index)));
     for (const key of allScopes(item)) card.append(decision(key));
     card.addEventListener('click', () => focusItem(allItems.indexOf(item)));
     return card;
   }
+  function renderComparison(group, section) {
+    const info = group.comparison;
+    const host = el('div', 'comparison');
+    host.dataset.caseId = group.id;
+    const controls = el('div', 'comparison-controls');
+    const referencePanel = el('div', 'comparison-panel');
+    const candidatePanel = el('div', 'comparison-panel');
+    referencePanel.append(el('h3', '', 'Reference'));
+    candidatePanel.append(el('h3', '', 'Candidate A'));
+    const panels = el('div', 'comparison-panels');
+    panels.append(referencePanel, candidatePanel);
+    const status = el('p', 'comparison-status', 'Verifying frames…');
+    host.append(controls, panels, status);
+    const assets = el('div', 'comparison-assets');
+    group.items.forEach(item => assets.append(renderItem(item)));
+    section.append(host, assets);
+    const controller = {group, info, host, controls, status,
+      panels: [referencePanel, candidatePanel], assets,
+      candidate: 0, view: info.views[0], crop: Object.keys(info.crops)[0],
+      index: 0, speed: 1, loopStart: 0, loopEnd: info.frame_count,
+      playing: false, timer: null, active: false, failed: false,
+      visibleIdentity: false};
+    comparisonControllers.set(group.id, controller);
+    function controlsButton(label, fn) { controls.append(button(label, fn)); }
+    const play = button('Play', () => {
+      controller.playing = !controller.playing;
+      play.textContent = controller.playing ? 'Pause' : 'Play';
+      if (controller.playing) {
+        controller.clockOrigin = performance.now();
+        controller.clockIndex = controller.index;
+        tick();
+      }
+      else clearTimeout(controller.timer);
+    });
+    controls.append(play);
+    controlsButton('Previous frame', () => {
+      controller.playing = false; play.textContent = 'Play';
+      clearTimeout(controller.timer);
+      show(Math.max(0, controller.index - 1));
+    });
+    controlsButton('Next frame', () => {
+      controller.playing = false; play.textContent = 'Play';
+      clearTimeout(controller.timer);
+      show(Math.min(info.frame_count - 1, controller.index + 1));
+    });
+    const scrub = el('input'); scrub.type = 'range'; scrub.min = 0;
+    scrub.max = info.frame_count - 1; scrub.value = '0';
+    scrub.setAttribute('aria-label', 'Exact display frame');
+    scrub.addEventListener('input', () => {
+      controller.playing = false; play.textContent = 'Play';
+      clearTimeout(controller.timer);
+      show(Number(scrub.value));
+    });
+    controls.append(scrub);
+    const speed = el('select');
+    speed.setAttribute('aria-label', 'Playback speed');
+    for (const value of [0.125, 0.25, 0.5, 1]) {
+      const option = el('option', '', value + '×');
+      option.value = value;
+      if (value === 1) option.selected = true;
+      speed.append(option);
+    }
+    speed.addEventListener('change', () => {
+      controller.speed = Number(speed.value);
+      controller.clockOrigin = performance.now();
+      controller.clockIndex = controller.index;
+    });
+    controls.append(speed);
+    const start = el('input'); start.type = 'number'; start.min = 0;
+    start.max = info.frame_count - 1; start.value = 0;
+    start.setAttribute('aria-label', 'Loop start frame');
+    const end = el('input'); end.type = 'number'; end.min = 1;
+    end.max = info.frame_count; end.value = info.frame_count;
+    end.setAttribute('aria-label', 'Loop end frame exclusive');
+    for (const input of [start, end]) input.addEventListener('change', () => {
+      const a = Number(start.value), b = Number(end.value);
+      if (Number.isInteger(a) && Number.isInteger(b) && a >= 0 &&
+          b <= info.frame_count && a < b) {
+        controller.loopStart = a; controller.loopEnd = b;
+        controller.clockOrigin = performance.now();
+        controller.clockIndex = controller.index;
+      } else note('Loop range must be [start, end).', true);
+    });
+    controls.append(start, end);
+    const candidate = el('select');
+    candidate.setAttribute('aria-label', 'Candidate');
+    info.candidates.forEach((id, index) => {
+      const option = el('option', '', String.fromCharCode(65 + index));
+      option.value = id; candidate.append(option);
+    });
+    candidate.addEventListener('change', () => {
+      controller.candidate = info.candidates.indexOf(candidate.value);
+      candidatePanel.querySelector('h3').textContent = 'Candidate ' +
+        String.fromCharCode(65 + controller.candidate);
+      show(controller.index);
+    });
+    controls.append(candidate);
+    const angle = el('select'); angle.setAttribute('aria-label', 'View');
+    for (const value of info.views) {
+      const option = el('option', '', value); option.value = value;
+      angle.append(option);
+    }
+    angle.addEventListener('change', () => {
+      controller.view = angle.value; show(controller.index);
+    });
+    controls.append(angle);
+    const crop = el('select'); crop.setAttribute('aria-label', 'Crop');
+    for (const value of Object.keys(info.crops)) {
+      const option = el('option', '', value); option.value = value;
+      crop.append(option);
+    }
+    crop.addEventListener('change', () => {
+      controller.crop = crop.value; show(controller.index);
+    });
+    controls.append(crop);
+    controlsButton('Next supplied key', () => {
+      const next = info.key_frames.find(value =>
+        value + info.hold_start > controller.index);
+      show((next ?? info.key_frames[0] ?? 0) + info.hold_start);
+    });
+    controlsButton('Expand', () => host.requestFullscreen?.());
+    controlsButton('Reveal identities', () => {
+      reveal(group.id); controller.visibleIdentity = true;
+      candidatePanel.querySelector('h3').textContent =
+        'Candidate ' + String.fromCharCode(65 + controller.candidate) +
+        ': ' + (info.reveal?.[info.candidates[controller.candidate]] ||
+          info.candidates[controller.candidate]);
+    });
+    function sequence(itemId) {
+      return (mediaViews.get(itemId) || []).find(entry =>
+        entry.media.kind === 'frame-sequence' &&
+        entry.media.view === controller.view);
+    }
+    function applyCrop() {
+      const rect = info.crops[controller.crop];
+      for (const panel of controller.panels) {
+        const box = panel.querySelector('.frame-sequence');
+        if (!box) continue;
+        const image = box.querySelector('img');
+        const entry = [...mediaViews.values()].flat().find(row =>
+          row.view === box);
+        box.style.aspectRatio = rect[2] + '/' + rect[3];
+        image.style.width = entry.media.width / rect[2] * 100 + '%';
+        image.style.height = 'auto';
+        image.style.left = -rect[0] / rect[2] * 100 + '%';
+        image.style.top = -rect[1] / rect[3] * 100 + '%';
+      }
+    }
+    async function show(index) {
+      if (!controller.active || controller.failed) return;
+      controller.abort?.abort();
+      controller.abort = new AbortController();
+      const signal = controller.abort.signal;
+      const token = ++generation;
+      host.classList.add('comparison-pending');
+      host.dataset.pendingIndex = String(index);
+      status.textContent = 'Loading display ' + index + '…';
+      const reference = sequence(info.reference);
+      const selected = sequence(info.candidates[controller.candidate]);
+      if (!reference || !selected) return;
+      try {
+        const [left, right] = await Promise.all([
+          reference.component.showFrame(index, reference.view,
+            reference.api, signal),
+          selected.component.showFrame(index, selected.view, selected.api,
+            signal)]);
+        if (token !== generation || !controller.active) return;
+        if (left.frame.index !== index || right.frame.index !== index ||
+            left.frame.source_frame !== right.frame.source_frame ||
+            left.frame.phase !== right.frame.phase)
+          throw Error('paired source frame mismatch');
+        for (const [entry, panel] of [[reference, referencePanel],
+                                      [selected, candidatePanel]]) {
+          const old = panel.querySelector('.frame-sequence');
+          if (old && old !== entry.view) {
+            old.querySelector('img')?.removeAttribute('src');
+            assets.append(old);
+          }
+          panel.append(entry.view);
+        }
+        left.commit(); right.commit(); applyCrop();
+        host.classList.remove('comparison-pending');
+        controller.index = index; scrub.value = index;
+        const phase = left.frame.phase.replace('_', ' ');
+        status.textContent = 'Display ' + index + ' · source ' +
+          left.frame.source_frame + ' · ' + phase +
+          (info.key_frames.includes(left.frame.source_frame) ?
+            ' · supplied key' : '') +
+          (index === controller.loopEnd - 1 ? ' · loop restart cut' : '');
+        for (const offset of [1, 2]) {
+          const next = index + offset;
+          if (next >= info.frame_count) break;
+          Promise.allSettled([
+            reference.component.showFrame(next, reference.view,
+              reference.api, signal),
+            selected.component.showFrame(next, selected.view,
+              selected.api, signal)]);
+        }
+      } catch (error) {
+        if (token !== generation || !controller.active) return;
+        controller.failed = true;
+        controller.playing = false; play.textContent = 'Play';
+        clearTimeout(controller.timer);
+        status.textContent = 'Frame failed: ' + error;
+        for (const item of group.items) (item.media || []).forEach(
+          (media, mediaIndex) => mediaState.set(mediaKey(item, mediaIndex),
+            {src: media.src, ready: false}));
+        renderStatus();
+      }
+    }
+    async function tick() {
+      if (!controller.playing || !controller.active || controller.failed)
+        return;
+      const rate = info.fps[0] / info.fps[1] * controller.speed;
+      const elapsed = Math.floor((performance.now() -
+        controller.clockOrigin) * rate / 1000);
+      const length = controller.loopEnd - controller.loopStart;
+      const initial = controller.clockIndex >= controller.loopStart &&
+        controller.clockIndex < controller.loopEnd ?
+        controller.clockIndex : controller.loopStart;
+      const next = controller.loopStart +
+        ((initial - controller.loopStart + elapsed + length) % length);
+      if (next !== controller.index) await show(next);
+      if (controller.playing)
+        controller.timer = setTimeout(tick, Math.max(4,
+          Math.min(32, 500 / rate)));
+    }
+    controller.activate = () => {
+      controller.active = true;
+      controller.visibleIdentity = false;
+      candidatePanel.querySelector('h3').textContent = 'Candidate ' +
+        String.fromCharCode(65 + controller.candidate);
+      show(controller.index);
+    };
+    controller.deactivate = () => {
+      controller.active = false; controller.playing = false;
+      controller.abort?.abort();
+      play.textContent = 'Play'; clearTimeout(controller.timer);
+      generation++; clearFrameCache();
+      for (const item of group.items)
+        for (const entry of mediaViews.get(item.id) || [])
+          entry.view.querySelectorAll('img').forEach(image =>
+            image.removeAttribute('src'));
+    };
+    controller.show = show;
+    Promise.allSettled(mediaPending).then(() => {
+      if (group.items.includes(allItems[focused])) controller.activate();
+    });
+  }
   function focusItem(index) {
     if (!allItems.length) return;
+    const previousGroup = groups.find(group =>
+      group.items.includes(allItems[focused]));
     const previous = document.querySelector('.item.focused');
     if (previous) {
       previous.classList.remove('focused');
       for (const node of previous.querySelectorAll('audio,video')) node.pause();
       for (const entry of mediaViews.get(previous.dataset.itemId) || [])
-        entry.component.blur?.(entry.view, entry.api);
+        try { entry.component.blur?.(entry.view, entry.api); }
+        catch (error) { entry.fail('Component blur failed: ' + error); }
     }
     focused = (index + allItems.length) % allItems.length;
+    const nextGroup = groups.find(group =>
+      group.items.includes(allItems[focused]));
+    if (previousGroup !== nextGroup) {
+      comparisonControllers.get(previousGroup?.id)?.deactivate();
+      comparisonControllers.get(nextGroup?.id)?.activate();
+    }
     const card = [...document.querySelectorAll('.item')].find(node =>
       node.dataset.itemId === allItems[focused].id);
     if (card) {
       card.classList.add('focused');
       for (const entry of mediaViews.get(card.dataset.itemId) || [])
-        entry.component.focus?.(entry.view, entry.api);
+        try { entry.component.focus?.(entry.view, entry.api); }
+        catch (error) { entry.fail('Component focus failed: ' + error); }
       card.scrollIntoView({block: 'nearest'});
       card.focus({preventScroll: true});
     }
@@ -470,9 +1002,14 @@
       section.append(count);
       for (const key of scopeKeys.filter(key => key.startsWith('group:' +
         group.id + ':'))) section.append(decision(key));
-      const list = el('div', group.layout === 'grid' ? 'grid' : 'list');
-      group.items.forEach(item => list.append(renderItem(item)));
-      section.append(list); app.append(section);
+      if (group.layout === 'synchronized-comparison') {
+        renderComparison(group, section);
+      } else {
+        const list = el('div', group.layout === 'grid' ? 'grid' : 'list');
+        group.items.forEach(item => list.append(renderItem(item)));
+        section.append(list);
+      }
+      app.append(section);
     }
     (desc.items || []).forEach(item => app.append(renderItem(item)));
     const dialog = el('dialog'); dialog.id = 'dialog'; app.append(dialog);
@@ -486,7 +1023,8 @@
     for (const key of scopeKeys) {
       const answer = answers[key];
       if (answer && answer.state === 'answered' &&
-          (blocked(key) || (data.scopes[key].authority && !mediaFor(key)))) {
+          (blocked(key) || (Object.keys(data.scopes[key].media).length &&
+            !mediaFor(key)))) {
         exported[key] = {state: 'unanswered',
           digest: data.scopes[key].digest};
         unverified++;
@@ -498,11 +1036,17 @@
     const result = {schema_version: 1, review: desc.review,
       resolved_sha256: data.resolved_sha256,
       context: desc.context || {}, reviewer: document.getElementById(
-        'reviewer').value, answers: exported};
+        'reviewer').value, answers: exported,
+      reveals: Object.fromEntries(groups.filter(group =>
+        group.layout === 'synchronized-comparison').map(group =>
+        [group.id, exportReveal(group.id)]))};
     return result;
   }
   async function exportResults() {
     await Promise.allSettled(mediaPending);
+    await Promise.race([Promise.allSettled([...mediaHandles.values()].map(
+      handle => handle.promise)), new Promise(resolve =>
+      setTimeout(resolve, 3000))]);
     const result = packet();
     const incomplete = scopeKeys.filter(key => data.scopes[key].definition
       .required && result.answers[key].state !== 'answered');
@@ -528,11 +1072,52 @@
     try { packet = JSON.parse(await file.text()); }
     catch (_) { note('Results file is not valid JSON.', true); return; }
     await Promise.allSettled(mediaPending);
+    await Promise.race([Promise.allSettled([...mediaHandles.values()].map(
+      handle => handle.promise)), new Promise(resolve =>
+      setTimeout(resolve, 3000))]);
     if (!packet || packet.schema_version !== 1 ||
         packet.review !== desc.review || !packet.answers ||
         typeof packet.answers !== 'object' ||
         Array.isArray(packet.answers)) {
       note('Results are for a different review or malformed.', true); return;
+    }
+    if (packet.resolved_sha256 !== data.resolved_sha256) {
+      note('Results use a different frozen description.', true); return;
+    }
+    for (const group of groups) {
+      if (group.layout !== 'synchronized-comparison') continue;
+      const incoming = packet.reveals?.[group.id];
+      if (!incoming || incoming.digest !==
+          data.scopes['group:' + group.id + ':pick'].digest) {
+        note('Comparison reveal history is missing or stale.', true);
+        return;
+      }
+      const answered = packet.answers['group:' + group.id + ':pick']?.state
+        === 'answered';
+      const expectedBefore = answered ? Boolean(incoming.first_reveal &&
+        incoming.decision_revision >=
+        incoming.first_reveal.next_decision_revision) : null;
+      if (!validRevealState(incoming) ||
+          incoming.revealed_before_decision !== expectedBefore) {
+        note('Comparison reveal history is invalid.', true);
+        return;
+      }
+      const local = revealState(group.id);
+      if (local.first_reveal && incoming.first_reveal &&
+          JSON.stringify(local.first_reveal) !==
+          JSON.stringify(incoming.first_reveal)) {
+        note('Conflicting first-reveal histories need a person to resolve.',
+          true);
+        return;
+      }
+      if (!local.first_reveal && incoming.first_reveal) {
+        local.first_reveal = incoming.first_reveal;
+        local.revealed = true;
+      }
+      local.decision_revision = Math.max(local.decision_revision,
+        incoming.decision_revision || 0);
+      local.event_sequence = Math.max(local.event_sequence,
+        incoming.event_sequence || 0);
     }
     if (typeof packet.reviewer === 'string' &&
         !document.getElementById('reviewer').value) {
@@ -547,7 +1132,7 @@
       const scope = data.scopes[key];
       if (incoming.digest !== scope.digest ||
           !validValue(scope.definition, incoming.value) ||
-          (scope.authority &&
+          (Object.keys(scope.media).length &&
            (!matchingHashes(incoming.media_hashes, scope.media) ||
             !mediaFor(key)))) {
         rejected++;
@@ -555,7 +1140,8 @@
       }
       const imported = {...incoming,
         state: scope.authority ? 'inherited' : 'answered',
-        evidence: scope.authority ? 'verified' : 'unverified'};
+        evidence: Object.keys(scope.media).length ?
+          'verified' : 'unverified'};
       if (scope.authority) imported.source = 'imported file';
       const existing = answers[key];
       if (existing && existing.state === 'answered' &&
@@ -563,6 +1149,8 @@
         conflicts.push([key, existing, imported]);
       } else if (!existing || existing.state !== 'answered') {
         answers[key] = imported;
+        const groupId = comparisonPickGroup(key);
+        if (groupId) advanceDecisionRevision(groupId);
       }
     }
     if (rejected) note(rejected + ' invalid or stale imported answers '
@@ -577,6 +1165,8 @@
             row.remove()),
           button('Use imported: ' + JSON.stringify(incoming.value), () => {
             answers[key] = incoming; row.remove();
+            const groupId = comparisonPickGroup(key);
+            if (groupId) advanceDecisionRevision(groupId);
             save(); renderStatus();
           }));
         dialog.append(row);
@@ -608,12 +1198,18 @@
         + '· / filter · u undo · ? legend. Choice and flag keys appear '
         + 'beside their options. Authority decisions require confirmation.'),
       button('Close', () => dialog.close()));
+    const item = allItems[focused];
+    for (const kind of new Set((item?.media || []).map(media => media.kind)))
+      for (const [key, label] of Object.entries(registry.get(kind)?.keys || {}))
+        dialog.append(el('p', '', key + ' · ' + label));
     dialog.showModal();
   }
   function keydown(event) {
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     if (document.getElementById('dialog').open) return;
-    if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+    const active = document.activeElement;
+    if (active.matches('input,textarea,select') || active.isContentEditable)
+      return;
     const key = event.key;
     const group = groups.find(g => g.items.includes(allItems[focused]));
     const groupIndex = groups.indexOf(group);
@@ -669,14 +1265,67 @@
           event.preventDefault(); return;
         }
       }
+      for (const entry of mediaViews.get(item.id) || []) {
+        try {
+          if (entry.component.key?.(event, entry.view, entry.api)) {
+            event.preventDefault(); return;
+          }
+        } catch (error) {
+          entry.fail('Component key failed: ' + error);
+        }
+      }
     }
   }
-  window.ReviewSheet = {register(component) {
-    if (!component || !component.kind || registry.has(component.kind))
-      throw Error('invalid or duplicate component');
+  window.ReviewSheet = {metrics() {
+    return {decodedTiles: frameCache.size, decodedTileLimit: 32,
+      cacheEvictions, decodedBytes: [...frameCache.values()].reduce(
+        (total, entry) => total + entry.image.naturalWidth *
+          entry.image.naturalHeight * 4, 0)};
+  }, register(component) {
+    const expected = data.components[component?.kind];
+    if (!component || !expected || registry.has(component.kind) ||
+        component.version !== expected.version ||
+        component.api !== expected.api ||
+        JSON.stringify(Object.keys(component.keys || {}).sort()) !==
+          JSON.stringify([...expected.keys].sort()) ||
+        typeof component.render !== 'function' ||
+        ['focus', 'blur', 'key', 'showFrame', 'dispose'].some(name =>
+          component[name] !== undefined &&
+          typeof component[name] !== 'function')) {
+      registryErrors.push('Missing, duplicate, or mismatched component: ' +
+        (component?.kind || 'unknown'));
+      return;
+    }
     registry.set(component.kind, component);
   }, start() {
-    load(); prefill(); render();
+    publishHandles(); load(); prefill(); render();
+    for (const kind of Object.keys(data.components))
+      if (!registry.has(kind)) registryErrors.push(
+        'Missing component registration: ' + kind);
+    for (const error of registryErrors) note(error, true);
+    if (registryErrors.length) renderStatus();
     document.addEventListener('keydown', keydown);
+    window.addEventListener('pagehide', () => {
+      pageDisposed = true;
+      generation++;
+      clearFrameCache();
+      for (const entries of mediaViews.values()) for (const entry of entries) {
+        if (entry.resources.disposed) continue;
+        entry.resources.disposed = true;
+        try { entry.component.blur?.(entry.view, entry.api); }
+        catch (_) {}
+        try { entry.component.dispose?.(entry.view, entry.api); }
+        catch (_) {}
+        for (const worker of entry.resources.workers) worker.terminate();
+        for (const url of entry.resources.urls) URL.revokeObjectURL(url);
+      }
+      for (const handle of mediaHandles.values())
+        handle.reject(Error('media disposed'));
+      for (const resources of liveResources) {
+        resources.disposed = true;
+        for (const worker of resources.workers) worker.terminate();
+        for (const url of resources.urls) URL.revokeObjectURL(url);
+      }
+    });
   }};
 })();

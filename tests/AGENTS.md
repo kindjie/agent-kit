@@ -4,18 +4,30 @@
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
-  tests.test_review_sheet tests.test_review_sheet_browser
+  tests.test_review_sheet tests.test_review_sheet_stage2 \
+  tests.test_review_sheet_browser
 ```
 
 The Python cases use fictional files and temporary Git repositories to check
-build, import, scope digests, bounds and output privacy. The browser case
+build, frozen import/current-input separation, trust refusal and shadowing,
+preset merge/deletion, frame mapping, reveal conflicts, bounds, and output
+privacy. A synthetic 400x360 comparison fixture checks encoded/page-size
+bounds. A Chrome fixture loads 640 generated 400x360 tiles across two cases,
+forces eviction from the 32-tile decoded cache, and samples renderer RSS
+through load, scrub, playback, case changes, and reload against a blank-page
+baseline. It prints encoded bytes, HTML size, cache bytes, and sampled RSS;
+its 1 GiB increase limit is a synthetic regression check, not real-case
+fidelity or memory acceptance. The browser case
 drives `file://` pages using Playwright pinned by `tests/package-lock.json`.
 Install with `npm ci --prefix tests` and
 `tests/node_modules/.bin/playwright install chromium firefox`. The harness
 uses system Google Chrome by default (`channel: 'chrome'`) and falls back to
 Playwright's bundled Chromium only when Chrome is absent. It tries bundled
-Firefox if installed; on this macOS host Firefox cannot launch, so it reports
-SKIP with the launch reason. Each run prints the browser and version used and
+Firefox if installed; Firefox is a known gap on this macOS host, so it reports
+SKIP with the absence or launch reason. Chrome is the stage-2 browser gate.
+The harness covers a trusted component, sibling readiness, worker and wasm
+failure paths, exact paired frames, forced late decodes, reveal revisions,
+undo/re-import, and cache size. Each run prints the browser and version and
 reports PASS or SKIP separately. The Python wrapper fails if an available
 browser fails, and skips only when none can run. Run the browser suite outside
 the sandbox so Chrome can launch. Safari is best effort. The harness uses no

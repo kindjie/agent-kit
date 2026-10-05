@@ -1,0 +1,18 @@
+{
+  "preset_version": "1.0.0",
+  "decisions": {
+    "verdict": {
+      "kind": "choice",
+      "required": true,
+      "options": [
+        "looks-good",
+        "needs-work",
+        "reject"
+      ],
+      "keys": "123"
+    },
+    "notes": {
+      "kind": "text"
+    }
+  }
+}

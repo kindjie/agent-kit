@@ -1,4 +1,4 @@
-ReviewSheet.register({kind: 'audio', version: '1.0.0',
+ReviewSheet.register({kind: 'audio', version: '1.0.0', api: 1,
   render(media, api) {
     const audio = document.createElement('audio');
     audio.src = api.url;
@@ -11,4 +11,6 @@ ReviewSheet.register({kind: 'audio', version: '1.0.0',
         audio.volume = api.settings.gainCap;
     });
     return audio;
-  }});
+  },
+  blur(audio) { audio.pause(); },
+  dispose(audio) { audio.pause(); audio.removeAttribute('src'); }});

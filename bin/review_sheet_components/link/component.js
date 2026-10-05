@@ -1,4 +1,4 @@
-ReviewSheet.register({kind: 'link', version: '1.0.0',
+ReviewSheet.register({kind: 'link', version: '1.0.0', api: 1,
   render(media, api) {
     const box = document.createElement('div');
     const text = document.createElement('code');
@@ -12,5 +12,5 @@ ReviewSheet.register({kind: 'link', version: '1.0.0',
           api.note('Clipboard unavailable.')));
       box.append(copy);
     }
-    return box;
+    api.ready(); return box;
   }});

@@ -22,6 +22,7 @@ class ReviewSheetTest(unittest.TestCase):
     (self.root / 'sample.txt').write_text('sample media', encoding='utf-8')
     self.desc = self.root / 'review.json'
     self.page = self.root / 'review.html'
+    self.frozen = self.page.with_suffix('.resolved.json')
     self.packet = self.root / 'review-results.json'
     self.description = {
       'review': 'sample-1', 'title': 'Sample review',
@@ -74,21 +75,23 @@ class ReviewSheetTest(unittest.TestCase):
     packet['answers'][key] = {
       'state': 'answered', 'value': 'keep',
       'digest': resolved['scopes'][key]['digest'],
+      'media_hashes': resolved['scopes'][key]['media'],
     }
     self.packet.write_text(json.dumps(packet))
     result = json.loads(self.run_tool('import', self.packet,
-                                     '--description', self.desc).stdout)
+                                     '--resolved', self.frozen).stdout)
     self.assertEqual(result['answers'][key]['state'], 'answered')
     self.assertEqual(result['answers']['item:one:note']['state'],
                      'unanswered')
     self.assertEqual(self.run_tool('import', self.packet,
-                                   '--description', self.desc,
+                                   '--resolved', self.frozen,
                                    '--require-complete', code=3).returncode, 3)
     (self.root / 'sample.txt').write_text('changed', encoding='utf-8')
     result = json.loads(self.run_tool('import', self.packet,
-                                     '--description', self.desc,
-                                     code=3).stdout)
-    self.assertEqual(result['answers'][key]['state'], 'stale')
+                                     '--resolved', self.frozen,
+                                     '--check-current').stdout)
+    self.assertEqual(result['answers'][key]['state'], 'answered')
+    self.assertEqual(result['currency']['status'], 'changed')
 
   def test_rejects_extends_escape_and_limits(self):
     self.description['extends'] = ['preset']
@@ -126,7 +129,7 @@ class ReviewSheetTest(unittest.TestCase):
                                'digest': resolved['scopes'][key]['digest']}}}
     self.packet.write_text(json.dumps(packet))
     result = json.loads(self.run_tool('import', self.packet,
-                                     '--description', self.desc,
+                                     '--resolved', self.frozen,
                                      code=2).stdout)
     self.assertEqual(result['answers'][key]['state'], 'invalid')
 
@@ -147,16 +150,17 @@ class ReviewSheetTest(unittest.TestCase):
               ).hexdigest(),
               'answers': {key: {'state': 'answered', 'value': 'keep',
                                'digest': resolved['scopes'][key]['digest'],
+                               'media_hashes': resolved['scopes'][key]['media'],
                                'time': 'first'}}}
     second = self.root / 'second.json'
     self.packet.write_text(json.dumps(packet))
     packet['answers'][key]['time'] = 'later'
     second.write_text(json.dumps(packet))
-    self.run_tool('import', self.packet, second, '--description', self.desc)
+    self.run_tool('import', self.packet, second, '--resolved', self.frozen)
     packet['answers'][key]['value'] = 'revise'
     second.write_text(json.dumps(packet))
     result = json.loads(self.run_tool('import', self.packet, second,
-                                     '--description', self.desc,
+                                     '--resolved', self.frozen,
                                      code=3).stdout)
     self.assertEqual(result['conflicts'], [{
       'scope': key,
@@ -178,9 +182,10 @@ class ReviewSheetTest(unittest.TestCase):
           self.description['groups'][0]['layout'] = 'grid'
         self.write_desc()
         result = json.loads(self.run_tool('import', self.packet,
-                                         '--description', self.desc,
-                                         code=3).stdout)
-        self.assertEqual(result['answers'][key]['state'], 'stale')
+                                         '--resolved', self.frozen,
+                                         '--check-current').stdout)
+        self.assertEqual(result['answers'][key]['state'], 'answered')
+        self.assertEqual(result['currency']['status'], 'changed')
 
   def test_orphan_invalid_and_answer_bounds(self):
     resolved = self.build()
@@ -197,13 +202,13 @@ class ReviewSheetTest(unittest.TestCase):
                                                 'value': 'keep'}}}
     self.packet.write_text(json.dumps(packet))
     result = json.loads(self.run_tool('import', self.packet,
-                                     '--description', self.desc,
+                                     '--resolved', self.frozen,
                                      '--max-text-answer', '8',
                                      code=2).stdout)
     self.assertEqual(result['answers'][key]['state'], 'invalid')
     self.assertEqual(result['orphaned'], ['item:gone:verdict'])
     self.assertEqual(result['invalid_entries'], ['item:one:unknown'])
-    self.run_tool('import', self.packet, '--description', self.desc,
+    self.run_tool('import', self.packet, '--resolved', self.frozen,
                   '--max-results', '2', code=2)
 
   def test_orphan_alone_exits_invalid(self):
@@ -214,7 +219,7 @@ class ReviewSheetTest(unittest.TestCase):
                                                 'value': 'keep'}}}
     self.packet.write_text(json.dumps(packet))
     result = json.loads(self.run_tool('import', self.packet,
-                                     '--description', self.desc,
+                                     '--resolved', self.frozen,
                                      code=2).stdout)
     self.assertEqual(result['orphaned'], ['item:gone:verdict'])
 
@@ -235,7 +240,7 @@ class ReviewSheetTest(unittest.TestCase):
                                ['media']}}}
     self.packet.write_text(json.dumps(packet))
     result = json.loads(self.run_tool('import', self.packet,
-                                     '--description', self.desc).stdout)
+                                     '--resolved', self.frozen).stdout)
     self.assertEqual(result['answers'][key]['evidence'], 'verified')
     self.assertEqual(result['answers'][key]['media_hashes'],
                      resolved['scopes'][key]['media'])
@@ -280,7 +285,7 @@ class ReviewSheetTest(unittest.TestCase):
     packet['answers'][key] = {**entry, 'digest': '0' * 64}
     second.write_text(json.dumps(packet))
     result = json.loads(self.run_tool('import', self.packet, second,
-                                     '--description', self.desc,
+                                     '--resolved', self.frozen,
                                      code=3).stdout)
     self.assertEqual(result['conflicts'], [])
     self.assertEqual(result['answers'][key]['state'], 'stale')
@@ -289,42 +294,46 @@ class ReviewSheetTest(unittest.TestCase):
     resolved = self.build()
     key = 'item:one:verdict'
     packet = {'schema_version': 1, 'review': 'sample-1',
-              'resolved_sha256': '0' * 64,
+              'resolved_sha256': hashlib.sha256((self.root /
+                'review.resolved.json').read_bytes()).hexdigest(),
               'answers': {key: {'state': 'answered', 'value': 'keep',
-                               'digest': resolved['scopes'][key]['digest']}}}
+                               'digest': resolved['scopes'][key]['digest'],
+                               'media_hashes': resolved['scopes'][key]
+                               ['media']}}}
     files = [self.root / f'result-{i}.json' for i in range(3)]
     files[0].write_text(json.dumps(packet))
     packet['answers'][key]['value'] = 'revise'
     files[1].write_text(json.dumps(packet))
     packet['answers'][key]['digest'] = '0' * 64
+    packet['resolved_sha256'] = '0' * 64
     files[2].write_text(json.dumps(packet))
     result = json.loads(self.run_tool('import', *files,
-                                     '--description', self.desc,
+                                     '--resolved', self.frozen,
                                      code=3).stdout)
     self.assertEqual(result['answers'][key], {'state': 'conflict'})
     self.assertEqual(result['conflicts'][0]['entries'][:2], [
       {'state': 'answered', 'reviewer': None, 'value': 'keep'},
       {'state': 'answered', 'reviewer': None, 'value': 'revise'}])
 
-  def test_different_reviewers_do_not_merge_answers(self):
+  def test_different_reviewers_merge_identical_answers(self):
     resolved = self.build()
     key = 'item:one:verdict'
     packet = {'schema_version': 1, 'review': 'sample-1',
-              'resolved_sha256': '0' * 64, 'reviewer': 'Reviewer A',
+              'resolved_sha256': hashlib.sha256((self.root /
+                'review.resolved.json').read_bytes()).hexdigest(),
+              'reviewer': 'Reviewer A',
               'answers': {key: {'state': 'answered', 'value': 'keep',
-                               'digest': resolved['scopes'][key]['digest']}}}
+                               'digest': resolved['scopes'][key]['digest'],
+                               'media_hashes': resolved['scopes'][key]
+                               ['media']}}}
     second = self.root / 'second.json'
     self.packet.write_text(json.dumps(packet))
     packet['reviewer'] = 'Reviewer B'
     second.write_text(json.dumps(packet))
     result = json.loads(self.run_tool('import', self.packet, second,
-                                     '--description', self.desc,
-                                     code=3).stdout)
+                                     '--resolved', self.frozen).stdout)
     self.assertEqual(result['answers'][key]['state'], 'answered')
-    self.assertEqual(result['conflicts'][0], {
-      'scope': 'reviewer', 'entries': [
-        {'reviewer': 'Reviewer A'}, {'reviewer': 'Reviewer B'}]})
-    self.assertEqual(len(result['conflicts']), 1)
+    self.assertEqual(result['conflicts'], [])
 
   def test_different_reviewers_only_conflict_on_different_answers(self):
     resolved = self.build()
@@ -332,16 +341,18 @@ class ReviewSheetTest(unittest.TestCase):
     packets = []
     for reviewer, answers in (
         ('A', {key: {'state': 'answered', 'value': 'keep',
-                     'digest': resolved['scopes'][key]['digest']}}),
+                     'digest': resolved['scopes'][key]['digest'],
+                     'media_hashes': resolved['scopes'][key]['media']}}),
         ('B', {})):
       path = self.root / f'{reviewer}.json'
       path.write_text(json.dumps({'schema_version': 1,
-        'review': 'sample-1', 'resolved_sha256': '0' * 64,
+        'review': 'sample-1', 'resolved_sha256': hashlib.sha256((self.root /
+          'review.resolved.json').read_bytes()).hexdigest(),
         'reviewer': reviewer, 'answers': answers}))
       packets.append(path)
     result = json.loads(self.run_tool('import', *packets,
-      '--description', self.desc, code=3).stdout)
-    self.assertEqual([c['scope'] for c in result['conflicts']], ['reviewer'])
+      '--resolved', self.frozen).stdout)
+    self.assertEqual(result['conflicts'], [])
     self.assertEqual(result['answers'][key]['state'], 'answered')
     self.assertEqual(result['answers']['item:one:note']['state'], 'unanswered')
 
@@ -353,7 +364,7 @@ class ReviewSheetTest(unittest.TestCase):
       'answers': {key: {'state': 'inherited', 'value': 'keep',
         'digest': resolved['scopes'][key]['digest']}}}))
     result = json.loads(self.run_tool('import', self.packet,
-      '--description', self.desc, '--resolved',
+      '--resolved',
       self.root / 'review.resolved.json', code=3).stdout)
     self.assertEqual(result['answers'][key]['state'], 'stale')
 
@@ -383,7 +394,7 @@ class ReviewSheetTest(unittest.TestCase):
     self.run_tool('build', self.desc, '--output', self.page, code=2)
     schema = json.loads(self.run_tool('schema').stdout)
     self.assertEqual(schema['$defs']['group']['properties']['layout']['enum'],
-                     ['list', 'grid'])
+                     ['list', 'grid', 'synchronized-comparison'])
 
   def test_hotkey_collision_rejected(self):
     self.description['decisions']['defects'] = {
@@ -403,14 +414,15 @@ class ReviewSheetTest(unittest.TestCase):
     for name, value in [('approved', False), ('amount', 0), ('note', '')]:
       key = 'item:one:' + name
       answers[key] = {'state': 'answered', 'value': value,
-                      'digest': resolved['scopes'][key]['digest']}
+                      'digest': resolved['scopes'][key]['digest'],
+                      'media_hashes': resolved['scopes'][key]['media']}
     packet = {'schema_version': 1, 'review': 'sample-1',
               'resolved_sha256': hashlib.sha256(
                 (self.root / 'review.resolved.json').read_bytes()
               ).hexdigest(), 'answers': answers}
     self.packet.write_text(json.dumps(packet))
     result = json.loads(self.run_tool('import', self.packet,
-                                     '--description', self.desc).stdout)
+                                     '--resolved', self.frozen).stdout)
     for name, value in [('approved', False), ('amount', 0), ('note', '')]:
       self.assertEqual(result['answers']['item:one:' + name]['value'], value)
     summary = self.run_tool('status', self.packet).stdout
@@ -433,9 +445,10 @@ class ReviewSheetTest(unittest.TestCase):
     self.packet.write_text(json.dumps(packet))
     (self.root / 'sample.txt').write_text('new bytes')
     result = json.loads(self.run_tool('import', self.packet,
-                                     '--description', self.desc,
-                                     code=3).stdout)
-    self.assertEqual(result['answers'][key]['state'], 'stale')
+                                     '--resolved', self.frozen,
+                                     '--check-current').stdout)
+    self.assertEqual(result['answers'][key]['state'], 'answered')
+    self.assertEqual(result['currency']['status'], 'changed')
 
   def test_frozen_resolved_hash_checked(self):
     resolved = self.build()
@@ -445,20 +458,19 @@ class ReviewSheetTest(unittest.TestCase):
               'resolved_sha256': hashlib.sha256(frozen.read_bytes())
               .hexdigest(),
               'answers': {key: {'state': 'answered', 'value': 'keep',
-                               'digest': resolved['scopes'][key]['digest']}}}
+                               'digest': resolved['scopes'][key]['digest'],
+                               'media_hashes': resolved['scopes'][key]
+                               ['media']}}}
     self.packet.write_text(json.dumps(packet))
-    self.run_tool('import', self.packet, '--description', self.desc,
-                  '--resolved', frozen)
+    self.run_tool('import', self.packet, '--resolved', frozen)
     packet['resolved_sha256'] = '0' * 64
     self.packet.write_text(json.dumps(packet))
     result = json.loads(self.run_tool('import', self.packet,
-                                     '--description', self.desc,
                                      '--resolved', frozen, code=3).stdout)
     self.assertEqual(result['answers'][key]['state'], 'stale')
     packet['answers'] = {}
     self.packet.write_text(json.dumps(packet))
-    self.run_tool('import', self.packet, '--description', self.desc,
-                  '--resolved', frozen, code=3)
+    self.run_tool('import', self.packet, '--resolved', frozen, code=3)
 
   def test_distinct_pages_have_distinct_resolved_files(self):
     self.build()

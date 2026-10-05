@@ -1,0 +1,14 @@
+{
+  "preset_version": "1.0.0",
+  "decisions": {
+    "approval": {
+      "kind": "choice",
+      "authority": true,
+      "required": true,
+      "options": [
+        "approve",
+        "decline"
+      ]
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "preset_version": "1.0.0",
+  "decisions": {
+    "trim-start": {
+      "kind": "number",
+      "unit": "s",
+      "min": 0
+    },
+    "trim-end": {
+      "kind": "number",
+      "unit": "s",
+      "min": 0
+    }
+  }
+}

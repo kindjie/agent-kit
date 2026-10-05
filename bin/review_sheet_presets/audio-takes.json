@@ -1,0 +1,12 @@
+{
+  "preset_version": "1.0.0",
+  "settings": {
+    "gain": 0.15
+  },
+  "group_defaults": {
+    "pick": {
+      "kind": "best",
+      "required": false
+    }
+  }
+}

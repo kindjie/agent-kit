@@ -1,0 +1,10 @@
+{
+  "preset_version": "1.0.0",
+  "group_defaults": {
+    "layout": "grid",
+    "pick": {
+      "kind": "best",
+      "required": false
+    }
+  }
+}

@@ -36,6 +36,25 @@ dialog { max-width: min(50rem, 90vw); max-height: 85vh; overflow: auto; }
 .conflict { border: 1px solid #888; margin: .5rem 0; padding: .5rem; }
 .hidden { display: none !important; }
 body.focus-mode .item:not(.focused) { display: none; }
+.comparison-controls { display: flex; flex-wrap: wrap; gap: .4rem;
+  align-items: center; margin: .5rem 0; }
+.comparison-controls input[type="range"] { width: min(24rem, 100%); }
+.comparison-controls input[type="number"] { width: 5rem; }
+.comparison-panels { display: grid; grid-template-columns: repeat(2,
+  minmax(0, 1fr)); gap: .7rem; }
+.comparison-panel { background: #111; color: #fff; padding: .5rem;
+  min-height: 12rem; overflow: hidden; }
+.comparison-panel h3 { margin: 0 0 .3rem; }
+.comparison-panel .frame-sequence { position: relative; width: 100%;
+  overflow: hidden; }
+.comparison-panel .frame-sequence img { position: absolute;
+  max-width: none; max-height: none; }
+.comparison-assets { display: none; }
+.comparison-pending .comparison-panel .frame-sequence { visibility: hidden; }
+.comparison-status { font-variant-numeric: tabular-nums; }
+@media (max-width: 44rem) {
+  .comparison-panels { grid-template-columns: 1fr; }
+}
 @media (prefers-color-scheme: dark) {
   body { background: #171c23; color: #ebeff5; }
   header, .item { background: #252d38; }

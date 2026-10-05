@@ -1,82 +1,425 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kindjie/agent-kit/blob/main/bin/review-sheet.schema.json",
-  "title": "Review sheet description, stage 1",
+  "title": "Review sheet description",
   "type": "object",
-  "required": ["review"],
+  "required": [
+    "review"
+  ],
   "properties": {
-    "review": {"type": "string", "minLength": 1},
-    "title": {"type": "string"},
-    "instructions": {"type": "string"},
-    "caveats": {"type": "array", "items": {"type": "string"}},
-    "privacy": {"enum": ["private", "shareable"]},
-    "context": {"type": "object"},
-    "decisions": {"$ref": "#/$defs/decisions"},
-    "decisions_review": {"$ref": "#/$defs/decisions"},
-    "items": {"type": "array", "items": {"$ref": "#/$defs/item"}},
-    "groups": {"type": "array", "items": {"$ref": "#/$defs/group"}}
+    "review": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "instructions": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "caveats": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "privacy": {
+      "anyOf": [
+        {
+          "enum": [
+            "private",
+            "shareable"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "context": {
+      "anyOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "extends": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "components": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "group_defaults": {
+      "anyOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "settings": {
+      "anyOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "decisions": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/decision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "decisions_review": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/decisions"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "items": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/item"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "groups": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/group"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
   },
   "additionalProperties": false,
   "$defs": {
     "decisions": {
-      "type": "object", "additionalProperties": {"$ref": "#/$defs/decision"}
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/decision"
+      }
     },
     "decision": {
-      "type": "object", "required": ["kind"],
+      "type": "object",
+      "required": [
+        "kind"
+      ],
       "properties": {
-        "kind": {"enum": ["choice", "boolean", "flags", "text", "number"]},
-        "question": {"type": "string"},
-        "required": {"type": "boolean"},
-        "authority": {"type": "boolean"},
-        "options": {"type": "array", "minItems": 1,
-          "items": {"type": "string"}, "uniqueItems": true},
-        "keys": {"type": "string"},
-        "unit": {"type": "string"},
-        "min": {"type": "number"},
-        "max": {"type": "number"}
+        "kind": {
+          "enum": [
+            "choice",
+            "boolean",
+            "flags",
+            "text",
+            "number"
+          ]
+        },
+        "question": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "authority": {
+          "type": "boolean"
+        },
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "keys": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "min": {
+          "type": "number"
+        },
+        "max": {
+          "type": "number"
+        }
       },
       "additionalProperties": false
     },
     "media": {
-      "type": "object", "required": ["kind", "src"],
+      "type": "object",
+      "required": [
+        "kind",
+        "src"
+      ],
       "properties": {
-        "kind": {"enum": ["image", "animated", "video", "audio",
-                         "text", "link"]},
-        "src": {"type": "string"},
-        "alt": {"type": "string"},
-        "fps": {"type": "number", "exclusiveMinimum": 0}
+        "kind": {
+          "type": "string"
+        },
+        "src": {
+          "type": "string"
+        },
+        "alt": {
+          "type": "string"
+        },
+        "fps": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "view": {
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "reference",
+            "embed"
+          ]
+        }
       },
       "additionalProperties": false
     },
     "item": {
-      "type": "object", "required": ["id"],
+      "type": "object",
+      "required": [
+        "id"
+      ],
       "properties": {
-        "id": {"type": "string", "minLength": 1},
-        "title": {"type": "string"},
-        "media": {"type": "array", "items": {"$ref": "#/$defs/media"}},
-        "fields": {"type": "object", "additionalProperties":
-          {"type": ["string", "number", "boolean", "null"]}},
-        "evidence": {"type": "object"},
-        "decisions": {"$ref": "#/$defs/decisions"},
-        "prefill": {"type": "object", "required": ["source", "values"],
-          "properties": {"source": {"type": "string"},
-                         "values": {"type": "object"}},
-          "additionalProperties": false}
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string"
+        },
+        "media": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/media"
+          }
+        },
+        "fields": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "evidence": {
+          "type": "object"
+        },
+        "decisions": {
+          "$ref": "#/$defs/decisions"
+        },
+        "prefill": {
+          "type": "object",
+          "required": [
+            "source",
+            "values"
+          ],
+          "properties": {
+            "source": {
+              "type": "string"
+            },
+            "values": {
+              "type": "object"
+            }
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },
     "group": {
-      "type": "object", "required": ["id", "items"],
+      "type": "object",
+      "required": [
+        "id",
+        "items"
+      ],
       "properties": {
-        "id": {"type": "string", "minLength": 1},
-        "title": {"type": "string"},
-        "layout": {"enum": ["list", "grid"]},
-        "items": {"type": "array", "items": {"$ref": "#/$defs/item"}},
-        "decisions": {"$ref": "#/$defs/decisions"},
-        "pick": {"type": "object", "required": ["kind"],
-          "properties": {"kind": {"const": "best"},
-                         "required": {"type": "boolean"}},
-          "additionalProperties": false}
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string"
+        },
+        "layout": {
+          "enum": [
+            "list",
+            "grid",
+            "synchronized-comparison"
+          ]
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/item"
+          }
+        },
+        "decisions": {
+          "$ref": "#/$defs/decisions"
+        },
+        "comparison": {
+          "type": "object",
+          "required": [
+            "reference",
+            "candidates",
+            "views",
+            "fps",
+            "motion_frames",
+            "hold_start",
+            "hold_end",
+            "frame_count",
+            "key_frames",
+            "crops"
+          ],
+          "properties": {
+            "reference": {
+              "type": "string"
+            },
+            "candidates": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "views": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "fps": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "motion_frames": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "hold_start": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hold_end": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "frame_count": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "key_frames": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              }
+            },
+            "crops": {
+              "type": "object"
+            },
+            "reveal": {
+              "type": "object"
+            }
+          },
+          "additionalProperties": false
+        },
+        "pick": {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "best"
+            },
+            "required": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     }

@@ -1,4 +1,4 @@
-ReviewSheet.register({kind: 'animated', version: '1.0.0',
+ReviewSheet.register({kind: 'animated', version: '1.0.0', api: 1,
   render(media, api) {
     const box = document.createElement('div');
     const image = document.createElement('img');

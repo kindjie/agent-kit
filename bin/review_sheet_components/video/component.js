@@ -1,4 +1,4 @@
-ReviewSheet.register({kind: 'video', version: '1.0.0',
+ReviewSheet.register({kind: 'video', version: '1.0.0', api: 1,
   render(media, api) {
     const box = document.createElement('div');
     const video = document.createElement('video');
@@ -32,4 +32,9 @@ ReviewSheet.register({kind: 'video', version: '1.0.0',
       if (end !== null && video.currentTime >= end) video.currentTime = start;
     });
     box.append(video, step, loop); return box;
+  },
+  blur(box) { box.querySelector('video')?.pause(); },
+  dispose(box) {
+    const video = box.querySelector('video');
+    video.pause(); video.removeAttribute('src');
   }});
