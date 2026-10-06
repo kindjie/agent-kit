@@ -302,6 +302,30 @@ class ActivityTest(unittest.TestCase):
       frame = ui.frame(260, height, 1001)
       self.assertLessEqual(len(frame), height)
 
+  def test_wide_work_summary_is_visible_beside_session_and_activity(self):
+    ui = importlib.import_module('agent_activity_live').AgentView()
+    row = agent('summary', phase='thinking')
+    row.update(session_title='Example session', work='Validate rendering',
+               work_source='summary', now='Bash: run-tests')
+    ui.update([row], 1001)
+    frame = ui.frame(420, 15, 1001)
+    headings = [text.strip() for text in frame[1][0].split(' │ ')]
+    values = frame[2][0].split(' │ ')
+    self.assertIn('Work', headings)
+    self.assertIn('Example session', values[headings.index('Session')])
+    self.assertEqual(values[headings.index('Work')].strip(), 'Validate rendering')
+    self.assertEqual(values[headings.index('Current activity')].strip(),
+                     'Bash: run-tests')
+    row.update(work='Long work summary ' * 8, work_brief='Validate output',
+               summary_outdated=True)
+    ui.update([row], 1001)
+    frame = ui.frame(210, 15, 1001)
+    headings = [text.strip() for text in frame[1][0].split(' │ ')]
+    values = frame[2][0].split(' │ ')
+    self.assertEqual(values[headings.index('Work')].strip(), '~ Validate output')
+    self.assertNotIn('Work', [text.strip() for text in
+                            ui.frame(160, 15, 1001)[1][0].split(' │ ')])
+
   def test_wide_agent_labels_remain_distinguishable(self):
     ui = importlib.import_module('agent_activity_live').AgentView()
     rows = [agent('review-a'), agent('review-b')]

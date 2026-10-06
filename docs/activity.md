@@ -21,8 +21,11 @@ observed activity details, and `?` opens scrollable controls and state help.
 Descendant summaries stay visible when a group is collapsed.
 
 At 160 columns, the view adds labelled Session, Agent, Status / subagents
-and Current activity columns. At 210 columns it also shows Model, and at
-260 it adds Directory. Extra width goes to the session title and activity;
+and Current activity columns. At 210 columns it also shows Work and Model,
+and at 260 it adds Directory. Work shows the generated summary or a recent
+owner-message excerpt when no summary is available. It uses the brief summary
+when that fits better; `~` marks a cached summary whose inputs have changed.
+Extra width goes to the session title, work and activity;
 extra height shows more agents. Smaller panes retain the compact tree.
 Current activity uses the recorded step, falling back to the work summary
 when no step is available. Enter still opens the full details.

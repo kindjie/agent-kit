@@ -34,13 +34,20 @@ def wide_columns(width, identity_width=14):
              ('Status / subagents', 40),
              ('Current activity', 0)]
   if width >= 209:
+    columns.insert(3, ('Work', 0))
     columns.append(('Model', 24))
   if width >= 259:
     columns.append(('Directory', 32))
   spare = width - sum(size for _, size in columns) - 3 * (len(columns) - 1)
-  title = min(96, spare * 45 // 100)
+  if width >= 209:
+    title = min(96, spare * 25 // 100)
+    work = min(120, spare * 35 // 100)
+    columns[3] = ('Work', work)
+    columns[4] = ('Current activity', spare - title - work)
+  else:
+    title = min(96, spare * 45 // 100)
+    columns[3] = ('Current activity', spare - title)
   columns[0] = ('Session', title)
-  columns[3] = ('Current activity', spare - title)
   return columns
 
 
@@ -353,6 +360,8 @@ class AgentView:
           ('Unknown', 'No usable status observation'),
           ('?', 'Status uncertain; age and details explain why')]),
         ('Reading the view', [('Groups', 'Summaries include collapsed descendants'),
+          ('Work', 'Generated work summary or recent owner-message excerpt'),
+          ('~ Work', 'Cached summary is outdated; refresh may be pending'),
           ('Refresh', 'Selection and collapse choices survive updates'),
           ('N+ agents', 'At least N discovered; details explain missing evidence'),
           ('Evidence', 'Local observations, not proof of process liveness')]),
@@ -424,7 +433,16 @@ class AgentView:
           identity = self.labels[key]
           if cells(identity) > identity_width:
             identity = self.short_labels[key]
-          values = [label, identity, status, current]
+          values = [label, identity, status]
+          if width >= 209:
+            marker = '~ ' if a.get('summary_outdated') else ''
+            work = a.get('work') or 'unknown'
+            brief = a.get('work_brief')
+            if (cells(marker + work) > columns[3][1] and brief and
+                cells(marker + brief) <= columns[3][1]):
+              work = brief
+            values.append(marker + work)
+          values.append(current)
           if width >= 209:
             values.append(a.get('model') or 'unknown')
           if width >= 259:
