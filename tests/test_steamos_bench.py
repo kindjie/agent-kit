@@ -360,6 +360,68 @@ class SteamosBenchTest(unittest.TestCase):
     self.assertIsNone(result['exit_status'])
     self.assertFalse((self.device_home() / 'sudo.log').exists())
 
+  def test_configured_mains_only_empty_supplies_pass_status_and_bench(self):
+    root = self.fixture()
+    for name in ('type', 'online'):
+      (root / 'class/power_supply/AC' / name).unlink()
+    (root / 'class/power_supply/AC').rmdir()
+    # No hardware classification or configuration: keep the power unknown.
+    status = json.loads(self.run_cli('status', '--json').stdout)
+    self.assertFalse(status['external_power'])
+    _, result, _ = self.bench('--require-power', command=['true'], code=1)
+    self.assertIsNone(result['exit_status'])
+    self.configure({'devices': {'unit': {'name': 'unit',
+      'address': '10.0.0.5', 'mains_only': True}}})
+    status = json.loads(self.run_cli('status', '--json').stdout)
+    self.assertTrue(status['external_power'])
+    self.assertEqual(status['external_power_source'], 'configured-mains-only')
+    self.assertIn('configured mains-only', self.run_cli('status').stdout)
+    _, result, _ = self.bench('--require-power', command=['true'])
+    self.assertEqual(result['exit_status'], 0)
+    self.assertEqual(result['power']['before']['external_power_source'],
+                     'configured-mains-only')
+
+  def test_mains_only_never_overrides_reported_supply_or_missing_sysfs(self):
+    root = self.fixture()
+    self.configure({'devices': {'unit': {'name': 'unit',
+      'address': '10.0.0.5', 'mains_only': True}}})
+    supply = root / 'class/power_supply/AC'
+    (supply / 'online').write_text('0\n')
+    _, result, _ = self.bench('--require-power', command=['true'], code=1)
+    self.assertIsNone(result['exit_status'])
+    (supply / 'type').write_text('Battery\n')
+    # Missing battery capacity must not imply a battery-less machine.
+    status = json.loads(self.run_cli('status', '--json').stdout)
+    self.assertFalse(status['external_power'])
+    self.assertIn('unknown (external power not confirmed)',
+                  self.run_cli('status').stdout)
+    _, result, _ = self.bench('--require-power', command=['true'], code=1)
+    self.assertIsNone(result['exit_status'])
+    self.env['STEAMOS_TEST_SYSFS'] = str(root / 'missing')
+    status = json.loads(self.run_cli('status', '--json').stdout)
+    self.assertFalse(status['external_power'])
+
+  def test_peripheral_battery_is_not_system_power(self):
+    root = self.fixture()
+    supply = root / 'class/power_supply/AC'
+    (supply / 'type').write_text('Battery\n')
+    (supply / 'scope').write_text('Device\n')
+    self.configure({'devices': {'unit': {'name': 'unit',
+      'address': '10.0.0.5', 'mains_only': True}}})
+    status = json.loads(self.run_cli('status', '--json').stdout)
+    self.assertTrue(status['external_power'])
+    (supply / 'scope').unlink()
+    (supply / 'type').unlink()
+    status = json.loads(self.run_cli('status', '--json').stdout)
+    self.assertFalse(status['external_power'])
+
+  def test_mains_only_requires_boolean_configuration(self):
+    self.configure({'devices': {'unit': {'name': 'unit',
+      'mains_only': 'true'}}})
+    proc = self.run_cli('status', code=2)
+    self.assertIn('mains_only', proc.stderr)
+    self.assertFalse((self.root / 'hosts.log').exists())
+
   def test_lease_required_and_expiry_refused(self):
     self.fixture()
     self.run_cli('bench', 'run', '--', 'true', holder='other', code=1)

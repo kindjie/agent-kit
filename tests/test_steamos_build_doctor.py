@@ -223,12 +223,15 @@ class BuildDoctorTest(unittest.TestCase):
 
   def test_doctor_mains_only_and_unleased_inhibitor(self):
     sysfs = self.root / 'empty-sysfs'
-    sysfs.mkdir()
+    (sysfs / 'class/power_supply').mkdir(parents=True)
     self.env['STEAMOS_TEST_SYSFS'] = str(sysfs)
+    self.assertEqual(self.doctor_checks()['power']['status'], 'warn')
+    self.configure({'devices': {'unit': {'name': 'unit',
+      'address': '10.0.0.5', 'mains_only': True}}})
     checks = self.doctor_checks()
     self.assertEqual(checks['power'], {
       'scope': 'device:unit', 'name': 'power', 'status': 'ok',
-      'message': 'mains (no battery reported)'})
+      'message': 'external power (configured mains-only device)'})
     self.assertEqual(checks['sleep-inhibition']['status'], 'ok')
     info = self.device_home() / '.agent-kit-steamos-lease' / 'info'
     info.parent.mkdir()

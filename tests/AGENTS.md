@@ -80,7 +80,10 @@ Build/doctor tests use fake tools and ssh to check literal argv, overlay
 precedence, limited expansion, required inputs, redaction, post-build stage,
 offline project checks and read-only device diagnostics.
 Doctor fixtures cover foreign and caller leases, configured governor helpers
-with multi-line sudo rules, mains-only power, and idle sleep inhibition.
+with multi-line sudo rules, configured mains-only power, and idle sleep
+inhibition. Power fixtures cover empty supplies with and without the explicit
+hardware assertion, battery telemetry missing capacity, offline AC, missing
+sysfs, peripheral batteries, malformed entries, and non-boolean configuration.
 Remote-interpreter instrumentation checks actual atomic replace without an
 unlink of current, and maps synthetic proc symlinks for running-version
 retention/list coverage. Retention fixtures protect outside targets and

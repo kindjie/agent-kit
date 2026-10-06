@@ -64,6 +64,15 @@ it. With an `address`, that is tried first and the name (`NAME.local`)
 is the fallback. Optional per device: `user` (default `deck`) and `key`
 (default `~/.config/steamos-devkit/devkit_rsa`, the Devkit Client's key,
 when that file exists; otherwise ssh's own configuration applies).
+For a known battery-less desktop whose firmware exposes no system power
+supplies, set `mains_only: true` on that device. This is an explicit hardware
+assertion, not automatic detection from missing battery telemetry. The
+fallback requires a readable power-supply directory with no system supplies;
+reported batteries, offline supplies, and unreadable entries prevent it.
+Peripheral supplies with `scope=Device` do not describe system power.
+Status and benchmark JSON label this evidence as
+`external_power_source: configured-mains-only`; an online AC/USB supply uses
+`online-supply`. Missing evidence is `unknown`, never an implicit mains claim.
 For wake, configure `mac` as six colon-separated hexadecimal bytes,
 and optionally `broadcast` as an IPv4 address (default
 `255.255.255.255`). On multi-homed hosts, set `broadcast` to the subnet
@@ -537,7 +546,8 @@ bypass an active run. This also prevents interleaved governor restoration
 when a lease expires during a run.
 
 - `--require-power` refuses unless the existing status power fields confirm
-  an online `Mains` or `USB` supply. Unknown power also refuses.
+  an online `Mains` or `USB` supply, or the configured `mains_only` fallback
+  described above applies. Unknown power also refuses.
 - `--pin-governor` snapshots each CPU's governor and pins all to `performance`.
   It verifies `sudo -n` access to restore each saved value before pinning.
   Every cleanup path attempts every CPU's restoration and compares read-back,

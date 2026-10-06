@@ -174,7 +174,7 @@ def doctor_command(options, api):
     try:
       helper_path = api.governor_helper(machine)
       script = 'helper=' + shlex.quote(helper_path) + '\n' + \
-        api.STATUS_SCRIPT + DOCTOR_SCRIPT
+        api.status_script(entry) + DOCTOR_SCRIPT
       proc = api.ssh(entry, script, [], timeout=15)
       if proc.returncode:
         raise api.Failure(api.UNREACHABLE, proc.stderr.strip() or
@@ -215,16 +215,8 @@ def doctor_command(options, api):
       else:
         add(scope, 'free-space', 'warn',
             f'{free or "unknown"} bytes free; bundle size unknown')
-      battery = facts.get('battery_percent', '')
-      if not battery:
-        power = 'mains (no battery reported)'
-      elif not battery.isdigit():
-        power = 'unknown'
-      elif facts.get('external_power') == 'yes':
-        power = f'external power, battery {battery}%'
-      else:
-        power = f'battery {battery}%'
-      add(scope, 'power', 'ok' if power != 'unknown' else 'warn', power)
+      power = api.power_text(facts)
+      add(scope, 'power', 'warn' if power.startswith('unknown') else 'ok', power)
       try:
         pin = api.devkit_pin(machine)[1]
         installed = facts.get('devkit_commit', '')

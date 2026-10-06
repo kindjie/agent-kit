@@ -266,18 +266,33 @@ esac
 
 # Shared read-only power fields, also saved with benchmark results.
 POWER_SCRIPT = r'''
-for supply in "${STEAMOS_TEST_SYSFS:-/sys}"/class/power_supply/*; do
-  [ -r "$supply/type" ] || continue
+supplies=${STEAMOS_TEST_SYSFS:-/sys}/class/power_supply
+power_scan=complete
+system_supply=no
+if [ ! -d "$supplies" ] || [ ! -r "$supplies" ] || [ ! -x "$supplies" ]; then
+  power_scan=incomplete
+fi
+for supply in "$supplies"/*; do
+  [ -e "$supply" ] || [ -L "$supply" ] || continue
+  [ "$(cat "$supply/scope" 2>/dev/null)" = Device ] && continue
+  system_supply=yes
+  [ -r "$supply/type" ] || { power_scan=incomplete; continue; }
   case $(cat "$supply/type") in
     Mains|USB)
       if [ "$(cat "$supply/online" 2>/dev/null)" = 1 ]; then
         echo external_power=yes
+        echo external_power_source=online-supply
       fi ;;
     Battery)
       echo "battery_percent=$(cat "$supply/capacity" 2>/dev/null)"
       echo "battery_status=$(cat "$supply/status" 2>/dev/null)" ;;
   esac
 done
+if [ "${mains_only:-false}" = true ] && [ "$power_scan" = complete ] &&
+   [ "$system_supply" = no ]; then
+  echo external_power=yes
+  echo external_power_source=configured-mains-only
+fi
 '''
 
 # Read-only device facts. Prints key=value lines.
@@ -340,9 +355,30 @@ def device(config, name):
     known = ', '.join(sorted(config['devices']))
     raise Failure(USAGE, f'unknown device {name!r}; configured: {known}')
   entry = dict(config['devices'][name])
+  if type(entry.get('mains_only', False)) is not bool:
+    raise Failure(USAGE, 'device mains_only must be true or false')
   entry.setdefault('name', name)
   entry.setdefault('user', 'deck')
   return name, entry
+
+
+def status_script(entry):
+  return ('mains_only=' + str(entry.get('mains_only', False)).lower() +
+          '\n' + STATUS_SCRIPT)
+
+
+def power_text(fields):
+  if fields.get('external_power') == 'yes':
+    if fields.get('external_power_source') == 'configured-mains-only':
+      return 'external power (configured mains-only device)'
+    power = 'external power'
+  elif str(fields.get('battery_percent', '')).isdigit():
+    power = 'battery'
+  else:
+    return 'unknown (external power not confirmed)'
+  battery = str(fields.get('battery_percent', ''))
+  return power + (f', battery {battery}%' if battery.isdigit() else
+                  ' (battery level unavailable)')
 
 
 def targets(entry):
@@ -810,7 +846,7 @@ def title_command(options):
   if options.action != 'list':
     require_lease(config, name, entry, f'title {options.action}')
   _, commit = devkit_pin(config)
-  proc = ssh(entry, STATUS_SCRIPT, [])
+  proc = ssh(entry, status_script(entry), [])
   if proc.returncode != 0:
     raise Failure(UNREACHABLE, f'device status failed: {proc.stderr.strip()}')
   facts = parse(proc.stdout)
@@ -1099,7 +1135,7 @@ def deploy_command(options):
       bundle, manifest, version = local_stage(root, project_config)
     require_lease(config, name, entry, 'deploy')
     _, commit = devkit_pin(config)
-    facts = ssh(entry, STATUS_SCRIPT, [])
+    facts = ssh(entry, status_script(entry), [])
     if facts.returncode != 0:
       raise Failure(UNREACHABLE, 'device status failed: ' + facts.stderr.strip())
     if parse(facts.stdout).get('devkit_commit') != commit:
@@ -1245,7 +1281,7 @@ def status_command(options):
   config = load_config()
   name, entry = device(config, options.device)
   policy, grace, legacy = lease_policy(config)
-  script = STATUS_SCRIPT + LEASE_SCRIPT
+  script = status_script(entry) + LEASE_SCRIPT
   proc = ssh(entry, script, ['show', '', '', 0, grace, '',
                            str(policy.get('prevent_sleep', True)).lower(),
                            *legacy])
@@ -1265,6 +1301,7 @@ def status_command(options):
   for key in ('free_bytes', 'uptime_seconds', 'battery_percent'):
     status[key] = int(values[key]) if values.get(key, '').isdigit() else None
   status['external_power'] = values.get('external_power') == 'yes'
+  status['external_power_source'] = values.get('external_power_source', 'unknown')
   status['lease'] = lease_summary(values)
   if selected_project is not None:
     root, project_config = selected_project
@@ -1279,11 +1316,7 @@ def status_command(options):
     print(json.dumps(status, indent=2))
     return OK
   free = status['free_bytes']
-  if status['battery_percent'] is None:
-    power = 'mains (no battery reported)'
-  else:
-    power = 'external power' if status['external_power'] else 'battery'
-    power += f', battery {status["battery_percent"]}%'
+  power = power_text(values)
   rows = [
     ('Device', f'{name} ({status["hostname"]}, {status["model"]})'),
     ('SteamOS', f'{status["os_version"] or "unknown"} build '
@@ -1733,12 +1766,15 @@ def governors():
   return result
 
 def power():
-  proc = subprocess.run(['sh', '-c', power_script],
+  configured = 'true' if request.get('mains_only') is True else 'false'
+  proc = subprocess.run(['sh', '-c', 'mains_only=' + configured + '\n' +
+                         power_script],
                         capture_output=True, text=True)
   fields = dict(line.split('=', 1) for line in proc.stdout.splitlines()
                 if '=' in line)
   percent = fields.get('battery_percent', '')
   return {'external_power': fields.get('external_power') == 'yes',
+          'external_power_source': fields.get('external_power_source', 'unknown'),
           'battery_percent': int(percent) if percent.isdigit() else None,
           'battery_status': fields.get('battery_status', '')}
 
@@ -2083,6 +2119,7 @@ def bench_command(options):
     raise Failure(USAGE, 'scp is needed to download benchmark results')
   require_lease(config, name, entry, 'bench run')
   request = {'command': command, 'pin_governor': options.pin_governor,
+             'mains_only': entry.get('mains_only', False),
              'require_power': options.require_power, 'cpus': options.cpus,
              'perf_stat': options.perf_stat, 'thermals': options.thermals,
              'keep_runs': keep_runs, 'governor_helper': helper}
