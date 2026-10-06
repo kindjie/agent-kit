@@ -31,6 +31,11 @@ from typing import Any, Iterable, Iterator
 from types import SimpleNamespace
 
 
+# Resolve companions even through an individually symlinked command.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from agent_quota_accounts import alternate_accounts
+
+
 SCHEMA_VERSION = 3
 VERSION = "0.6.0"
 CLAUDE_FRESH_SECONDS = 3600
@@ -1761,23 +1766,9 @@ def archived_accounts(
   accounts are not queried: the values are last observations, not claims
   about the accounts now. Newest check first."""
   moment = now or utc_now()
-  services = document.get("services")
-  services = services if isinstance(services, dict) else {}
   archived: list[dict[str, Any]] = []
   for service_id, cache_name in ACCOUNT_ARCHIVES.items():
-    cache = document.get(cache_name)
-    if service_id not in services or not isinstance(cache, dict):
-      continue
-    active = (services.get(service_id) or {}).get("account")
-    active_key = active.get("key") if isinstance(active, dict) else None
-    for key, service in cache.items():
-      if not isinstance(service, dict) or key == active_key:
-        continue
-      account = service.get("account")
-      if not isinstance(account, dict) or account.get("key") != key:
-        continue
-      if not service.get("limits"):
-        continue
+    for service in alternate_accounts(document, service_id, cache_name):
       archived.append(reevaluate_service(service, moment))
   archived.sort(
     key=lambda item: item["account"].get("observed_at") or "", reverse=True,

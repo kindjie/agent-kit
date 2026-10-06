@@ -82,6 +82,45 @@ class SnapshotIdentityTest(unittest.TestCase):
     result = self.collect(failed, current, NOW + timedelta(minutes=40))
     self.assertEqual(result["services"]["codex"]["limits"], [])
 
+  def test_legacy_account_is_replaced_in_alternatives_after_upgrade(self):
+    legacy = self.collect(self.snapshot(None, plan="prolite"))
+    current = self.collect(self.snapshot(plan="promax"), legacy,
+                           NOW + timedelta(minutes=20))
+    before = copy.deepcopy(current)
+    self.assertEqual(QUOTA.archived_accounts(current, NOW), [])
+    self.assertTrue(all(event['active'] for event in
+                        QUOTA.timeline_events(current, NOW)))
+    self.assertEqual(current, before)  # Keep raw history intact.
+    other = self.snapshot("other-account", plan="pro")
+    for key in ("account_before", "account_after"):
+      other[key]["result"]["account"]["email"] = "other@example.test"
+    switched = self.collect(other, current, NOW + timedelta(minutes=40))
+    alternatives = QUOTA.archived_accounts(switched, NOW)
+    self.assertEqual([a["account"]["plan"] for a in alternatives], ["promax"])
+    self.assertNotIn('prolite', QUOTA.render_brief(switched))
+
+  def test_identity_migration_without_plan_change_hides_legacy_alternative(self):
+    legacy = self.collect(self.snapshot(None, plan="pro"))
+    current = self.collect(self.snapshot(plan="pro"), legacy,
+                           NOW + timedelta(minutes=20))
+    self.assertEqual(QUOTA.archived_accounts(current, NOW), [])
+
+  def test_distinct_provider_ids_remain_alternatives(self):
+    first = self.collect(self.snapshot(plan="prolite"))
+    second = self.collect(self.snapshot("workspace-b", plan="promax"), first,
+                          NOW + timedelta(minutes=20))
+    self.assertEqual(len(QUOTA.archived_accounts(second, NOW)), 1)
+
+  def test_legacy_suppression_requires_later_valid_provider_snapshot(self):
+    legacy = self.collect(self.snapshot(None, plan="pro"))
+    for stamp in (None, "invalid", QUOTA.iso_utc(NOW - timedelta(minutes=1))):
+      current = self.collect(self.snapshot(), legacy,
+                             NOW + timedelta(minutes=20))
+      live = current["services"]["codex"]
+      live["account"]["observed_at"] = stamp
+      current["codex_accounts"][live["account"]["key"]] = copy.deepcopy(live)
+      self.assertEqual(len(QUOTA.archived_accounts(current, NOW)), 1)
+
   def test_missing_id_after_adoption_keeps_live_quota_without_old_history(self):
     current = self.collect(self.snapshot(plan="pro"))
     downgraded = self.collect(self.snapshot(None, plan="pro"), current,

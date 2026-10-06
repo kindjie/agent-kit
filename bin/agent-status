@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import Any
 
 
+# Resolve companions even through an individually symlinked command.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from agent_quota_accounts import alternate_accounts
+
+
 SCHEMA_VERSION = 3
 REFRESH_AFTER_SECONDS = 60
 PACE_GLYPHS = {
@@ -407,19 +412,9 @@ def inactive_reset(
   that are not queried, never claims about them now."""
   if not valid_report(report):
     return None
-  archive = report.get(ACCOUNT_ARCHIVES[service_id])
-  if not isinstance(archive, dict):
-    return None
-  active = report["services"].get(service_id)
-  account = active.get("account") if isinstance(active, dict) else None
-  active_key = account.get("key") if isinstance(account, dict) else None
   soonest: datetime | None = None
-  for key, service in archive.items():
-    if not isinstance(service, dict) or key == active_key:
-      continue
-    account = service.get("account")
-    if not isinstance(account, dict) or account.get("key") != key:
-      continue
+  for service in alternate_accounts(
+      report, service_id, ACCOUNT_ARCHIVES[service_id]):
     for item in limits_of(service):
       if item["window"].get("label") != "weekly":
         continue
@@ -449,15 +444,8 @@ def inactive_ready(
   after the account was last checked. Never names the account."""
   if not valid_report(report):
     return False
-  archive = report.get(ACCOUNT_ARCHIVES[service_id])
-  if not isinstance(archive, dict):
-    return False
-  active = report["services"].get(service_id)
-  account = active.get("account") if isinstance(active, dict) else None
-  active_key = account.get("key") if isinstance(account, dict) else None
-  for key, service in archive.items():
-    if not isinstance(service, dict) or key == active_key:
-      continue
+  for service in alternate_accounts(
+      report, service_id, ACCOUNT_ARCHIVES[service_id]):
     ready = parse_timestamp(service.get("ready_at"))
     account = service.get("account")
     observed = parse_timestamp(

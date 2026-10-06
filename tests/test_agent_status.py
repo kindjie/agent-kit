@@ -474,6 +474,28 @@ class AgentStatusTest(unittest.TestCase):
                                                             now=NOW))
       self.assertNotIn("alt ready", rendered, (observed, ready_at))
 
+  def test_codex_superseded_snapshot_cannot_offer_alt_ready_or_reset(self):
+    for reset in ('2026-08-19T20:00:00Z', '2026-08-20T01:00:00Z'):
+      doc = report()
+      active = doc['services']['codex']
+      active['account'] = dict(key='a' * 64, label='same@example.test',
+        source='codex.account/rateLimits/read',
+        observed_at='2026-08-19T21:00:00Z')
+      legacy = archived_account('codex', 'b' * 64, 0, reset)
+      legacy['account'].update(label='same@example.test',
+        source='codex.account/read', observed_at='2026-08-19T10:00:00Z')
+      legacy['ready_at'] = reset
+      doc['codex_accounts'] = {'b' * 64: legacy}
+      self.assertFalse(AGENT_STATUS.inactive_ready(doc, 'codex', now=NOW))
+      self.assertIsNone(AGENT_STATUS.inactive_reset(doc, 'codex', now=NOW))
+      for width in (80, 160):
+        self.assertNotIn('alt', strip_tmux_styles(
+          AGENT_STATUS.render_tmux(doc, width, now=NOW)))
+      # A separate quota identity is still a valid alternative.
+      legacy['account']['source'] = 'codex.account/rateLimits/read'
+      self.assertIn('alt', strip_tmux_styles(
+        AGENT_STATUS.render_tmux(doc, 160, now=NOW)))
+
   def test_tmux_inactive_reset_is_dim_and_never_names_the_account(
     self,
   ) -> None:

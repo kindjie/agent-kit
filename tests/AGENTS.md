@@ -213,6 +213,10 @@ These tests use synthetic provider snapshots to cover namespaced quota-ID
 hashes without raw-ID persistence, same-email workspace isolation and return,
 identity-source upgrades, failed reads, malformed or absent IDs, routing
 changes, summary rechecks, and partial daily coverage without zero filling.
+Legacy-account display tests cover plan changes, identity migration without
+a plan change, inactive logins, preserved snapshots, and distinct quota IDs.
+The status suite also checks that superseded snapshots cannot produce tmux
+alternate-ready or alternate-reset hints at either display width.
 
 ## Agent Quota
 

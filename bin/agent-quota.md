@@ -269,7 +269,13 @@ that file can still race with collection. This tool never switches accounts.
 
 ## Accounts not checked now
 
-`--brief` and `--verbose` list every archived snapshot whose account is not
+Alternate-account lists, timeline events and tmux alternate hints omit a
+legacy Codex email-keyed snapshot once a later quota-ID snapshot exists for
+the same login, including
+after a plan upgrade. Saved snapshots remain intact; quota and credit history
+are not merged. Distinct quota IDs remain separate even with the same email.
+
+`--brief` and `--verbose` list eligible archived snapshots whose account is not
 the one its service just checked, newest check first, under `Other accounts
 (historical; unverified)`. In `--brief`, these snapshots and reset-based
 availability estimates follow the current quota and credit tables. In
