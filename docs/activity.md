@@ -20,6 +20,13 @@ Space folds a parent group; Left/Right move through the tree. Enter opens
 observed activity details, and `?` opens scrollable controls and state help.
 Descendant summaries stay visible when a group is collapsed.
 
+At 160 columns, the view adds labelled Session, Agent, Status / subagents
+and Current activity columns. At 210 columns it also shows Model, and at
+260 it adds Directory. Extra width goes to the session title and activity;
+extra height shows more agents. Smaller panes retain the compact tree.
+Current activity uses the recorded step, falling back to the work summary
+when no step is available. Enter still opens the full details.
+
 The default sort puts working agents and groups with working descendants
 first, preserving collector activity order within each tier. Uncertain
 `Working?` observations stay in the remaining tier. Press `s` to cycle

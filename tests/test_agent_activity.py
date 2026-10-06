@@ -256,6 +256,68 @@ class ActivityTest(unittest.TestCase):
     for width in (1, 25, 60, 120):
       self.assertTrue(all(cells(t) < width for t, _ in ui.frame(width, 15, 1001)))
 
+  def test_large_terminal_columns_and_resize(self):
+    ui = importlib.import_module('agent_activity_live').AgentView()
+    root = agent('root')
+    root.update(session_title='猫 Build overview', now='Checking render output',
+                model='example-model', cwd='/workspace/example/src')
+    child = agent('child', 'root', 'thinking')
+    ui.update([root, child], 1001)
+    from agent_records_live import cells
+    for width in (160, 210, 260, 420):
+      frame = ui.frame(width, 60, 1001)
+      self.assertIn('Current activity', frame[1][0])
+      self.assertIn('Checking render output', frame[2][0])
+      self.assertIn('1 working', frame[2][0])
+      if width >= 210:
+        self.assertIn('example-model', frame[2][0])
+      if width >= 260:
+        self.assertIn('/workspace/example/src', frame[2][0])
+      self.assertTrue(all(cells(t) < width for t, _ in frame))
+      headings = frame[1][0].split(' │ ')
+      values = frame[2][0].split(' │ ')
+      self.assertEqual([cells(t) for t in headings[:-1]],
+                       [cells(t) for t in values[:-1]])
+      ui.mouse('click', 2, 2, 50)
+      self.assertEqual(ui.collapsed['codex:root'], False)
+      ui.frame(width, 60, 1001)
+      ui.mouse('click', 8, 3, 50)
+      self.assertEqual(ui.selected, 'codex:child')
+      ui.key('LEFT', 50)
+      ui.key('LEFT', 50)
+    small = ui.frame(120, 10, 1001)
+    self.assertNotIn('Current activity', str(small))
+    self.assertEqual(ui.selected, 'codex:root')
+
+  def test_large_terminal_scroll_range_and_small_height(self):
+    ui = importlib.import_module('agent_activity_live').AgentView()
+    ui.update([agent(str(n)) for n in range(100)], 1001)
+    frame = ui.frame(420, 60, 1001)
+    self.assertIn('Rows 1-57/100', frame[-1][0])
+    ui.key('G', 57)
+    frame = ui.frame(420, 60, 1001)
+    self.assertIn('Rows 44-100/100', frame[-1][0])
+    self.assertIn(ui.selected, [key for key, _ in ui.mouse_rows.values()])
+    for height in (1, 2, 4, 5, 12):
+      frame = ui.frame(260, height, 1001)
+      self.assertLessEqual(len(frame), height)
+
+  def test_wide_agent_labels_remain_distinguishable(self):
+    ui = importlib.import_module('agent_activity_live').AgentView()
+    rows = [agent('review-a'), agent('review-b')]
+    for row, suffix in zip(rows, ('quota', 'layout')):
+      row['label'] = '/root/review_dashboard_' + suffix
+    for prefix in ('', 'very_long_label_' * 5):
+      for row in rows:
+        row['label'] = prefix + row['label']
+      ui.update(rows, 1001)
+      for width in (160, 420):
+        frame = ui.frame(width, 60, 1001)
+        identities = [line.split(' │ ')[1].strip()
+                      for line, _ in frame[2:4]]
+        self.assertEqual(len(set(identities)), 2)
+        self.assertTrue(all('…' not in label for label in identities))
+
   def test_mouse_selection_group_folding_and_detail_scrolling(self):
     ui = importlib.import_module('agent_activity_live').AgentView()
     ui.update([agent('root'), agent('child', 'root', 'thinking')], 1001)
@@ -778,6 +840,10 @@ run_agent_live(args, Path('/unused'), quota, loader)
             until(b'Rows 1-1/1')
             os.write(master, b'\x1bOC')
             until(b'Working')
+            fcntl.ioctl(slave, termios.TIOCSWINSZ,
+                        struct.pack('HHHH', 60, 260, 0, 0))
+            proc.send_signal(signal.SIGWINCH)
+            until(b'Current activity')
             fcntl.ioctl(slave, termios.TIOCSWINSZ,
                         struct.pack('HHHH', 12, 40, 0, 0))
             proc.send_signal(signal.SIGWINCH)

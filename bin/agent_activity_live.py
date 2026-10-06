@@ -26,6 +26,32 @@ def wait_label(wait):
           'subagent update (target unknown)')
 
 
+def wide_columns(width, identity_width=14):
+  """Spend extra space on observed content, keeping identity/status adjacent."""
+  if width < 159:
+    return []
+  columns = [('Session', 0), ('Agent', identity_width),
+             ('Status / subagents', 40),
+             ('Current activity', 0)]
+  if width >= 209:
+    columns.append(('Model', 24))
+  if width >= 259:
+    columns.append(('Directory', 32))
+  spare = width - sum(size for _, size in columns) - 3 * (len(columns) - 1)
+  title = min(96, spare * 45 // 100)
+  columns[0] = ('Session', title)
+  columns[3] = ('Current activity', spare - title)
+  return columns
+
+
+def column_row(values, columns):
+  parts = []
+  for value, (_, size) in zip(values, columns):
+    text = clip(str(value), size)
+    parts.append(text + ' ' * (size - cells(text)))
+  return ' │ '.join(parts).rstrip()
+
+
 class AgentView:
   def __init__(self):
     self.tree = AgentTree([], 0)
@@ -40,6 +66,7 @@ class AgentView:
     self.error = ''
     self.refreshed = None
     self.labels = {}
+    self.short_labels = {}
     self.mouse_rows, self.mouse_details = {}, (0, 0)
 
   def update(self, agents, now, incomplete=False):
@@ -52,11 +79,13 @@ class AgentView:
            len({i[-suffix:] for i in identifiers}) < len(set(identifiers))):
       suffix += 1
     self.labels = {}
+    self.short_labels = {}
     for key, a in self.tree.rows.items():
+      self.short_labels[key] = a['provider'][:2] + ':' + a['id'][-suffix:]
       name = a.get('label')
       duplicate = sum(other.get('label') == name for other in agents) > 1
       if not name or name == a['id'] or duplicate:
-        name = a['provider'][:2] + ':' + a['id'][-suffix:]
+        name = self.short_labels[key]
       self.labels[key] = name
     for key in self.tree.rows:
       if key not in self.collapsed:
@@ -337,6 +366,14 @@ class AgentView:
              elapsed(self.refreshed, now) + ' ago')
     title += ' · sort: ' + self.sort
     lines = [(title, 'bold')]
+    identity_width = max(14, min(40, max(
+      (cells(label) for label in self.labels.values()), default=0)))
+    # Long human labels fall back to the same unique IDs as the compact view.
+    identity_width = max(identity_width, max(
+      (cells(label) for label in self.short_labels.values()), default=0))
+    columns = wide_columns(width, identity_width) if height >= 5 else []
+    if columns:
+      lines.append((column_row([name for name, _ in columns], columns), 'bold'))
     details = []
     for line in self.detail(now):
       indent = len(line) - len(line.lstrip())
@@ -379,7 +416,21 @@ class AgentView:
         metadata = self.labels[key] + ' · ' + activity_label(obs, now)
         if summary:
           metadata += ' · ' + summary
-        if width >= 40:
+        if columns:
+          status = activity_label(obs, now)
+          if summary:
+            status += ' · ' + summary
+          current = a.get('now') or a.get('work') or 'unknown'
+          identity = self.labels[key]
+          if cells(identity) > identity_width:
+            identity = self.short_labels[key]
+          values = [label, identity, status, current]
+          if width >= 209:
+            values.append(a.get('model') or 'unknown')
+          if width >= 259:
+            values.append(a.get('cwd') or 'unknown')
+          text = column_row(values, columns)
+        elif width >= 40:
           title_width = max(18, width * 55 // 100)
           title_cell = clip(label, title_width)
           text = (title_cell + ' ' * (title_width - cells(title_cell)) +

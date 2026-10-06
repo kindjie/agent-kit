@@ -655,6 +655,9 @@ Run the quota, agents, timeline and task-live suites
 when changing their shared presentation or parsing.
 Presentation checks cover title-case headings, separate selection/fold
 markers, neutral selection and compact footers without spacer rows.
+Large-terminal fixtures cover progressive activity/model/directory columns,
+Unicode alignment, mouse folding and selection after layout changes, and
+scroll ranges for a 100-agent list in a tall terminal.
 
 ## Documentation site
 
