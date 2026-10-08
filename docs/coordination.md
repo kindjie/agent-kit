@@ -51,11 +51,31 @@ literal message arguments beginning with an option name.
 
 ```sh
 agent-resource run --resource gpu --wait 600 --timeout 1800 -- command args
-agent-resource run --resource gpu --resource build -- command args
+agent-resource capacity --resource gpu --credits 2 --wait 60
+agent-resource run --resource gpu:1 -- command args
+agent-resource run --resource gpu:2 -- command args
+agent-resource capacity --resource build --credits 2
+agent-resource run --resource gpu:1 --resource build:2 -- command args
 ```
 
 Use agreed resource names among competing workers. Names are case-sensitive.
-Acquisition is exclusive and ordered by name to avoid deadlocks. This is
+Each resource defaults to one credit. Configure its machine-local budget with
+`capacity --resource NAME --credits N`; budgets and requests are integers
+from 1 to 64. Plain `--resource gpu` requests one credit; `gpu:2` requests
+two. Configure each resource before requesting more than its default budget.
+A two-credit GPU admits two one-credit jobs or one two-credit job. Request
+the entire configured budget for an exclusive run, such as a performance
+measurement. Credits are admission units, not enforced memory or compute
+allocations; choose weights based on the workload.
+
+Capacity changes wait until no cooperating job holds that resource, then
+replace its budget atomically. A wait timeout leaves the old budget intact.
+Existing callers pick up the budget without changing their commands. Older
+tool versions still exclude all new callers through the original gate lock,
+so mixed versions remain safe but old callers cannot share capacity.
+Requests above the budget fail immediately (exit 1). Request each resource
+only once. Acquisition is ordered by name to avoid deadlocks; all credits
+for one resource are acquired together or released before waiting. This is
 cooperative admission, not a capacity monitor or proof that the machine is
 quiet. It provides no FIFO/fairness guarantee. A waiter may hold a subset
 while acquiring another resource, so use only resources the command needs.
@@ -75,11 +95,13 @@ keeps waiting with its locks held. An unkillable child can retain admission
 beyond the command timeout.
 
 Stable lock files live under `$XDG_STATE_HOME/agent-kit/resources`, defaulting
-to `$HOME/.local/state/agent-kit/resources`. They contain no commands or task
-text. Never delete lock files to break a live lock: that creates two independent
-locks. Idle files may remain indefinitely and cost no running process. The
-wrapper does not write task records or claim resource ownership for other
-agents. It runs only the explicitly supplied command.
+to `$HOME/.local/state/agent-kit/resources`. Budget files are named
+`NAME.capacity`; `NAME.lock` is the compatibility and configuration gate, and
+`NAME.slots/` holds credit locks. They contain no commands or task text. Never
+delete lock files to break a live lock: that creates two independent locks.
+Idle files may remain indefinitely and cost no running process. The wrapper
+does not write task records or claim resource ownership for other agents. It
+runs only the explicitly supplied command.
 
 ### Structured scheduler pilot
 

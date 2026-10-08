@@ -95,8 +95,11 @@ rather than negotiating every transition among several coordinators. Distinguish
 quiet-machine performance measurements from ordinary functional validation.
 
 Where workers need local admission and no project lease already owns it,
-`agent-resource run --resource NAME --timeout SECONDS -- command` serializes
-cooperating commands. Agree names once; it neither establishes machine quiet
+`agent-resource run --resource NAME --timeout SECONDS -- command` bounds
+cooperating commands. Resources default to one credit; configure a budget with
+`agent-resource capacity --resource NAME --credits N`. Request a weight with
+`--resource NAME:N`, or the entire budget for exclusive measurements. Agree
+names, budgets and workload weights once; it neither establishes machine quiet
 nor constrains unwrapped work. Use foreground commands; see its README limits.
 For repeatable local usage audits, `agent-efficiency --since ISO --until ISO`
 reports deduplicated activity without model calls. Check coverage diagnostics;

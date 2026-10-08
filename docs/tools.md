@@ -21,7 +21,7 @@
 | [`steamos`](../bin/steamos.md) | Inspects and leases SteamOS devices; installs pinned Devkit helpers, manages titles and versioned deploys, and collects logs, captures, frametimes and benchmarks |
 | `agent-id` | Derives or mints agent IDs and manages repository keys |
 | `agent-task` | Creates, claims, hands off and closes task records |
-| `agent-resource` | Serializes cooperating foreground jobs with scoped resource locks |
+| `agent-resource` | Bounds cooperating foreground jobs with per-resource credit budgets |
 | `agent-scheduler` | Records explicit one-use grants and independent operational release receipts |
 | `agent-release-check` | Checks supplied release evidence and shadow decisions without changing reservations |
 | `agent-efficiency` | Reads local usage and coordination observations without provider/model calls |

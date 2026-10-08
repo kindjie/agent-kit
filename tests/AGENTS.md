@@ -629,11 +629,13 @@ filtering, cursor advancement, rewriting and refusal of unverified reads.
 They also cover opt-in renewal suppression versus default header delivery,
 observed expiry, preserved messages/ownership, actor options after subcommands,
 and literal `--` message arguments.
-Resource tests run harmless child processes to check exclusion, timeout,
-interruption cleanup and exit propagation. Efficiency tests use independent
-synthetic ledgers for provider accounting, copied history, cumulative resets,
-request-record precedence and visibly incomplete input. Coordination fixtures
-cover supported call/result envelopes, exact same-thread cell/session resumes,
+Resource tests run harmless child processes to check default exclusion,
+weighted concurrency, full-budget exclusion, partial-credit rollback,
+legacy gate compatibility, idle-only capacity changes, unsafe file refusal,
+timeout, interruption cleanup and exit propagation. Efficiency tests use
+independent synthetic ledgers for provider accounting, copied history,
+cumulative resets, request-record precedence and visibly incomplete input.
+Coordination fixtures cover supported call/result envelopes, exact same-thread cell/session resumes,
 duplicate and ambiguous reused IDs, unknown/truncated status diagnostics,
 bootstrap versus timeout empties,
 explicit CLI failures, conservative renewal evidence, malformed inputs and
