@@ -32,9 +32,11 @@ Implicit lookups (`agent-id show`, the `steamos` holder) take `--holder`
 each Bash call with `export AGENT_ID=<id>;` (it does not persist between
 calls; a one-off `AGENT_ID=<id> cmd` prefix covers only the first command of
 `a && b`) and passes `--agent <id>`. `AGENT_ID` is honoured only in the
-session that minted the ID: it is ignored, with a stderr notice, when no
-session variable is set or when several providers' variables are present
-(a codex child of Claude, or the reverse). In that mixed case `agent-id show`
+session context that minted the ID: it is ignored, with a stderr notice,
+when no session variable is set or when the current providers' variables
+differ from the minting context (a codex child of Claude, or the reverse);
+an ID minted in a mixed context applies only to that exact mixed context.
+In a mixed case `agent-id show`
 refuses (exit 1) when `AGENT_ID` does not apply: use your assigned ID with
 `--agent`/`--holder`, or mint one with `agent-id new` (bound to that exact
 mixed context). An ID not in the registry, or minted without a session, is
