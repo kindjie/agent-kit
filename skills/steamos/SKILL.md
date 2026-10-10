@@ -39,6 +39,9 @@ yourself, such as deploys, launches and benchmarks, and release it before
 other work (builds, reviews, CI waits) and take it again when you next need
 it. Follow the project's rule for builds that run on the device; a project
 may build there without the lease after checking that no one else holds it.
+Such a build is invisible to the lease, so a benchmark or other quiet-device
+step must confirm after taking the lease that no build or other load is still
+running before it measures.
 Build SteamOS bundles in the project's supported build environment; where
 that includes an available SteamOS device, building there usually beats
 emulating x86-64 on a host of another architecture.
