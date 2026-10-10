@@ -41,6 +41,17 @@ FAKE_SSH = textwrap.dedent('''\
   home = os.path.join(root, 'devices', host.split('@')[-1])
   os.makedirs(home, exist_ok=True)
   env = dict(os.environ, HOME=home)
+  capture_root = os.environ.get('FAKE_CAPTURE_ROOT')
+  if capture_root:
+    # Keep the fake device's /tmp inside its fixture while preserving the
+    # public /tmp protocol seen by the host CLI.
+    command = command.replace('/tmp', capture_root)
+    script = sys.stdin.read().replace('/tmp', capture_root)
+    result = subprocess.run(['sh', '-c', command], env=env, cwd=home,
+                            input=script, capture_output=True, text=True)
+    sys.stdout.write(result.stdout.replace(capture_root, '/tmp'))
+    sys.stderr.write(result.stderr)
+    sys.exit(result.returncode)
   child = subprocess.Popen(['sh', '-c', command], env=env, cwd=home,
                            start_new_session=True)
   code = child.wait()
@@ -161,6 +172,9 @@ class SteamosTest(unittest.TestCase):
         unit.unlink(missing_ok=True)
         sys.exit(0)
       assert args[1] == 'is-active', args
+      if os.environ.get('FAKE_UNIT_QUERY_FAIL'):
+        print(os.environ.get('FAKE_UNIT_QUERY_OUTPUT', ''))
+        sys.exit(1)
       record = json.loads(unit.read_text()) if unit.exists() else {}
       active = record.get('active') and record['expires'] > time.time()
       if record.get('crash_at') and time.time() >= record['crash_at']:
@@ -297,6 +311,98 @@ class SteamosTest(unittest.TestCase):
     self.run_cli('lease', 'release', code=1)
     self.assertEqual(self.lease_json()['state'], 'active')
     self.assertIs(self.lease_json()['sleep_inhibited'], True)
+
+  def test_allow_sleep_take_stops_previous_unit_without_starting(self):
+    self.inhibitor_fixture()
+    self.run_cli('lease', 'take', 'bench')
+    shutil.rmtree(self.device_home() / '.agent-kit-steamos-lease')
+    before = self.unit_events()
+    proc = self.run_cli('lease', 'take', 'reserved', '--allow-sleep', '--json')
+    self.assertEqual(proc.stderr, '')
+    self.assertEqual(self.unit_events(), before + ['stop'])
+    self.assertIs(json.loads(proc.stdout)['sleep_inhibited'], False)
+    self.assertNotIn('allow_sleep', json.loads(proc.stdout))
+    info = self.device_home() / '.agent-kit-steamos-lease' / 'info'
+    self.assertIn('allow_sleep=1\n', info.read_text())
+    self.assertIs(self.lease_json()['allow_sleep'], True)
+    status = json.loads(self.run_cli('status', '--json').stdout)
+    self.assertIs(status['lease']['allow_sleep'], True)
+    self.assertIs(status['lease']['sleep_inhibited'], False)
+    self.assert_no_leftovers()
+
+  def test_allow_sleep_renew_and_same_holder_reclaim_keep_choice(self):
+    self.inhibitor_fixture()
+    self.run_cli('lease', 'take', 'reserved', '--allow-sleep')
+    for command in (('renew',), ('take', 'refresh'), ('take', 'reclaim')):
+      with self.subTest(command=command):
+        if command[-1] == 'reclaim':
+          self.age_lease(5 * 3600)
+        before = self.unit_events()
+        self.run_cli('lease', *command)
+        self.assertEqual(self.unit_events(), before + ['stop'])
+        self.assertIs(self.lease_json()['allow_sleep'], True)
+        self.assertIs(self.lease_json()['sleep_inhibited'], False)
+
+  def test_allow_sleep_takeover_uses_new_holder_flag(self):
+    self.inhibitor_fixture()
+    for allow in (False, True):
+      with self.subTest(allow=allow):
+        self.run_cli('lease', 'take', 'reserved', '--allow-sleep')
+        self.age_lease(5 * 3600)
+        before = self.unit_events()
+        flag = ('--allow-sleep',) if allow else ()
+        self.run_cli('lease', 'take', 'new holder', *flag, holder='agent-b')
+        lease = self.lease_json()
+        self.assertEqual(lease['holder'], 'agent-b')
+        self.assertIs(lease.get('allow_sleep', False), allow)
+        self.assertIs(lease['sleep_inhibited'], not allow)
+        self.assertEqual(self.unit_events(), before +
+                         (['stop', 'stop'] if allow else
+                          ['stop', 'stop', 'start']))
+        self.run_cli('lease', 'release', holder='agent-b')
+
+  def test_allow_sleep_failed_stop_keeps_taken_lease_and_reports_active(self):
+    self.inhibitor_fixture()
+    self.run_cli('lease', 'take', 'bench')
+    self.env['FAKE_UNIT_STOP_FAIL'] = '1'
+    for takeover in (False, True):
+      with self.subTest(takeover=takeover):
+        if takeover:
+          self.age_lease(5 * 3600)
+        who = 'agent-b' if takeover else 'agent-a'
+        before = self.unit_events()
+        proc = self.run_cli('lease', 'take', 'reserved', '--allow-sleep',
+                            '--json', holder=who, code=1)
+        self.assertIn('Warning:', proc.stderr)
+        self.assertIn('still active', proc.stderr)
+        self.assertIs(json.loads(proc.stdout)['sleep_inhibited'], True)
+        lease = self.lease_json()
+        self.assertEqual(lease['holder'], who)
+        self.assertEqual(lease['purpose'], 'reserved')
+        self.assertIs(lease['allow_sleep'], True)
+        self.assertIs(lease['sleep_inhibited'], True)
+        self.assertNotIn('start', self.unit_events()[len(before):])
+        self.assert_no_leftovers()
+
+  def test_allow_sleep_unknown_state_is_null_and_nonzero(self):
+    self.inhibitor_fixture()
+    for failure in ('manager', 'query'):
+      with self.subTest(failure=failure):
+        key = ('FAKE_NO_USER_MANAGER' if failure == 'manager' else
+               'FAKE_UNIT_QUERY_FAIL')
+        self.env[key] = '1'
+        proc = self.run_cli('lease', 'take', 'reserved', '--allow-sleep',
+                            '--json', code=1)
+        self.assertIn('cannot determine', proc.stderr)
+        self.assertIsNone(json.loads(proc.stdout)['sleep_inhibited'])
+        self.assertIs(self.lease_json()['allow_sleep'], True)
+        self.assertIsNone(self.lease_json()['sleep_inhibited'])
+        del self.env[key]
+    # An inactive-looking reply with an unexpected exit is also unknown.
+    self.env['FAKE_UNIT_QUERY_FAIL'] = '1'
+    self.env['FAKE_UNIT_QUERY_OUTPUT'] = 'inactive'
+    proc = self.run_cli('lease', 'renew', '--json', code=1)
+    self.assertIsNone(json.loads(proc.stdout)['sleep_inhibited'])
 
   def test_inhibitor_expires_without_lease_cleanup(self):
     self.inhibitor_fixture()
@@ -886,7 +992,10 @@ class SteamosTest(unittest.TestCase):
     self.assertFalse((self.device_home() / 'launch-time').exists())
 
   def capture_fixture(self):
-    image = Path('/tmp') / f'gamescope-test-{uuid.uuid4().hex}.png'
+    capture_root = self.root / 'device-tmp'
+    capture_root.mkdir()
+    self.env['FAKE_CAPTURE_ROOT'] = str(capture_root)
+    image = capture_root / f'gamescope-test-{uuid.uuid4().hex}.png'
     self.addCleanup(lambda: image.unlink(missing_ok=True))
     self.env['FAKE_CAPTURE_PATH'] = str(image)
     self.fixture_tool('pgrep', '''
@@ -920,6 +1029,8 @@ class SteamosTest(unittest.TestCase):
         f.write(json.dumps(args) + '\\n')
       remote, out = args[-2:]
       host, path = remote.split(':', 1)
+      if path.startswith('/tmp/'):
+        path = os.environ['FAKE_CAPTURE_ROOT'] + path[4:]
       if host.split('@')[-1] in os.environ.get('FAKE_SCP_DOWN', '').split():
         sys.exit(255)
       if os.environ.get('FAKE_SCP_FAIL'):
@@ -931,7 +1042,7 @@ class SteamosTest(unittest.TestCase):
 
   def test_capture_copies_new_png_and_cleans_only_its_temp_file(self):
     image = self.capture_fixture()
-    stale = Path('/tmp') / f'gamescope-stale-{uuid.uuid4().hex}.png'
+    stale = image.parent / f'gamescope-stale-{uuid.uuid4().hex}.png'
     stale.write_bytes(b'keep')
     self.addCleanup(lambda: stale.unlink(missing_ok=True))
     out = self.root / 'capture with spaces.png'
@@ -942,7 +1053,8 @@ class SteamosTest(unittest.TestCase):
     self.assertEqual(stale.read_bytes(), b'keep')
     args = json.loads((self.root / 'scp.log').read_text().splitlines()[0])
     self.assertIn('BatchMode=yes', args)
-    remote = Path(args[-2].split(':', 1)[1])
+    remote = Path(self.env['FAKE_CAPTURE_ROOT'] +
+                  args[-2].split(':', 1)[1][4:])
     self.assertFalse(remote.exists())
     self.assertFalse(remote.parent.exists())
     self.assertFalse((self.device_home() / '.agent-kit-steamos-lease')
@@ -986,8 +1098,9 @@ class SteamosTest(unittest.TestCase):
                      'preserve existing output')
     self.assertEqual(list(self.root.glob('.steamos-download-*')), [])
     self.assertFalse(image.exists())
-    remote = Path(json.loads((self.root / 'scp.log').read_text())[-2]
-                  .split(':', 1)[1])
+    remote = Path(self.env['FAKE_CAPTURE_ROOT'] +
+                  json.loads((self.root / 'scp.log').read_text())[-2]
+                  .split(':', 1)[1][4:])
     self.assertFalse(remote.parent.exists())
 
   def test_capture_signals_cleanup_lock_and_private_temp(self):

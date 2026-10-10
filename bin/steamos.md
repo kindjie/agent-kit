@@ -140,6 +140,16 @@ watcher or cleanup command needed. Without a lease, normal sleep policy
 applies. Set `prevent_sleep` to `false` to opt out; a later take or renew
 also stops an existing inhibitor when this option is disabled.
 
+Use `steamos lease take 'reserved for a person' --allow-sleep` for a
+reservation that should still permit sleep. It stores `allow_sleep=1`, stops
+any existing inhibitor and starts none. Renew and same-holder reclaim keep
+this choice; a different holder uses their own flag. If the unit remains
+active or cannot be observed, the command warns and exits non-zero, leaving
+the lease taken. `sleep_inhibited` is then true or null, respectively, and
+false only after observing inactivity. `lease show --json` and the status
+JSON lease object include `allow_sleep` for records storing the choice;
+older records behave as false and retain their existing JSON fields.
+
 The inhibitor runs in the transient user unit
 `agent-kit-steamos-lease-inhibit`, started with `systemd-run --user --collect`.
 The user manager keeps it outside the ssh session scope, so logind session
