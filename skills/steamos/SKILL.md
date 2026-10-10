@@ -26,19 +26,25 @@ or address rather than guessing.
    not "fix" that, and note the version with any result you report.
 2. `steamos lease take 'PURPOSE'` before anything that changes the device
    or depends on it being quiet: deploys, launches, benchmarks, settings.
-   Make the purpose specific (`deploy build 1234 for audio check`).
+   Make the purpose specific (`deploy build 1234 for audio check`). The
+   one exception is an on-device build where the project allows building
+   without the lease (see below).
 3. Do the work. Re-run `steamos lease check` before each later mutating
    step; it fails if your lease expired or was taken over. Renew long work
    with `steamos lease renew`.
 4. `steamos lease release` when done, including when you stop early.
 
-On a shared device, hold a lease only for the device steps themselves; a
-build or benchmark running on the device is a device step. Release it before
-long work that does not use the device (local builds, reviews, CI waits) and
-take it again when you next need it. Build SteamOS bundles in the project's
-supported build environment; where that includes an available SteamOS device,
-building there usually beats emulating x86-64 on a host of another
-architecture.
+On a shared device, hold a lease only for steps that need the device to
+yourself, such as deploys, launches and benchmarks, and release it before
+other work (builds, reviews, CI waits) and take it again when you next need
+it. Follow the project's rule for builds that run on the device; a project
+may build there without the lease after checking that no one else holds it.
+Such a build is invisible to the lease, so a benchmark or other quiet-device
+step must confirm after taking the lease that no build or other load is still
+running before it measures.
+Build SteamOS bundles in the project's supported build environment; where
+that includes an available SteamOS device, building there usually beats
+emulating x86-64 on a host of another architecture.
 
 A subagent shares its parent's session, so the holder would default to the
 parent. Start each Bash call with `export AGENT_ID=<your agent ID>;` (the
@@ -49,8 +55,11 @@ on every `steamos` command too, not only `lease`: deploy, title, devkit,
 frametimes and bench check the lease as the same holder. `steamos lease
 show` confirms it.
 
-Use --allow-sleep when a lease only reserves a device for a person, so it can
-still sleep.
+Use `--allow-sleep` when a lease only reserves a device for a person, so it
+can still sleep: it starts no inhibitor and stops an existing one. Renew and a
+same-holder reclaim keep the choice. If an inhibitor is still active or its
+state is unknown afterwards, the command warns and exits non-zero but keeps the
+lease, reporting `sleep_inhibited` as true or null.
 
 Taking or renewing a lease prevents sleep/idle by default until its expiry. The
 transient user unit `agent-kit-steamos-lease-inhibit` runs `systemd-inhibit`
@@ -65,9 +74,9 @@ waking into a PIN screen during leased display/performance work.
 requires both an active unit and its `agent-kit-steamos` logind entry; startup
 checks both after 0.5 seconds. Inhibition failure is best-effort:
 take/renew/reclaim still succeed, with `inhibit=failed`, a stderr warning and
-`sleep_inhibited: false`. Inspect `systemd-inhibit --list` after ssh closes and
-after release/expiry when validating device behavior. No inhibitor PID files or
-PID signalling are used.
+`sleep_inhibited: false` (except with `--allow-sleep`, as above). Inspect
+`systemd-inhibit --list` after ssh closes and after release/expiry when
+validating device behavior. No inhibitor PID files or PID signalling are used.
 
 Reading status needs no lease. When `status` says Valve's
 `devkit-utils` are missing or not at the pinned commit and the work needs
