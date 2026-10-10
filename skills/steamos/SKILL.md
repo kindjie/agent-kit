@@ -49,6 +49,9 @@ on every `steamos` command too, not only `lease`: deploy, title, devkit,
 frametimes and bench check the lease as the same holder. `steamos lease
 show` confirms it.
 
+Use --allow-sleep when a lease only reserves a device for a person, so it can
+still sleep.
+
 Taking or renewing a lease prevents sleep/idle by default until its expiry. The
 transient user unit `agent-kit-steamos-lease-inhibit` runs `systemd-inhibit`
 outside the ssh session scope. Take/renew stop the old unit before starting

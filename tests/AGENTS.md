@@ -50,7 +50,11 @@ arguments, expiry and stop/start order across separate ssh invocations.
 Tests cover take/renew replacement, release/break/reclaim shutdown, expiry,
 opt-out, missing tools/user manager, best-effort startup failure, delayed
 unit exits, missing logind locks, failed-unit cleanup
-and stop failure preservation. Lease fixtures use no detached processes
+and stop failure preservation. Allow-sleep cases cover stopping without
+startup, renewal/reclaim inheritance, holder takeover, retained leases after
+stop failure, unknown-state reporting and opt-in JSON fields. Fake ssh keeps
+capture files inside its temporary fixture and preserves remote stderr.
+Lease fixtures use no detached processes
 or PID signalling; these fixtures do not establish real logind locks or device sleep.
 Valve helpers are small fixture scripts; title tests cover lease/pin/name
 refusals, exact shortcut arguments, exit-0 JSON errors, invalid leftovers,

@@ -981,7 +981,7 @@ def status_command(options):
     status[key] = int(values[key]) if values.get(key, '').isdigit() else None
   status['external_power'] = values.get('external_power') == 'yes'
   status['external_power_source'] = values.get('external_power_source', 'unknown')
-  status['lease'] = lease_summary(values)
+  status['lease'] = lease_summary(values, include_allow_sleep=True)
   if selected_project is not None:
     root, project_config = selected_project
     deployed = project_remote(entry, {'config': project_config}, 'list')
@@ -1885,6 +1885,8 @@ def main(argv=None):
     sub = actions.add_parser(action, help=text)
     if action == 'take':
       sub.add_argument('purpose')
+      sub.add_argument('--allow-sleep', action='store_true',
+                       help=argparse.SUPPRESS)
     if action in ('take', 'renew'):
       sub.add_argument('--hours', type=float)
     if action == 'break':

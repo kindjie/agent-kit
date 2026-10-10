@@ -27,6 +27,8 @@ LEASE_SCRIPT = r'''
 set -eu
 action=$1 holder=$2 purpose=$3 seconds=$4 grace=$5 reason=$6 prevent_sleep=$7
 shift 7
+allow_sleep=0
+if [ "${1-}" = allow_sleep=1 ]; then allow_sleep=1; shift; fi
 legacy_paths=$*
 lock=$HOME/.agent-kit-steamos-lease
 info=$lock/info
@@ -116,11 +118,26 @@ legacy=''
 for path in $legacy_paths; do
   if [ -e "$HOME/$path" ]; then legacy=$path; fi
 done
+# Only allow-sleep records use this observation; leave legacy reporting alone.
+observe_allow_sleep() {
+  allow_sleep_inhibit=unknown
+  if user_manager_available; then
+    observed=$(systemctl --user is-active "$unit" 2>/dev/null) && code=0 ||
+      code=$?
+    case "$observed:$code" in
+      active:0) allow_sleep_inhibit=active ;;
+      inactive:3|inactive:4|failed:3) allow_sleep_inhibit=inactive ;;
+    esac
+  fi
+}
 emit() {
   printf 'state=%s\nnow=%s\n' "$(state)" "$now"
   # Reads without the mutex may race a removal; a vanished file is free.
   sed 's/^/lease_/' "$info" 2>/dev/null || true
-  if [ -n "$inhibit_failed" ]; then echo inhibit=failed
+  if [ "$(field allow_sleep)" = 1 ]; then
+    observe_allow_sleep
+    echo "inhibit=$allow_sleep_inhibit"
+  elif [ -n "$inhibit_failed" ]; then echo inhibit=failed
   elif inhibit_available && inhibitor_holds; then echo inhibit=active
   elif [ ! -d "$lock" ]; then echo inhibit=inactive
   elif [ "$prevent_sleep" != true ]; then echo inhibit=disabled
@@ -137,7 +154,26 @@ emit() {
     fi
   done
 }
-finish() { printf 'result=%s\n' "$1"; emit; exit "$2"; }
+finish() {
+  printf 'result=%s\n' "$1"
+  emit
+  case $1 in
+    took|refreshed|reclaimed)
+      if [ "$(field allow_sleep)" = 1 ]; then
+        case $allow_sleep_inhibit in
+          active)
+            echo 'Warning: inhibitor is still active; lease taken but sleep' \
+              'remains inhibited.' >&2
+            exit 1 ;;
+          unknown)
+            echo 'Warning: cannot determine inhibitor state; lease taken but' \
+              'sleep may remain inhibited.' >&2
+            exit 1 ;;
+        esac
+      fi ;;
+  esac
+  exit "$2"
+}
 mine() { [ -f "$info" ] && [ "$(field holder)" = "$holder" ]; }
 record() { printf '%s %s by=%s %s\n' "$now" "$1" "$holder" "$2" >>"$log"; }
 lock_mutex() {
@@ -166,7 +202,7 @@ lock_mutex() {
 # remove_lock EVENT DETAIL: moves the lock aside in one rename, logs its
 # info, then deletes it.
 remove_lock() {
-  stop_inhibitor || return 1
+  stop_inhibitor || [ "$allow_sleep" = 1 ] || return 1
   aside=$lock.removed.$now.$$
   mv "$lock" "$aside" 2>/dev/null || return 1
   record "$1" "$2 $(tr '\n' ' ' <"$aside/info" 2>/dev/null || true)" ||
@@ -177,7 +213,15 @@ write() {
   new=$lock/info.new.$$
   printf 'holder=%s\npurpose=%s\nstart=%s\nexpires=%s\n' \
     "$holder" "$purpose" "$1" "$((now + seconds))" >"$new" || return 1
+  if [ "$allow_sleep" = 1 ] ||
+      { mine && [ "$(field allow_sleep)" = 1 ]; }; then
+    printf 'allow_sleep=1\n' >>"$new" || return 1
+  fi
   mv -f "$new" "$info" || return 1
+  if [ "$(field allow_sleep)" = 1 ]; then
+    stop_inhibitor || true
+    return 0
+  fi
   if ! start_inhibitor; then
     inhibit_failed=1
     if [ -n "$pending_unit" ]; then
@@ -287,7 +331,7 @@ def iso(epoch):
   return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(int(epoch)))
 
 
-def lease_summary(values):
+def lease_summary(values, *, include_allow_sleep=False):
   lease = {'state': values.get('state', 'unknown'),
            'inhibit': values.get('inhibit', 'unavailable'),
            'sleep_inhibited': {'active': True, 'inactive': False,
@@ -301,6 +345,8 @@ def lease_summary(values):
   for key in ('start', 'expires'):
     if lease.get(key, '').isdigit():
       lease[key] = int(lease[key])
+  if include_allow_sleep and 'lease_allow_sleep' in values:
+    lease['allow_sleep'] = values['lease_allow_sleep'] == '1'
   return lease
 
 
@@ -344,12 +390,17 @@ def lease_command(options, api):
   proc = api.ssh(entry, LEASE_SCRIPT, [
     options.action, who, purpose, int(hours * 3600), grace, reason,
     str(policy.get('prevent_sleep', True)).lower(),
+    *(['allow_sleep=1'] if getattr(options, 'allow_sleep', False) else []),
     *legacy])
   if proc.returncode not in (0, 1):
     raise api.Failure(api.UNREACHABLE,
                       f'device script failed: {proc.stderr.strip()}')
   values = api.parse(proc.stdout)
-  lease = lease_summary(values)
+  lease = lease_summary(values, include_allow_sleep=options.action == 'show')
+  if proc.returncode and (getattr(options, 'allow_sleep', False) or
+                         values.get('lease_allow_sleep') == '1') and \
+      proc.stderr.strip():
+    print(api.error_text(proc.stderr), file=sys.stderr)
   result = values.get('result', 'unknown')
   if lease['inhibit'] == 'failed':
     print('Warning: sleep inhibition failed; the device may sleep.',
