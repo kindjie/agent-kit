@@ -46,7 +46,8 @@ def resource(value):
   name, sep, count = value.partition(':')
   if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}', name):
     raise argparse.ArgumentTypeError('expected simple resource name')
-  return name, credits(count) if sep else 1
+  # Case-insensitive filesystems alias lock files that differ only in case.
+  return name.lower(), credits(count) if sep else 1
 
 
 def credit_variable(name):

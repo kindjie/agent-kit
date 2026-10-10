@@ -58,9 +58,10 @@ agent-resource capacity --resource build --credits 2
 agent-resource run --resource gpu:1 --resource build:2 -- command args
 ```
 
-Use agreed resource names among competing workers. Names are case-sensitive,
-but their credit variables are not: requesting two names that map to the same
-variable (`a.b` and `a-b`) is refused.
+Use agreed resource names among competing workers. Names are folded to lower
+case, because case-insensitive filesystems would alias their lock files.
+Requesting two names that map to the same credit variable (`a.b` and `a-b`)
+is refused.
 Each resource defaults to one credit. Configure its machine-local budget with
 `capacity --resource NAME --credits N`; budgets and requests are integers
 from 1 to 64. Plain `--resource gpu` requests one credit; `gpu:2` requests
@@ -70,18 +71,21 @@ the entire configured budget for an exclusive run, such as a performance
 measurement. Credits are admission units, not enforced memory or compute
 allocations; choose weights based on the workload.
 
-Configure `cpu` once with one credit per logical core (`sysctl -n hw.logicalcpu`
-on macOS, `nproc` on Linux):
+A `cpu` resource with one credit per logical core (at most 64) lets agents
+share compilation and test parallelism. Configure it once, then request no
+more credits than the budget:
 
 ```sh
-agent-resource capacity --resource cpu --credits <logical cores>
-agent-resource run --resource cpu:8 --wait 3600 -- cmake --build build -j8
+cores=$(python3 -c 'import os; print(min(os.cpu_count() or 1, 64))')
+agent-resource capacity --resource cpu --credits "$cores"
+agent-resource run --resource cpu:4 --wait 3600 -- cmake --build build -j4
 ```
 
-Take CPU credits for a process expected to use more than roughly 30% of the
-machine's CPU for an extended period, or more than about 90% even briefly:
-parallel builds, `ctest -jN`, sanitizer suites, benchmarks and heavy model work.
-Request credits matching its parallelism. The child receives
+Agree locally which work takes CPU credits. A suggested default: a process
+expected to use more than roughly 30% of the machine's CPU for an extended
+period, or more than about 90% even briefly, such as parallel builds,
+`ctest -jN`, sanitizer suites, benchmarks and heavy model work. Request credits
+matching its parallelism. The child receives
 `AGENT_RESOURCE_<NAME>_CREDITS` for each resource; names are upper-cased with
 non-alphanumeric characters replaced by `_`. A wrapper script can use
 `-j"$AGENT_RESOURCE_CPU_CREDITS"` for its granted parallelism. Never wrap quick
@@ -96,8 +100,8 @@ finishes, which is the cost of not being overtaken. Do not nest
 `agent-resource run` inside a wrapped command for the same resource: the inner
 call waits on its parent's credits until its `--wait` expires.
 Still confirm machine quiet after admission: non-cooperating processes are
-not governed. Choose `--wait` long enough for the queue; the 600-second default
-suits GPU steps, not build queues.
+not governed. Choose `--wait` from the expected queue duration; the
+600-second default suits short steps, not long build queues.
 
 Capacity changes wait until no cooperating job holds or is waiting for that
 resource, then replace its budget atomically. A wait timeout leaves the old

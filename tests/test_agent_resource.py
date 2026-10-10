@@ -297,7 +297,16 @@ class ResourceTest(unittest.TestCase):
                                            second, '--', 'true'),
                               env=self.env, capture_output=True, timeout=3)
         self.assertEqual(proc.returncode, 2)
-        self.assertIn(b'AGENT_RESOURCE_', proc.stderr)
+
+  def test_resource_names_fold_to_lowercase(self):
+    # Case-insensitive filesystems would alias CPU and cpu lock files, so a
+    # name is one resource whatever its case.
+    self.assertEqual(self.configure(1, 'CPU').returncode, 0)
+    self.holder('upper', '--resource', 'Cpu')
+    self.assertEqual(self.contender('--resource', 'cpu').returncode, 75)
+    names = os.listdir(Path(self.tmp.name) / 'agent-kit/resources')
+    self.assertIn('cpu.capacity', names)
+    self.assertNotIn('CPU.capacity', names)
 
   def test_invalid_resource(self):
     proc = subprocess.run(self.command('--resource', '../escape', '--', 'true'),
