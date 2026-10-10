@@ -49,6 +49,10 @@ def resource(value):
   return name, credits(count) if sep else 1
 
 
+def credit_variable(name):
+  return 'AGENT_RESOURCE_%s_CREDITS' % re.sub(r'[^A-Z0-9]', '_', name.upper())
+
+
 def secure_open(path):
   fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW |
                os.O_NONBLOCK, 0o600)
@@ -200,6 +204,12 @@ def main():
     requests = dict(args.resource)
     if len(requests) != len(args.resource):
       parser.error('request each resource only once')
+    keys = {}
+    for name in requests:
+      key = credit_variable(name)
+      if key in keys:
+        parser.error('%s and %s would share %s' % (keys[key], name, key))
+      keys[key] = name
   else:
     try:
       name, requested = resource(args.resource)
@@ -233,8 +243,7 @@ def main():
       return 0
     env = os.environ.copy()
     for name, granted in requests.items():
-      key = re.sub(r'[^A-Z0-9]', '_', name.upper())
-      env['AGENT_RESOURCE_%s_CREDITS' % key] = str(granted)
+      env[credit_variable(name)] = str(granted)
     proc = subprocess.Popen(command, env=env, start_new_session=True,
                             pass_fds=handles)
     try:

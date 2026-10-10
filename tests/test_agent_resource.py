@@ -110,6 +110,16 @@ class ResourceTest(unittest.TestCase):
       with self.assertRaises(BlockingIOError):
         fcntl.flock(gate, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
+  def test_turnstile_gates_admission_with_free_slots(self):
+    import fcntl
+    self.assertEqual(self.configure(3, 'cpu').returncode, 0)
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    self.assertEqual(self.contender('--resource', 'cpu').returncode, 0)
+    with (root / 'cpu.turnstile').open('r+') as turnstile:
+      fcntl.flock(turnstile, fcntl.LOCK_EX | fcntl.LOCK_NB)
+      self.assertEqual(self.contender('--resource', 'cpu').returncode, 75)
+    self.assertEqual(self.contender('--resource', 'cpu').returncode, 0)
+
   def test_weighted_capacity_and_mixed_resources(self):
     self.assertEqual(self.configure(4).returncode, 0)
     self.holder('two', '--resource', 'gpu:2')
@@ -279,6 +289,15 @@ class ResourceTest(unittest.TestCase):
     accepted = subprocess.run(self.command('--wait', '.2', '--', 'true'),
                               env=self.env, capture_output=True, timeout=3)
     self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+  def test_credit_variable_names_must_not_collide(self):
+    for first, second in (('a.b', 'a-b'), ('gpu', 'GPU')):
+      with self.subTest(first=first, second=second):
+        proc = subprocess.run(self.command('--resource', first, '--resource',
+                                           second, '--', 'true'),
+                              env=self.env, capture_output=True, timeout=3)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn(b'AGENT_RESOURCE_', proc.stderr)
 
   def test_invalid_resource(self):
     proc = subprocess.run(self.command('--resource', '../escape', '--', 'true'),

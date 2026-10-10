@@ -58,7 +58,9 @@ agent-resource capacity --resource build --credits 2
 agent-resource run --resource gpu:1 --resource build:2 -- command args
 ```
 
-Use agreed resource names among competing workers. Names are case-sensitive.
+Use agreed resource names among competing workers. Names are case-sensitive,
+but their credit variables are not: requesting two names that map to the same
+variable (`a.b` and `a-b`) is refused.
 Each resource defaults to one credit. Configure its machine-local budget with
 `capacity --resource NAME --credits N`; budgets and requests are integers
 from 1 to 64. Plain `--resource gpu` requests one credit; `gpu:2` requests
@@ -87,16 +89,22 @@ or single-threaded commands such as cat, git, grep, editors, reviews or docs
 checks; they must not wait on admission.
 
 An exclusive timing measurement requests the whole budget (`cpu:<all>`).
-Once it holds the admission turnstile, later requests cannot overtake it.
+Once it holds the admission turnstile, later requests cannot overtake it;
+before that, waiters poll for the turnstile without FIFO order. While it
+waits, the credits it already holds sit idle until the longest current holder
+finishes, which is the cost of not being overtaken. Do not nest
+`agent-resource run` inside a wrapped command for the same resource: the inner
+call waits on its parent's credits until its `--wait` expires.
 Still confirm machine quiet after admission: non-cooperating processes are
 not governed. Choose `--wait` long enough for the queue; the 600-second default
 suits GPU steps, not build queues.
 
-Capacity changes wait until no cooperating job holds that resource, then
-replace its budget atomically. A wait timeout leaves the old budget intact.
-Existing callers pick up the budget without changing their commands. Older
-tool versions still exclude all new callers through the original gate lock,
-so mixed versions remain safe but old callers cannot share capacity.
+Capacity changes wait until no cooperating job holds or is waiting for that
+resource, then replace its budget atomically. A wait timeout leaves the old
+budget intact. Existing callers pick up the budget without changing their
+commands. Older tool versions still exclude all new callers through the
+original gate lock, so mixed versions remain safe but old callers cannot share
+capacity.
 Requests above the budget fail immediately (exit 1). Request each resource
 only once. Acquisition is ordered by name to avoid deadlocks. Each resource
 has an exclusive admission turnstile: its holder retains partial credits
@@ -128,8 +136,8 @@ Stable lock files live under `$XDG_STATE_HOME/agent-kit/resources`, defaulting
 to `$HOME/.local/state/agent-kit/resources`. Budget files are named
 `NAME.capacity`; `NAME.lock` is the compatibility and configuration gate,
 `NAME.turnstile` serializes admission, and `NAME.slots/` holds credit locks.
-They contain no commands or task text. Never
-delete lock files to break a live lock: that creates two independent locks.
+They contain no commands or task text. Never delete lock files to break a live
+lock: that creates two independent locks.
 Idle files may remain indefinitely and cost no running process. The wrapper
 does not write task records or claim resource ownership for other agents. It
 runs only the explicitly supplied command.
