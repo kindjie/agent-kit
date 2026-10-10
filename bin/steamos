@@ -458,8 +458,15 @@ def parse(text):
   return values
 
 
+HOLDER_OVERRIDE = None  # set from --holder; beats every other source
+
+
 def holder(config):
+  if HOLDER_OVERRIDE:
+    return HOLDER_OVERRIDE
   name = os.environ.get('STEAMOS_LEASE_HOLDER') or config.get('holder')
+  if not name:
+    name = os.environ.get('AGENT_ID', '').strip()
   if not name and not os.environ.get('STEAMOS_NO_AGENT_ID') and \
       shutil.which('agent-id'):
     proc = subprocess.run(['agent-id', 'show'], capture_output=True,
@@ -2174,6 +2181,9 @@ def main(argv=None):
   parser = argparse.ArgumentParser(prog='steamos', description=__doc__)
   parser.add_argument('--device', help='configured device name')
   parser.add_argument('--json', action='store_true')
+  parser.add_argument('--holder', help='lease holder for this call, e.g. a '
+                      'subagent ID; beats STEAMOS_LEASE_HOLDER, AGENT_ID '
+                      'and the session ID')
   commands = parser.add_subparsers(dest='command', required=True)
   status = commands.add_parser('status', help='device facts and its lease')
   status.add_argument('--project', help='project directory (default: from cwd)')
@@ -2258,6 +2268,8 @@ def main(argv=None):
               frametimes, bench, stage, build, doctor, deploy):
     common_options(sub)
   options = parser.parse_args(argv)
+  global HOLDER_OVERRIDE
+  HOLDER_OVERRIDE = options.holder
   options.hours = getattr(options, 'hours', None)
   try:
     if options.command == 'stage':
@@ -2298,6 +2310,8 @@ def common_options(parser):
                       help=argparse.SUPPRESS)
   parser.add_argument('--json', action='store_true',
                       default=argparse.SUPPRESS)
+  parser.add_argument('--holder', default=argparse.SUPPRESS,
+                      help=argparse.SUPPRESS)
 
 
 if __name__ == '__main__':

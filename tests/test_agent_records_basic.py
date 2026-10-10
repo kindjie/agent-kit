@@ -23,6 +23,25 @@ BIN = ROOT / "bin"
 
 class SetupTest(RecordsFixture):
 
+  def test_agent_id_override_beats_shared_session(self):
+    # An in-process subagent shares the parent's session variable; its own
+    # minted ID, exported as AGENT_ID, must win for implicit identity.
+    env = dict(self.env, CLAUDE_CODE_SESSION_ID="parent-session")
+    parent = self.run_cmd("agent-id", "show", env=env).strip()
+    own = self.run_cmd("agent-id", "new", "helper", env=env).strip()
+    env["AGENT_ID"] = own
+    self.assertEqual(self.run_cmd("agent-id", "show", env=env).strip(), own)
+    self.assertNotEqual(own, parent)
+    env.pop("CLAUDE_CODE_SESSION_ID")
+    self.assertEqual(self.run_cmd("agent-id", "show", env=env).strip(), own)
+    env["AGENT_ID"] = ""
+    self.run_cmd("agent-id", "show", env=env, code=1)
+    env["CLAUDE_CODE_SESSION_ID"] = "parent-session"
+    self.assertEqual(self.run_cmd("agent-id", "show", env=env).strip(),
+                     parent)
+    env["AGENT_ID"] = "bad id!"
+    self.run_cmd("agent-id", "show", env=env, code=2)
+
   def test_id_derivation_and_registry(self):
     env = dict(self.env, CLAUDE_CODE_SESSION_ID="same-prefix-111")
     first = self.run_cmd("agent-id", "show", env=env).strip()

@@ -40,6 +40,11 @@ supported build environment; where that includes an available SteamOS device,
 building there usually beats emulating x86-64 on a host of another
 architecture.
 
+A subagent shares its parent's session, so the holder would default to the
+parent. Pass `--holder <your agent ID>` to every `steamos lease` call (or
+export `AGENT_ID=<id>` in the same command); `steamos lease show` confirms
+the holder.
+
 Taking or renewing a lease prevents sleep/idle by default until its expiry. The
 transient user unit `agent-kit-steamos-lease-inhibit` runs `systemd-inhibit`
 outside the ssh session scope. Take/renew stop the old unit before starting

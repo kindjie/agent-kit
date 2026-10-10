@@ -1351,6 +1351,56 @@ class SteamosTest(unittest.TestCase):
       capture_output=True, text=True, timeout=20).stdout)['holder']
     self.assertIn('@', holder)
 
+  def holder_env(self, **extra):
+    env = {k: v for k, v in self.env.items() if k != 'STEAMOS_LEASE_HOLDER'}
+    env.pop('AGENT_ID', None)
+    agent_id = self.root / 'bin' / 'agent-id'
+    agent_id.write_text(
+      f'#!/bin/sh\nexec {sys.executable} {BIN.parent / "agent-id"} "$@"\n')
+    agent_id.chmod(0o755)
+    env['XDG_STATE_HOME'] = str(self.root / 'state')
+    env['CLAUDE_CODE_SESSION_ID'] = 'parent-session'
+    env.update(extra)
+    return env
+
+  def lease_holder(self, env, *args):
+    proc = subprocess.run([sys.executable, str(BIN), 'lease', 'take', 'x',
+                           *args], env=env, capture_output=True, text=True,
+                          timeout=20)
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+    return json.loads(subprocess.run(
+      [sys.executable, str(BIN), 'lease', 'show', '--json'], env=env,
+      capture_output=True, text=True, timeout=20).stdout)['holder']
+
+  def test_holder_follows_session_without_override(self):
+    env = self.holder_env()
+    derived = subprocess.run(
+      [sys.executable, str(BIN.parent / 'agent-id'), 'show'], env=env,
+      capture_output=True, text=True, timeout=20).stdout.strip()
+    self.assertTrue(derived.startswith('claude-'), derived)
+    self.assertEqual(self.lease_holder(env), derived)
+
+  def test_agent_id_env_names_subagent_holder(self):
+    env = self.holder_env(AGENT_ID='helper-0123456789abcdef')
+    self.assertEqual(self.lease_holder(env), 'helper-0123456789abcdef')
+
+  def test_holder_precedence(self):
+    env = self.holder_env(AGENT_ID='helper-0123456789abcdef',
+                          STEAMOS_LEASE_HOLDER='env-holder')
+    for flags, expected in (((), 'env-holder'),
+                            (('--holder', 'flag-holder'), 'flag-holder')):
+      self.assertEqual(self.lease_holder(env, *flags), expected)
+      self.run_cli('lease', 'release', '--holder', expected)
+    env = self.holder_env(AGENT_ID='helper-0123456789abcdef')
+    self.assertEqual(self.lease_holder(env, '--holder', 'other'), 'other')
+
+  def test_holder_flag_applies_to_each_lease_action(self):
+    self.run_cli('lease', 'take', 'x', '--holder', 'sub-1')
+    self.run_cli('--holder', 'sub-1', 'lease', 'renew')
+    self.run_cli('lease', 'check', '--holder', 'sub-1')
+    self.run_cli('lease', 'check', holder='agent-b', code=1)
+    self.run_cli('lease', 'release', '--holder', 'sub-1')
+
 
 if __name__ == '__main__':
   unittest.main()

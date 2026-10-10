@@ -375,13 +375,22 @@ unchanged; resolve the reported error before retrying. The tool does not
 automatically retry failed commits.
 Records document state but never authorize deleting it.
 
-Give each writer an explicit identity. `agent-id show` derives one from a
-session variable; `agent-id new helper` mints and stores one for a delegated
-agent. The delegating agent can pass this prompt fragment:
+Give each writer an explicit identity. `agent-id show` prints `AGENT_ID`
+when it is set and otherwise derives an ID from a session variable;
+`agent-id new helper` mints and stores one for a delegated agent. An
+in-process subagent shares its parent's session variables, so without an
+explicit ID every implicit lookup (`agent-id show`, the `steamos` lease
+holder) returns the parent. Precedence for implicit identity: an explicit
+`--agent` or `--holder` flag, then `AGENT_ID`, then the session-derived ID.
+A malformed `AGENT_ID` is refused rather than ignored. The delegating agent
+can pass this prompt fragment:
 
 ```text
 Your agent ID is helper-0123456789abcdef. Work on T-0001.
-Pass --agent helper-0123456789abcdef to every records mutation.
+Run `export AGENT_ID=helper-0123456789abcdef` in each shell command (or
+prefix commands with it) and pass --agent helper-0123456789abcdef to every
+records mutation and --holder helper-0123456789abcdef to steamos lease
+commands, so nothing falls back to the coordinator's session ID.
 Use agent-task --agent helper-0123456789abcdef log T-0001
   --to all 'Progress update' for coordination.
 ```

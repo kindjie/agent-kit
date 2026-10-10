@@ -179,6 +179,20 @@ def session_id():
   return None, None
 
 
+def current_id():
+  """Return (ID, source): AGENT_ID when set, else the session-derived ID.
+
+  An in-process subagent shares its parent's session variables, so only an
+  explicit AGENT_ID can give it a distinct implicit identity.
+  """
+  value = os.environ.get("AGENT_ID")
+  if value:
+    if not ID_RE.fullmatch(value):
+      raise RecordsError("AGENT_ID is not a valid agent ID", 2)
+    return value, "AGENT_ID"
+  return session_id()
+
+
 def state_path(name):
   root = Path(os.environ.get(
     "XDG_STATE_HOME", str(Path.home() / ".local/state")))

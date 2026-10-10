@@ -52,6 +52,10 @@ steamos lease show
 steamos lease release
 ```
 
+The holder defaults to your agent ID. A subagent shares its parent's session,
+so it passes `--holder ID` (or exports `AGENT_ID=ID`) to avoid taking the
+lease as the parent.
+
 The lease is shared across projects. It is advisory, so every cooperating
 tool must check it. While held, it normally prevents idle sleep until the
 lease expires; the status output shows whether inhibition is active. An
