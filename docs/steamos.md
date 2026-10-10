@@ -56,7 +56,9 @@ The holder defaults to your agent ID. A subagent shares its parent's session,
 so it starts each shell call with `export AGENT_ID=ID;`, or passes
 `--holder ID` to every command (not only `lease`), to avoid acting as the
 parent. A one-off `AGENT_ID=ID steamos ... && steamos ...` prefix covers
-only the first command.
+only the first command. A `codex exec` child of Claude Code (or the reverse)
+cannot derive its own session ID: with no `--holder` or `AGENT_ID`, the
+holder falls to the configured one, then `user@host`, with a stderr notice.
 
 The lease is shared across projects. It is advisory, so every cooperating
 tool must check it. While held, it normally prevents idle sleep until the

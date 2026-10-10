@@ -239,11 +239,26 @@ def agent_env_id():
   return value
 
 
+AMBIGUOUS_SESSION = (
+  "session variables from several providers are set (a nested claude or "
+  "codex session), and none identifies the innermost one; pass --agent "
+  "or --holder, or use your assigned AGENT_ID (agent-id new LABEL)")
+
+
 def current_id():
-  """Return (ID, source): AGENT_ID when it applies, else the session ID."""
+  """Return (ID, source): AGENT_ID when it applies, else the session ID.
+
+  With several providers' session variables set, the session ID would be
+  the outer one chosen by precedence, so there is no implicit ID: this
+  raises. Neither Claude Code nor Codex sets a variable only the innermost
+  process has, and process ancestry is not dependable (sandboxes hide it,
+  wrappers rename processes).
+  """
   value = agent_env_id()
   if value:
     return value, "AGENT_ID"
+  if len(session_providers()) > 1:
+    raise RecordsError(AMBIGUOUS_SESSION, 1)
   return session_id()
 
 

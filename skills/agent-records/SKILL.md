@@ -34,8 +34,10 @@ calls; a one-off `AGENT_ID=<id> cmd` prefix covers only the first command of
 `a && b`) and passes `--agent <id>`. `AGENT_ID` is honoured only in the
 session that minted the ID: it is ignored, with a stderr notice, when no
 session variable is set or when several providers' variables are present
-(a codex child of Claude, or the reverse). An ID not in the registry, or
-minted without a session, is trusted. Start
+(a codex child of Claude, or the reverse). In that mixed case `agent-id show`
+refuses (exit 1) when `AGENT_ID` does not apply: use your assigned ID with
+`--agent`/`--holder`, or mint one with `agent-id new`. An ID not in the
+registry, or minted without a session, is trusted. Start
 nested `claude -p`/`codex exec` with `env -u AGENT_ID`; a cross-tool
 delegate handed a coordinator-minted ID must pass `--agent`/`--holder`
 explicitly.

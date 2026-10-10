@@ -398,9 +398,19 @@ stderr). An ID bound to a session is also ignored, with the notice, when
 the current process has no session variable, or when variables from more
 than one provider are set (for example a Codex child that inherits
 `CLAUDE_CODE_SESSION_ID`): variable precedence does not show which session
-is current, so the safe choice is to require `--agent`/`--holder`. In that
-mixed case the fallback `agent-id show` still follows the usual variable
-precedence and may name the parent. An ID that is not in the registry, or whose registry row has no
+is current, so the safe choice is to require `--agent`/`--holder`.
+
+With no usable `AGENT_ID` and variables from several providers set,
+`agent-id show` refuses (exit 1, nothing printed) rather than name the
+outer session by precedence. Neither Claude Code nor Codex sets a variable
+only the innermost process has: a `codex exec` child of Claude Code sees
+`CLAUDE_CODE_SESSION_ID`, `CLAUDE_PID` and its own `CODEX_*` together, and
+a Claude child of Codex inherits `CODEX_THREAD_ID` the same way. Process
+ancestry could name the nearest agent, but sandboxes hide `ps` and wrappers
+rename processes, so it is not relied on. `agent-id new` still works there
+but records no minting session, so the ID is not tied to the outer one.
+`steamos` skips `agent-id show` in that case, prints a notice, and uses
+`user@host`. An ID that is not in the registry, or whose registry row has no
 minting session (older or sessionless mints), is trusted. Start a nested
 CLI with `env -u AGENT_ID` and give it its own ID with `--agent`. A
 cross-tool delegate (`claude -p`, `codex exec`) handed a coordinator-minted

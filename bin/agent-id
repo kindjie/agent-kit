@@ -15,7 +15,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(os.path.realpath(__file__)).parent))
 from agent_records_core import (EXIT_TEXT, FORCE_TEXT, ID_RE, RecordsError,
                                 current_id, machine, one_line, private_append, repo_keys,
-                                repo_rebind, session_id, stamp, state_path,
+                                repo_rebind, session_id,
+                                session_providers, stamp, state_path,
                                 unexpected_error)
 
 
@@ -77,7 +78,9 @@ def main():
     value = args.label + "-" + secrets.token_hex(8)
     if not ID_RE.fullmatch(value):
       raise RecordsError("label is too long", 2)
-    minted, source = session_id()
+    # Mixed providers: precedence would bind the ID to the outer session.
+    minted, source = ((None, None) if len(session_providers()) > 1
+                      else session_id())
     row = {"time": stamp(), "id": value, "label": args.label,
            "cwd": os.getcwd(), "session_variable": source,
            "minted_session": minted}
