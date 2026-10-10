@@ -82,6 +82,59 @@ class SetupTest(RecordsFixture):
       # session's variable, AGENT_ID is not honoured.
       self.assertIn("ambiguous", shown.stderr)
 
+  def test_show_refuses_mixed_provider_sessions(self):
+    # A codex exec child of Claude Code (or the reverse) sees both
+    # providers' variables; neither Claude Code nor Codex sets a variable
+    # only the innermost process has, so precedence would silently return
+    # the parent's ID. Refuse instead, whichever provider is inside.
+    for first, second in ((("CLAUDE_CODE_SESSION_ID", "claude-sess"),
+                           ("CODEX_THREAD_ID", "codex-thread")),
+                          (("CODEX_THREAD_ID", "codex-thread"),
+                           ("CLAUDE_CODE_SESSION_ID", "claude-sess")),
+                          (("CLAUDE_CODE_SESSION_ID", "claude-sess"),
+                           ("CODEX_SESSION_ID", "codex-session"))):
+      both = dict(self.env, **dict([first, second]))
+      shown = self.show(both)
+      self.assertEqual((shown.returncode, shown.stdout), (1, ""))
+      for word in ("several providers", "--agent", "--holder", "AGENT_ID"):
+        self.assertIn(word, shown.stderr)
+      # Each provider alone still derives its own ID.
+      for single in (first, second):
+        alone = self.show(dict(self.env, **dict([single])))
+        self.assertEqual(alone.returncode, 0)
+        self.assertEqual(alone.stderr, "")
+        self.assertEqual(alone.stdout.strip(), self.run_cmd(
+          "agent-id", "show", env=dict(self.env, **dict([single]))).strip())
+      # An ID trusted in this environment is still returned.
+      handmade = self.show(dict(both, AGENT_ID="handmade-1"))
+      self.assertEqual((handmade.returncode, handmade.stdout.strip()),
+                       (0, "handmade-1"))
+      # Minting still works. The ID binds to the whole mixed context, not
+      # to the outer provider's session and not to "no session".
+      own = self.run_cmd("agent-id", "new", "helper", env=both).strip()
+      row = json.loads((self.base / "agent-kit" / "agent-ids.log")
+                       .read_text().splitlines()[-1])
+      self.assertEqual(row["id"], own)
+      self.assertTrue(row["minted_session"].startswith("mixed:"))
+      self.assertEqual(self.show(dict(both, AGENT_ID=own)).stdout.strip(),
+                       own)
+      # Any change to either provider's session, or a further nesting level,
+      # is a different context: the ID is ignored with the notice.
+      names = [first[0], second[0]]
+      variants = [dict(both, **{names[0]: "other-session"}),
+                  dict(both, **{names[1]: "other-session"}),
+                  dict(both, **{names[0]: "other-a", names[1]: "other-b"})]
+      third = "CODEX_SESSION_ID" if "CODEX_SESSION_ID" not in names \
+        else "CODEX_THREAD_ID"
+      variants.append(dict(both, **{third: "third-level"}))
+      for nested in variants:
+        shown = self.show(dict(nested, AGENT_ID=own))
+        self.assertEqual((shown.returncode, shown.stdout), (1, ""), nested)
+        self.assertIn("ignoring AGENT_ID=" + own, shown.stderr)
+      # Dropping to one provider is also a different context.
+      alone = dict(self.env, **dict([first]), AGENT_ID=own)
+      self.assertIn("ignoring AGENT_ID=" + own, self.show(alone).stderr)
+
   def test_agent_id_ignored_by_a_nested_session(self):
     env = dict(self.env, CLAUDE_CODE_SESSION_ID="parent-session")
     own = self.run_cmd("agent-id", "new", "helper", env=env).strip()

@@ -99,8 +99,9 @@ succeed, and the device's clock judges expiry.
   the same log.
 - The holder is the `--holder ID` option (valid on every command) when
   given, then `STEAMOS_LEASE_HOLDER`, then `AGENT_ID`, then `holder` in the
-  configuration, then `agent-id show` when agent-kit records are installed,
-  then `user@host`. Environment beats the static configuration. An empty
+  configuration, then `agent-id show` when agent-kit records are installed
+  (skipped, with a notice, when several providers' session variables are
+  set), then `user@host`. Environment beats the static configuration. An empty
   `--holder` is a usage error; a malformed `AGENT_ID` is refused. `AGENT_ID`
   is read directly, so it applies even with `STEAMOS_NO_AGENT_ID` set or
   `agent-id` absent, but only in the session that minted it (see

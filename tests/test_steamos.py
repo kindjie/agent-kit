@@ -1447,6 +1447,44 @@ class SteamosTest(unittest.TestCase):
       self.steamos(self.holder_env(), '--holder', bad, 'lease', 'show',
                    code=2)
 
+  def test_mixed_provider_session_falls_to_the_next_holder_rung(self):
+    # agent-id show refuses when two providers' variables are set; the
+    # lease must neither crash nor take the parent's session-derived ID.
+    env = self.holder_env(CODEX_THREAD_ID='codex-thread')
+    parent = self.session_derived(self.holder_env())
+    proc = self.steamos(env, 'lease', 'take', 'x')
+    self.assertIn('several providers', proc.stderr)
+    holder = json.loads(
+      self.steamos(env, 'lease', 'show', '--json').stdout)['holder']
+    self.assertIn('@', holder)
+    self.assertNotEqual(holder, parent)
+    self.release(env, holder)
+    # A configured holder, AGENT_ID, and --holder all still take precedence.
+    self.configure({'default': 'unit', 'holder': 'cfg-holder', 'devices': {
+      'unit': {'address': '10.0.0.5', 'name': 'unit'}}})
+    self.assertEqual(self.lease_holder(env), 'cfg-holder')
+    self.release(env, 'cfg-holder')
+    self.assertEqual(self.lease_holder(dict(env, AGENT_ID='handmade-1')),
+                     'handmade-1')
+    self.release(env, 'handmade-1')
+    # An ID minted in the mixed context binds to it exactly.
+    minted = self.mint(env)
+    self.assertEqual(self.lease_holder(dict(env, AGENT_ID=minted)), minted)
+    self.release(env, minted)
+    for changed in (dict(env, CODEX_THREAD_ID='other-thread'),
+                    dict(env, CLAUDE_CODE_SESSION_ID='other-session')):
+      changed['AGENT_ID'] = minted
+      proc = self.steamos(changed, 'lease', 'take', 'x')
+      self.assertIn('ignoring AGENT_ID=' + minted, proc.stderr)
+      holder = json.loads(
+        self.steamos(changed, 'lease', 'show', '--json').stdout)['holder']
+      self.assertNotEqual(holder, minted)
+      self.release(changed, holder)
+    # Single-provider sessions are unchanged.
+    self.configure({'default': 'unit', 'devices': {
+      'unit': {'address': '10.0.0.5', 'name': 'unit'}}})
+    self.assertEqual(self.lease_holder(self.holder_env()), parent)
+
   def test_nested_session_ignores_inherited_agent_id(self):
     env = self.holder_env()
     own = self.mint(env)

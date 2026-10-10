@@ -11,7 +11,8 @@ import subprocess
 import sys
 import time
 
-from agent_records_core import RecordsError, agent_env_id
+from agent_records_core import (AMBIGUOUS_SESSION, RecordsError, agent_env_id,
+                                session_providers)
 
 # Runs on the device with HOME as its root. POSIX sh; Linux-only sleep
 # inhibition is optional so the lease also works on the macOS test host.
@@ -260,6 +261,11 @@ def holder(config):
       raise HolderError(str(error))
   name = name or config.get('holder')
   if not name and not os.environ.get('STEAMOS_NO_AGENT_ID') and \
+      len(session_providers()) > 1:
+    # agent-id show would refuse; skip it and use user@host.
+    print('steamos: holder falls back to user@host: ' + AMBIGUOUS_SESSION,
+          file=sys.stderr)
+  elif not name and not os.environ.get('STEAMOS_NO_AGENT_ID') and \
       shutil.which('agent-id'):
     proc = subprocess.run(['agent-id', 'show'], capture_output=True,
                           text=True, timeout=10)
