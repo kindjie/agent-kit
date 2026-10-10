@@ -630,7 +630,9 @@ They also cover opt-in renewal suppression versus default header delivery,
 observed expiry, preserved messages/ownership, actor options after subcommands,
 and literal `--` message arguments.
 Resource tests run harmless child processes to check default exclusion,
-weighted concurrency, full-budget exclusion, partial-credit rollback,
+weighted concurrency, full-budget exclusion, turnstile admission without
+overtaking, retained partial credits, timeout and signal rollback, reversed
+multi-resource order and child credit variables,
 legacy gate compatibility, idle-only capacity changes, unsafe file refusal,
 timeout, interruption cleanup and exit propagation. Efficiency tests use
 independent synthetic ledgers for provider accounting, copied history,

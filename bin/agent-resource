@@ -46,7 +46,12 @@ def resource(value):
   name, sep, count = value.partition(':')
   if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}', name):
     raise argparse.ArgumentTypeError('expected simple resource name')
-  return name, credits(count) if sep else 1
+  # Case-insensitive filesystems alias lock files that differ only in case.
+  return name.lower(), credits(count) if sep else 1
+
+
+def credit_variable(name):
+  return 'AGENT_RESOURCE_%s_CREDITS' % re.sub(r'[^A-Z0-9]', '_', name.upper())
 
 
 def secure_open(path):
@@ -110,31 +115,30 @@ def acquire(root, requests, deadline, configuring=False):
       if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
           info.st_mode & 0o077):
         raise OSError('unsafe resource slots directory')
-      while True:
-        held = []
-        try:
+      turnstile = secure_open(root / (name + '.turnstile'))
+      try:
+        lock(turnstile, fcntl.LOCK_EX, deadline)
+        # Keep partial credits so later small requests cannot overtake us.
+        held = set()
+        while len(held) < needed:
           for index in range(available):
+            if index in held:
+              continue
             fd = secure_open(slots / ('%d.lock' % index))
             try:
               fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
               os.close(fd)
               continue
-            held.append(fd)
+            handles.append(fd)
+            held.add(index)
             if len(held) == needed:
-              handles.extend(held)
-              held = []
               break
-          else:
-            for fd in held:
-              os.close(fd)
-            held = []
+          if len(held) < needed:
             retry(deadline)
-            continue
-          break
-        finally:
-          for fd in held:
-            os.close(fd)
+      finally:
+        # Only the gates and granted credits survive admission or reach children.
+        os.close(turnstile)
     return handles
   except BaseException:
     for fd in handles:
@@ -201,6 +205,12 @@ def main():
     requests = dict(args.resource)
     if len(requests) != len(args.resource):
       parser.error('request each resource only once')
+    keys = {}
+    for name in requests:
+      key = credit_variable(name)
+      if key in keys:
+        parser.error('%s and %s would share %s' % (keys[key], name, key))
+      keys[key] = name
   else:
     try:
       name, requested = resource(args.resource)
@@ -232,7 +242,11 @@ def main():
           os.unlink(temporary)
       print('%s: %d credits' % (name, args.credits))
       return 0
-    proc = subprocess.Popen(command, start_new_session=True, pass_fds=handles)
+    env = os.environ.copy()
+    for name, granted in requests.items():
+      env[credit_variable(name)] = str(granted)
+    proc = subprocess.Popen(command, env=env, start_new_session=True,
+                            pass_fds=handles)
     try:
       result = proc.wait(timeout=args.timeout)
     except subprocess.TimeoutExpired:
