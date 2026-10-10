@@ -23,6 +23,105 @@ BIN = ROOT / "bin"
 
 class SetupTest(RecordsFixture):
 
+  def test_agent_id_override_beats_shared_session(self):
+    # An in-process subagent shares the parent's session variable; its own
+    # minted ID, exported as AGENT_ID, must win for implicit identity.
+    env = dict(self.env, CLAUDE_CODE_SESSION_ID="parent-session")
+    parent = self.run_cmd("agent-id", "show", env=env).strip()
+    own = self.run_cmd("agent-id", "new", "helper", env=env).strip()
+    env["AGENT_ID"] = own
+    self.assertEqual(self.run_cmd("agent-id", "show", env=env).strip(), own)
+    self.assertNotEqual(own, parent)
+    env["AGENT_ID"] = ""
+    env.pop("CLAUDE_CODE_SESSION_ID")
+    self.run_cmd("agent-id", "show", env=env, code=1)
+    env["CLAUDE_CODE_SESSION_ID"] = "parent-session"
+    self.assertEqual(self.run_cmd("agent-id", "show", env=env).strip(),
+                     parent)
+    for bad in ("bad id!", " ", "\t"):
+      env["AGENT_ID"] = bad
+      self.run_cmd("agent-id", "show", env=env, code=2)
+
+  def show(self, env):
+    return subprocess.run(
+      [sys.executable, str(BIN / "agent-id"), "show"], env=env,
+      capture_output=True, text=True)
+
+  def test_session_bound_id_needs_a_matching_session(self):
+    claude = dict(self.env, CLAUDE_CODE_SESSION_ID="parent-session")
+    own = self.run_cmd("agent-id", "new", "helper", env=claude).strip()
+    # No session variable at all: a session-bound ID cannot be proven.
+    bare = dict(self.env, AGENT_ID=own)
+    shown = self.show(bare)
+    self.assertEqual((shown.returncode, shown.stdout), (1, ""))
+    self.assertIn("ignoring AGENT_ID=" + own, shown.stderr)
+    # Same session passes.
+    shown = self.show(dict(claude, AGENT_ID=own))
+    self.assertEqual((shown.stdout.strip(), shown.stderr), (own, ""))
+    # An ID minted with no session stays trusted without one.
+    sessionless = self.run_cmd("agent-id", "new", "bare").strip()
+    shown = self.show(dict(self.env, AGENT_ID=sessionless))
+    self.assertEqual((shown.stdout.strip(), shown.stderr), (sessionless, ""))
+
+  def test_mixed_provider_sessions_are_ambiguous(self):
+    # Either order of nesting leaves variables from two providers set, and
+    # variable precedence does not say which session is current.
+    for first, second in ((("CLAUDE_CODE_SESSION_ID", "claude-sess"),
+                           ("CODEX_THREAD_ID", "codex-thread")),
+                          (("CODEX_THREAD_ID", "codex-thread"),
+                           ("CLAUDE_CODE_SESSION_ID", "claude-sess"))):
+      parent = dict(self.env, **dict([first]))
+      own = self.run_cmd("agent-id", "new", "helper", env=parent).strip()
+      self.assertEqual(self.show(dict(parent, AGENT_ID=own)).stdout.strip(),
+                       own)
+      nested = dict(parent, AGENT_ID=own, **dict([second]))
+      shown = self.show(nested)
+      self.assertIn("ignoring AGENT_ID=" + own, shown.stderr)
+      self.assertNotEqual(shown.stdout.strip(), own)
+      # Even when the ambiguous environment still contains the minting
+      # session's variable, AGENT_ID is not honoured.
+      self.assertIn("ambiguous", shown.stderr)
+
+  def test_agent_id_ignored_by_a_nested_session(self):
+    env = dict(self.env, CLAUDE_CODE_SESSION_ID="parent-session")
+    own = self.run_cmd("agent-id", "new", "helper", env=env).strip()
+    row = json.loads(
+      (self.base / "agent-kit" / "agent-ids.log").read_text().splitlines()[-1])
+    self.assertEqual(row["minted_session"],
+                     self.run_cmd("agent-id", "show", env=env).strip())
+    # A nested claude -p or codex exec inherits AGENT_ID, not the session.
+    nested = dict(env, AGENT_ID=own, CLAUDE_CODE_SESSION_ID="child-session")
+    child = self.run_cmd("agent-id", "show",
+                         env={k: v for k, v in nested.items()
+                              if k != "AGENT_ID"}).strip()
+    self.assertNotEqual(child, own)
+    shown = subprocess.run(
+      [sys.executable, str(BIN / "agent-id"), "show"], env=nested,
+      capture_output=True, text=True)
+    self.assertEqual((shown.returncode, shown.stdout.strip()), (0, child))
+    self.assertIn("ignoring AGENT_ID=" + own, shown.stderr)
+    self.assertEqual(shown.stderr.count("\n"), 1)
+    quiet = subprocess.run(
+      [sys.executable, str(BIN / "agent-id"), "show"],
+      env=dict(env, AGENT_ID=own), capture_output=True, text=True)
+    self.assertEqual((quiet.stdout.strip(), quiet.stderr), (own, ""))
+    codex = dict(nested, CODEX_THREAD_ID="thread")
+    codex.pop("CLAUDE_CODE_SESSION_ID")
+    self.assertTrue(self.run_cmd("agent-id", "show", env=codex)
+                    .startswith("codex-"))
+    # IDs the registry has not seen, or minted with no session, are trusted.
+    nested["AGENT_ID"] = "handmade-1"
+    self.assertEqual(self.run_cmd("agent-id", "show", env=nested).strip(),
+                     "handmade-1")
+    bare = self.run_cmd("agent-id", "new", "bare").strip()
+    nested["AGENT_ID"] = bare
+    self.assertEqual(self.run_cmd("agent-id", "show", env=nested).strip(),
+                     bare)
+    # An ID minted with no session variable records no minting session.
+    self.assertEqual(
+      json.loads((self.base / "agent-kit" / "agent-ids.log").read_text()
+                 .splitlines()[-1])["minted_session"], None)
+
   def test_id_derivation_and_registry(self):
     env = dict(self.env, CLAUDE_CODE_SESSION_ID="same-prefix-111")
     first = self.run_cmd("agent-id", "show", env=env).strip()

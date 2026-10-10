@@ -70,6 +70,9 @@ class SteamosTest(unittest.TestCase):
       os.environ, PATH=f'{bindir}{os.pathsep}{os.environ["PATH"]}',
       FAKE_SSH_ROOT=str(self.root), XDG_CONFIG_HOME=str(self.config_home),
       HOME=str(self.root / 'home'), STEAMOS_LEASE_HOLDER='agent-a')
+    for name in ('AGENT_ID', 'CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID',
+                 'CODEX_SESSION_ID', 'STEAMOS_NO_AGENT_ID'):
+      self.env.pop(name, None)
     self.configure({'default': 'unit', 'devices': {
       'unit': {'address': '10.0.0.5', 'name': 'unit'}}})
 
@@ -1350,6 +1353,146 @@ class SteamosTest(unittest.TestCase):
       [sys.executable, str(BIN), 'lease', 'show', '--json'], env=env,
       capture_output=True, text=True, timeout=20).stdout)['holder']
     self.assertIn('@', holder)
+
+  def holder_env(self, **extra):
+    env = {k: v for k, v in self.env.items() if k != 'STEAMOS_LEASE_HOLDER'}
+    env.pop('AGENT_ID', None)
+    agent_id = self.root / 'bin' / 'agent-id'
+    agent_id.write_text(
+      f'#!/bin/sh\nexec {sys.executable} {BIN.parent / "agent-id"} "$@"\n')
+    agent_id.chmod(0o755)
+    env['XDG_STATE_HOME'] = str(self.root / 'state')
+    env['CLAUDE_CODE_SESSION_ID'] = 'parent-session'
+    env.update(extra)
+    return env
+
+  def steamos(self, env, *args, code=0):
+    proc = subprocess.run([sys.executable, str(BIN), *args], env=env,
+                          capture_output=True, text=True, timeout=30)
+    self.assertEqual(proc.returncode, code, proc.stdout + proc.stderr)
+    return proc
+
+  def lease_holder(self, env, *args):
+    self.steamos(env, 'lease', 'take', 'x', *args)
+    return json.loads(
+      self.steamos(env, 'lease', 'show', '--json').stdout)['holder']
+
+  def release(self, env, holder):
+    self.steamos(env, 'lease', 'release', '--holder', holder)
+
+  def mint(self, env, label='helper'):
+    return subprocess.run(
+      [sys.executable, str(BIN.parent / 'agent-id'), 'new', label],
+      env=env, capture_output=True, text=True, check=True).stdout.strip()
+
+  def session_derived(self, env):
+    return subprocess.run(
+      [sys.executable, str(BIN.parent / 'agent-id'), 'show'], env=env,
+      capture_output=True, text=True, timeout=20).stdout.strip()
+
+  def test_holder_follows_session_without_override(self):
+    env = self.holder_env()
+    derived = self.session_derived(env)
+    self.assertTrue(derived.startswith('claude-'), derived)
+    self.assertEqual(self.lease_holder(env), derived)
+
+  def test_agent_id_env_names_subagent_holder(self):
+    env = self.holder_env()
+    own = self.mint(env)
+    env['AGENT_ID'] = own  # same session: a subagent of the minting agent
+    self.assertEqual(self.lease_holder(env), own)
+
+  def test_agent_id_needs_neither_agent_id_tool_nor_opt_in(self):
+    env = self.holder_env(AGENT_ID='helper-0123456789abcdef',
+                          STEAMOS_NO_AGENT_ID='1')
+    (self.root / 'bin' / 'agent-id').unlink()
+    env['PATH'] = str(self.root / 'bin') + os.pathsep + '/usr/bin:/bin'
+    self.assertIsNone(shutil.which('agent-id', path=env['PATH']))
+    env.pop('CLAUDE_CODE_SESSION_ID')
+    self.assertEqual(self.lease_holder(env), 'helper-0123456789abcdef')
+
+  def test_holder_precedence(self):
+    self.configure({'default': 'unit', 'holder': 'cfg-holder', 'devices': {
+      'unit': {'address': '10.0.0.5', 'name': 'unit'}}})
+    env = self.holder_env(AGENT_ID='helper-0123456789abcdef',
+                          STEAMOS_LEASE_HOLDER='env-holder')
+    for flags, expected in (((), 'env-holder'),
+                            (('--holder', 'flag-holder'), 'flag-holder')):
+      self.assertEqual(self.lease_holder(env, *flags), expected)
+      self.release(env, expected)
+    env.pop('STEAMOS_LEASE_HOLDER')
+    self.assertEqual(self.lease_holder(env), 'helper-0123456789abcdef')
+    self.release(env, 'helper-0123456789abcdef')
+    env.pop('AGENT_ID')
+    self.assertEqual(self.lease_holder(env), 'cfg-holder')
+    self.release(env, 'cfg-holder')
+    self.configure({'default': 'unit', 'devices': {
+      'unit': {'address': '10.0.0.5', 'name': 'unit'}}})
+    self.assertEqual(self.lease_holder(env), self.session_derived(env))
+
+  def test_invalid_agent_id_is_refused_and_empty_is_unset(self):
+    for bad in ('bad id!', ' ', '\t', 'x' * 200):
+      env = self.holder_env(AGENT_ID=bad)
+      proc = self.steamos(env, 'lease', 'take', 'x', code=2)
+      self.assertIn('AGENT_ID', proc.stderr)
+      self.assertEqual(self.lease_json()['state'], 'free')
+    env = self.holder_env(AGENT_ID='')
+    self.assertEqual(self.lease_holder(env), self.session_derived(env))
+
+  def test_empty_holder_flag_is_a_usage_error(self):
+    for bad in ('', '  '):
+      proc = self.steamos(self.holder_env(), 'lease', 'take', 'x',
+                          '--holder', bad, code=2)
+      self.assertIn('--holder', proc.stderr)
+      self.steamos(self.holder_env(), '--holder', bad, 'lease', 'show',
+                   code=2)
+
+  def test_nested_session_ignores_inherited_agent_id(self):
+    env = self.holder_env()
+    own = self.mint(env)
+    env['AGENT_ID'] = own
+    self.assertEqual(self.lease_holder(env), own)
+    self.release(env, own)
+    # A nested claude -p / codex exec inherits AGENT_ID but has its own
+    # session, so it must not take the lease as the spawner.
+    nested = dict(env, CLAUDE_CODE_SESSION_ID='nested-session')
+    holder = self.lease_holder(nested)
+    self.assertNotEqual(holder, own)
+    self.assertIn('ignoring AGENT_ID=' + own,
+                  self.steamos(nested, 'lease', 'show').stderr)
+    self.assertEqual(holder, self.session_derived(
+      {k: v for k, v in nested.items() if k != 'AGENT_ID'}))
+    self.release(nested, holder)
+    # Without any session variable, or with two providers', it is ignored.
+    for extra in ({}, {'CODEX_THREAD_ID': 'codex-thread'}):
+      env2 = dict(env, STEAMOS_NO_AGENT_ID='1', **extra)
+      if not extra:
+        env2.pop('CLAUDE_CODE_SESSION_ID')
+      proc = self.steamos(env2, 'lease', 'show', '--json')
+      self.assertIn('ignoring AGENT_ID=' + own, proc.stderr)
+    # An ID the registry has never seen is trusted.
+    nested['AGENT_ID'] = 'handmade-1'
+    self.assertEqual(self.lease_holder(nested), 'handmade-1')
+
+  def test_holder_flag_applies_to_each_lease_action(self):
+    self.run_cli('lease', 'take', 'x', '--holder', 'sub-1')
+    self.run_cli('--holder', 'sub-1', 'lease', 'renew')
+    self.run_cli('lease', 'check', '--holder', 'sub-1')
+    self.run_cli('lease', 'check', holder='agent-b', code=1)
+    self.run_cli('lease', 'release', '--holder', 'sub-1')
+
+  def test_holder_applies_to_commands_that_require_the_lease(self):
+    self.fixture_tool('mangohudctl', '''
+      import sys
+    ''')
+    sub = self.holder_env(AGENT_ID='helper-0123456789abcdef')
+    # Default holder (agent-a) does not own the subagent's lease.
+    self.steamos(sub, 'lease', 'take', 'frametimes')
+    self.run_cli('frametimes', 'start', code=1)
+    self.steamos(sub, 'frametimes', 'start')
+    self.steamos(self.holder_env(), 'frametimes', 'stop',
+                 '--holder', 'helper-0123456789abcdef')
+    self.steamos(self.holder_env(), 'frametimes', 'stop', code=1)
 
 
 if __name__ == '__main__':

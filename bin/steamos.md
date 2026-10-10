@@ -97,10 +97,17 @@ succeed, and the device's clock judges expiry.
   `~/.agent-kit-steamos-lease.log` records that.
 - `break` removes a lease someone else holds and records the reason in
   the same log.
-- The holder is `STEAMOS_LEASE_HOLDER` when set, then `holder` in the
-  configuration, then `agent-id show` when agent-kit records are
-  installed, then `user@host`. On macOS the host part is the stable
-  local host name, which does not change with the network.
+- The holder is the `--holder ID` option (valid on every command) when
+  given, then `STEAMOS_LEASE_HOLDER`, then `AGENT_ID`, then `holder` in the
+  configuration, then `agent-id show` when agent-kit records are installed,
+  then `user@host`. Environment beats the static configuration. An empty
+  `--holder` is a usage error; a malformed `AGENT_ID` is refused. `AGENT_ID`
+  is read directly, so it applies even with `STEAMOS_NO_AGENT_ID` set or
+  `agent-id` absent, but only in the session that minted it (see
+  `docs/records.md`). A subagent shares its parent's session, so it must
+  pass `--holder` or `export AGENT_ID` in each shell call, or it acts as its
+  parent. On macOS the host part is the stable local host name, which does
+  not change with the network.
 
 Policy, all optional:
 

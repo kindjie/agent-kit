@@ -179,6 +179,74 @@ def session_id():
   return None, None
 
 
+def minted_session(agent_id):
+  """The session that minted agent_id, or None when unknown."""
+  try:
+    with state_path("agent-ids.log").open("r", encoding="utf-8") as stream:
+      lines = stream.read().splitlines()
+  except OSError:
+    return None
+  found = None
+  for line in lines:
+    try:
+      row = json.loads(line)
+    except ValueError:
+      continue
+    if isinstance(row, dict) and row.get("id") == agent_id:
+      found = row.get("minted_session")
+  return found if isinstance(found, str) else None
+
+
+def session_providers():
+  """Providers whose session variables are set in this environment."""
+  found = set()
+  for key, label in (("CLAUDE_CODE_SESSION_ID", "claude"),
+                     ("CODEX_THREAD_ID", "codex"),
+                     ("CODEX_SESSION_ID", "codex")):
+    if os.environ.get(key):
+      found.add(label)
+  return found
+
+
+def agent_env_id():
+  """Return AGENT_ID when it names this session's identity, else None.
+
+  Empty means unset; anything else must be a valid agent ID, or this raises.
+  A subagent shares its parent's session, so an ID minted in this session
+  passes. A nested CLI inherits the variable but has its own session, so
+  an ID bound to a session is honoured only when exactly one provider's
+  session variables are set and they name the minting session. It is ignored
+  (with a stderr notice) when they name another session, when there are none,
+  or when several providers' variables are present, because variable
+  precedence does not show which of them is current. An ID not in the
+  registry, or minted without a session, is trusted.
+  """
+  value = os.environ.get("AGENT_ID")
+  if not value:
+    return None
+  if not ID_RE.fullmatch(value):
+    raise RecordsError("AGENT_ID is not a valid agent ID", 2)
+  minted = minted_session(value)
+  if minted:
+    ambiguous = len(session_providers()) > 1
+    if ambiguous or minted != session_id()[0]:
+      why = ("session variables from several providers (ambiguous)"
+             if ambiguous else "a different or missing session")
+      print(f"agent-kit: ignoring AGENT_ID={value}: minted by a session "
+            f"that is not provably this one ({why}); pass --agent or "
+            "--holder explicitly", file=sys.stderr)
+      return None
+  return value
+
+
+def current_id():
+  """Return (ID, source): AGENT_ID when it applies, else the session ID."""
+  value = agent_env_id()
+  if value:
+    return value, "AGENT_ID"
+  return session_id()
+
+
 def state_path(name):
   root = Path(os.environ.get(
     "XDG_STATE_HOME", str(Path.home() / ".local/state")))

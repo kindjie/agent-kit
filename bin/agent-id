@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(os.path.realpath(__file__)).parent))
 from agent_records_core import (EXIT_TEXT, FORCE_TEXT, ID_RE, RecordsError,
-                                machine, one_line, private_append, repo_keys,
+                                current_id, machine, one_line, private_append, repo_keys,
                                 repo_rebind, session_id, stamp, state_path,
                                 unexpected_error)
 
@@ -28,7 +28,8 @@ def parser():
   p.add_argument("--agent", help="explicit actor ID for repo-rebind")
   sub = p.add_subparsers(dest="command", required=True)
   for name, help_text in (
-    ("show", "Print stable session ID; writes nothing. Example: agent-id show"),
+    ("show", "Print AGENT_ID if set, else the stable session ID; writes "
+     "nothing. Example: agent-id show"),
     ("machine", "Print machine source; writes nothing. "
      "Example: agent-id machine"),
     ("repo-keys", "List key registry; writes nothing. "
@@ -65,9 +66,10 @@ def main():
     if not args.force.strip():
       raise RecordsError("--force requires an owner instruction reason", 2)
   if args.command == "show":
-    value, _ = session_id()
+    value, _ = current_id()
     if not value:
-      raise RecordsError("no session ID; use agent-id new LABEL", 1)
+      raise RecordsError("no AGENT_ID or session ID; use agent-id new LABEL",
+                         1)
     print(value)
   elif args.command == "new":
     if not ID_RE.fullmatch(args.label):
@@ -75,9 +77,10 @@ def main():
     value = args.label + "-" + secrets.token_hex(8)
     if not ID_RE.fullmatch(value):
       raise RecordsError("label is too long", 2)
-    _, source = session_id()
+    minted, source = session_id()
     row = {"time": stamp(), "id": value, "label": args.label,
-           "cwd": os.getcwd(), "session_variable": source}
+           "cwd": os.getcwd(), "session_variable": source,
+           "minted_session": minted}
     try:
       private_append(state_path("agent-ids.log"), json.dumps(row) + "\n")
     except OSError as exc:

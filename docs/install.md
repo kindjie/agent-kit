@@ -254,8 +254,10 @@ records tools are not configured. Claude Code, in `~/.claude/settings.json`:
 ```
 
 Codex uses the same schema in `~/.codex/hooks.json`, with
-`--provider codex` added to both commands so the agent ID matches
-`agent-id show`.
+`--provider codex` added to both commands so the agent ID it reports is the
+session-derived one that `agent-id show` prints when `AGENT_ID` is unset. A
+subagent's exported `AGENT_ID` takes precedence in `agent-id show`, not in
+this hook's report.
 
 ## Status lines
 

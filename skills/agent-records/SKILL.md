@@ -20,11 +20,25 @@ options; `agent-task --help` also prints the status transition table.
 
 ## Identity
 
-Every writing call takes `--agent <id>`. Use the ID you were assigned when
-given one; otherwise `agent-id show`: it is stable for your session and
-derived from it. A delegated agent, fork or fresh,
+Every writing call takes `--agent <id>`: the ID you were assigned when you
+were given one, otherwise `agent-id show`, which is stable for your session
+and derived from it. A delegated agent, fork or fresh,
 gets its own from `agent-id new <label>`; a subagent shares your session,
 so without its own ID it writes as you.
+
+Records writes take `--agent`, else `AGENT_ID`; the session is never used.
+Implicit lookups (`agent-id show`, the `steamos` holder) take `--holder`
+(steamos), else `AGENT_ID`, else the session. A subagent therefore starts
+each Bash call with `export AGENT_ID=<id>;` (it does not persist between
+calls; a one-off `AGENT_ID=<id> cmd` prefix covers only the first command of
+`a && b`) and passes `--agent <id>`. `AGENT_ID` is honoured only in the
+session that minted the ID: it is ignored, with a stderr notice, when no
+session variable is set or when several providers' variables are present
+(a codex child of Claude, or the reverse). An ID not in the registry, or
+minted without a session, is trusted. Start
+nested `claude -p`/`codex exec` with `env -u AGENT_ID`; a cross-tool
+delegate handed a coordinator-minted ID must pass `--agent`/`--holder`
+explicitly.
 
 ## Tasks
 
@@ -147,7 +161,9 @@ channel back and forth. For example:
 
 ```text
 Your agent ID is helper-0123456789abcdef. Work on T-0001.
-Pass --agent helper-0123456789abcdef to every records write.
+Pass --agent helper-0123456789abcdef to every records write. Start each
+shell call with `export AGENT_ID=helper-0123456789abcdef;` (steamos also
+takes --holder with that ID). Run nested claude/codex with `env -u AGENT_ID`.
 At each milestone, read new messages with
   agent-task show T-0001 --after <cursor>
 and report progress or blockers with
