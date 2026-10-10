@@ -32,13 +32,14 @@ or address rather than guessing.
    with `steamos lease renew`.
 4. `steamos lease release` when done, including when you stop early.
 
-On a shared device, hold a lease only for the device steps themselves; a
-build or benchmark running on the device is a device step. Release it before
-long work that does not use the device (local builds, reviews, CI waits) and
-take it again when you next need it. Build SteamOS bundles in the project's
-supported build environment; where that includes an available SteamOS device,
-building there usually beats emulating x86-64 on a host of another
-architecture.
+On a shared device, hold a lease only for steps that need the device to
+yourself, such as deploys, launches and benchmarks, and release it before
+other work (builds, reviews, CI waits) and take it again when you next need
+it. Follow the project's rule for builds that run on the device; a project
+may build there without the lease after checking that no one else holds it.
+Build SteamOS bundles in the project's supported build environment; where
+that includes an available SteamOS device, building there usually beats
+emulating x86-64 on a host of another architecture.
 
 A subagent shares its parent's session, so the holder would default to the
 parent. Start each Bash call with `export AGENT_ID=<your agent ID>;` (the
