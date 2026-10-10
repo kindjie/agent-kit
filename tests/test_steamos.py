@@ -1458,6 +1458,8 @@ class SteamosTest(unittest.TestCase):
     nested = dict(env, CLAUDE_CODE_SESSION_ID='nested-session')
     holder = self.lease_holder(nested)
     self.assertNotEqual(holder, own)
+    self.assertIn('ignoring AGENT_ID=' + own,
+                  self.steamos(nested, 'lease', 'show').stderr)
     self.assertEqual(holder, self.session_derived(
       {k: v for k, v in nested.items() if k != 'AGENT_ID'}))
     self.release(nested, holder)

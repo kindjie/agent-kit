@@ -28,11 +28,14 @@ patch, not narration.
 Where `agent-task` and `agent-changelog` are in use, give each delegate,
 fork or fresh, its own ID from `agent-id new <label>` and the task it works
 on; a fork shares your session and would otherwise write as you. Tell it to
-pass `--agent <id>` on every records write and to prefix every shell
-command with `AGENT_ID=<id>` (`--holder <id>` also works on every `steamos`
-command), because tools that default their identity from `agent-id show`
-otherwise record the parent's session. Start nested `claude -p` or
-`codex exec` with `env -u AGENT_ID`. The `agent-records` skill (or
+pass `--agent <id>` on every records write and to start each Bash call with
+`export AGENT_ID=<id>;` (`--holder <id>` also works on every `steamos`
+command; a one-off `AGENT_ID=<id> cmd` prefix covers only the first command
+of `a && b`), because tools that default their identity from `agent-id
+show` otherwise record the parent's session. Start nested `claude -p` or
+`codex exec` with `env -u AGENT_ID`; a cross-tool delegate you hand a
+minted ID must be told to pass `--agent`/`--holder` explicitly, since
+`AGENT_ID` is ignored outside the minting session. The `agent-records` skill (or
 `docs/records.md` in the agent-kit repository) has a ready brief.
 
 A delegate in the other tool (`codex exec` from Claude Code, `claude -p`

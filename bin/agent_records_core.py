@@ -215,6 +215,8 @@ def agent_env_id():
   current = session_id()[0]
   minted = minted_session(value) if current else None
   if minted and minted != current:
+    print(f"agent-kit: ignoring AGENT_ID={value}: minted by another session; "
+          "pass --agent or --holder explicitly", file=sys.stderr)
     return None
   return value
 

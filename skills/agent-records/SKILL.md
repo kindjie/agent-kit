@@ -28,11 +28,15 @@ so without its own ID it writes as you.
 
 Records writes take `--agent`, else `AGENT_ID`; the session is never used.
 Implicit lookups (`agent-id show`, the `steamos` holder) take `--holder`
-(steamos), else `AGENT_ID`, else the session. A subagent therefore prefixes
-every shell command with `AGENT_ID=<id>` (it does not persist between
-calls) and passes `--agent <id>`. `AGENT_ID` is honoured only in the session
-that minted the ID, so start nested `claude -p`/`codex exec` with
-`env -u AGENT_ID`.
+(steamos), else `AGENT_ID`, else the session. A subagent therefore starts
+each Bash call with `export AGENT_ID=<id>;` (it does not persist between
+calls; a one-off `AGENT_ID=<id> cmd` prefix covers only the first command of
+`a && b`) and passes `--agent <id>`. `AGENT_ID` is honoured only in the
+session that minted the ID (ignoring it prints a notice on stderr), and an
+ID not in the registry, or minted without a session, is trusted. Start
+nested `claude -p`/`codex exec` with `env -u AGENT_ID`; a cross-tool
+delegate handed a coordinator-minted ID must pass `--agent`/`--holder`
+explicitly.
 
 ## Tasks
 
@@ -155,7 +159,9 @@ channel back and forth. For example:
 
 ```text
 Your agent ID is helper-0123456789abcdef. Work on T-0001.
-Pass --agent helper-0123456789abcdef to every records write.
+Pass --agent helper-0123456789abcdef to every records write. Start each
+shell call with `export AGENT_ID=helper-0123456789abcdef;` (steamos also
+takes --holder with that ID). Run nested claude/codex with `env -u AGENT_ID`.
 At each milestone, read new messages with
   agent-task show T-0001 --after <cursor>
 and report progress or blockers with

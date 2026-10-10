@@ -41,8 +41,10 @@ building there usually beats emulating x86-64 on a host of another
 architecture.
 
 A subagent shares its parent's session, so the holder would default to the
-parent. Prefix every `steamos` command with `AGENT_ID=<your agent ID>`
-(the variable does not persist between shell calls). `--holder <id>` works
+parent. Start each Bash call with `export AGENT_ID=<your agent ID>;` (the
+variable does not persist between calls, and a one-off prefix such as
+`AGENT_ID=x steamos lease take y && steamos deploy` covers only the first
+command, so the deploy would run as the parent). `--holder <id>` works
 on every `steamos` command too, not only `lease`: deploy, title, devkit,
 frametimes and bench check the lease as the same holder. `steamos lease
 show` confirms it.

@@ -56,8 +56,16 @@ class SetupTest(RecordsFixture):
                          env={k: v for k, v in nested.items()
                               if k != "AGENT_ID"}).strip()
     self.assertNotEqual(child, own)
-    self.assertEqual(self.run_cmd("agent-id", "show", env=nested).strip(),
-                     child)
+    shown = subprocess.run(
+      [sys.executable, str(BIN / "agent-id"), "show"], env=nested,
+      capture_output=True, text=True)
+    self.assertEqual((shown.returncode, shown.stdout.strip()), (0, child))
+    self.assertIn("ignoring AGENT_ID=" + own, shown.stderr)
+    self.assertEqual(shown.stderr.count("\n"), 1)
+    quiet = subprocess.run(
+      [sys.executable, str(BIN / "agent-id"), "show"],
+      env=dict(env, AGENT_ID=own), capture_output=True, text=True)
+    self.assertEqual((quiet.stdout.strip(), quiet.stderr), (own, ""))
     codex = dict(nested, CODEX_THREAD_ID="thread")
     codex.pop("CLAUDE_CODE_SESSION_ID")
     self.assertTrue(self.run_cmd("agent-id", "show", env=codex)

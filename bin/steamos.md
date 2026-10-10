@@ -105,7 +105,7 @@ succeed, and the device's clock judges expiry.
   is read directly, so it applies even with `STEAMOS_NO_AGENT_ID` set or
   `agent-id` absent, but only in the session that minted it (see
   `docs/records.md`). A subagent shares its parent's session, so it must
-  pass `--holder` or set `AGENT_ID` on each command, or it acts as its
+  pass `--holder` or `export AGENT_ID` in each shell call, or it acts as its
   parent. On macOS the host part is the stable local host name, which does
   not change with the network.
 

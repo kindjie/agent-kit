@@ -393,16 +393,20 @@ A malformed `AGENT_ID` is refused (exit 2) rather than ignored; an empty one
 counts as unset. `AGENT_ID` leaks into nested CLIs, so `agent-id show` and
 `steamos` honour it only when the current session is the one that minted
 it (a subagent passes; a nested `claude -p` or `codex exec` has its own
-session and falls back to its own ID). An ID that is not in the registry is
-trusted. Start a nested CLI with `env -u AGENT_ID` and give it its own ID
-with `--agent`. The delegating agent can pass this prompt fragment:
+session and falls back to its own ID, printing a one-line notice on
+stderr). An ID that is not in the registry, or whose registry row has no
+minting session (older or sessionless mints), is trusted. Start a nested
+CLI with `env -u AGENT_ID` and give it its own ID with `--agent`. A
+cross-tool delegate (`claude -p`, `codex exec`) handed a coordinator-minted
+ID has its own session, so `AGENT_ID` is ignored there: it must pass
+`--agent`/`--holder` explicitly. The delegating agent can pass this prompt fragment:
 
 ```text
 Your agent ID is helper-0123456789abcdef. Work on T-0001.
-Prefix every shell command with `AGENT_ID=helper-0123456789abcdef` (the
-variable does not persist between commands) so implicit lookups such as
-steamos use it, and pass --agent helper-0123456789abcdef to every records
-mutation. `--holder helper-0123456789abcdef` works on every steamos command.
+Start each shell call with `export AGENT_ID=helper-0123456789abcdef;` (the
+variable does not persist between calls, and a one-off prefix covers only
+the first command of `a && b`) so implicit lookups such as steamos use it,
+and pass --agent helper-0123456789abcdef to every records mutation. `--holder helper-0123456789abcdef` works on every steamos command.
 Start nested claude or codex sessions with `env -u AGENT_ID`.
 Use agent-task --agent helper-0123456789abcdef log T-0001
   --to all 'Progress update' for coordination.

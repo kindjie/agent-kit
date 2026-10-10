@@ -53,9 +53,10 @@ steamos lease release
 ```
 
 The holder defaults to your agent ID. A subagent shares its parent's session,
-so it prefixes every `steamos` command with `AGENT_ID=ID`, or passes
+so it starts each shell call with `export AGENT_ID=ID;`, or passes
 `--holder ID` to every command (not only `lease`), to avoid acting as the
-parent.
+parent. A one-off `AGENT_ID=ID steamos ... && steamos ...` prefix covers
+only the first command.
 
 The lease is shared across projects. It is advisory, so every cooperating
 tool must check it. While held, it normally prevents idle sleep until the
