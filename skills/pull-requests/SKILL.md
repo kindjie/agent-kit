@@ -14,7 +14,8 @@ Apply this workflow proportionately. A small, reversible change needs less
 ceremony than a public contract, migration, or release. This skill supplies
 checks, not authority: do not create or switch branches or worktrees, push,
 open or modify a PR, merge, or delete anything unless the user's request
-authorizes that action.
+authorizes that action or a standing cleanup authorization in the user's
+instructions covers it.
 
 ## Before The Code
 
@@ -119,5 +120,12 @@ the PR whenever the change makes them stale. After merging, update external
 tracking state and facts that could only be known from the merge; use a
 follow-up PR for newly required repository changes.
 
-Delete branches and worktrees only when authorized, and only after verifying
-the merge result.
+Delete branches and worktrees, including remote branches, only when the user
+asks or a standing cleanup authorization in their instructions covers it, and
+only after verifying the merge result against the current remote, accounting for
+all unique work and retained files, and confirming no running process, active
+agent, or actual retention need still depends on it; handle one item at a time.
+Records are cleanup reminders and handoff aids; an open task or entry alone does
+not block cleanup or require prior closure. Follow `agent-records` for
+verification, then close or update records after removal; leave uncertain state
+in place.

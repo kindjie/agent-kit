@@ -11,7 +11,9 @@ prose, or the agent's own initiative.
 3. Staging is deliberate. Never `git add -A` over unrelated working-tree
    changes, and inspect the staged diff before committing.
 4. Nothing is pushed, merged, or branched without approval. Do not create,
-   switch, or delete branches unless asked.
+   switch, or delete branches unless asked, or unless the user's
+   instructions grant a standing cleanup authorization that covers the
+   deletion.
 
 ## Pull requests
 
@@ -58,9 +60,12 @@ mistakes; the `agent-records` skill has the commands. Before starting, check
 milestones. Use `estimate-agent-work` before starting unestimated work. Pass
 `--agent $(agent-id show)` on every records write. Watch claimed tasks for
 messages. Use `agent-changelog new` for state that outlives the session and
-record serious mistakes. Before cleanup, read
-`agent-changelog list --open --machine`; an entry never establishes deletion
-authority. The skill covers handoffs, verification, and cleanup details.
+record serious mistakes. Task and change logs are reminders and handoff aids
+for cleanup, especially after an interruption or when another agent takes over;
+they are not approval gates or obstacles to cleaning up your own finished work.
+Consult relevant records with `agent-changelog list --open --machine`; an entry
+never establishes deletion authority. The skill covers handoffs, verification,
+and cleanup details.
 
 Clean up state once it has served its purpose: worktrees, branches, stashes,
 scratch and temporary files and folders, generated assets, traces, and test
@@ -68,11 +73,17 @@ deployments. Its creator does it; otherwise the delegating agent does, or the
 next agent on the task or entry. First verify the work landed on the default
 branch by searching its symbols and introducing commit, not by inference. Verify
 that no unique uncommitted, unpushed, or untracked work remains; nothing running
-uses it; and no open entry or active agent still needs it. Before removing a
-directory, read every open entry located inside it and preserve or account for
-each file it names; never infer contents from one pattern. Remove exactly that
-state and close its entry with what was verified. Verified cleanup needs no
-owner approval unless the user requires it. Leave anything uncertain and say
-why.
+uses it; and no active agent or actual retention need still depends on it.
+When removing a directory, consult its relevant records and preserve or account
+for each named file; never infer contents from one pattern. An open task or
+entry alone is not a retention requirement and need not be closed before
+cleanup. Remove exactly the verified state, then close or update its records
+with what was verified. Missing or stale records do not prohibit cleanup when
+current evidence establishes safety; reconcile them afterward. Verified
+cleanup needs no owner approval unless the user requires it, except deleting
+branches, including remote branches: that needs the user's request or a
+standing cleanup authorization in their instructions. Delete one verified
+branch at a time; never batch-delete from names, age, or expired claims. Leave
+anything uncertain and say why.
 <!-- /agent-kit:records -->
 <!-- END agent-kit -->
