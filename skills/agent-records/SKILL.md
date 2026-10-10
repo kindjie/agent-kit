@@ -36,8 +36,9 @@ session that minted the ID: it is ignored, with a stderr notice, when no
 session variable is set or when several providers' variables are present
 (a codex child of Claude, or the reverse). In that mixed case `agent-id show`
 refuses (exit 1) when `AGENT_ID` does not apply: use your assigned ID with
-`--agent`/`--holder`, or mint one with `agent-id new`. An ID not in the
-registry, or minted without a session, is trusted. Start
+`--agent`/`--holder`, or mint one with `agent-id new` (bound to that exact
+mixed context). An ID not in the registry, or minted without a session, is
+trusted. Start
 nested `claude -p`/`codex exec` with `env -u AGENT_ID`; a cross-tool
 delegate handed a coordinator-minted ID must pass `--agent`/`--holder`
 explicitly.

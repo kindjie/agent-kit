@@ -1467,6 +1467,19 @@ class SteamosTest(unittest.TestCase):
     self.assertEqual(self.lease_holder(dict(env, AGENT_ID='handmade-1')),
                      'handmade-1')
     self.release(env, 'handmade-1')
+    # An ID minted in the mixed context binds to it exactly.
+    minted = self.mint(env)
+    self.assertEqual(self.lease_holder(dict(env, AGENT_ID=minted)), minted)
+    self.release(env, minted)
+    for changed in (dict(env, CODEX_THREAD_ID='other-thread'),
+                    dict(env, CLAUDE_CODE_SESSION_ID='other-session')):
+      changed['AGENT_ID'] = minted
+      proc = self.steamos(changed, 'lease', 'take', 'x')
+      self.assertIn('ignoring AGENT_ID=' + minted, proc.stderr)
+      holder = json.loads(
+        self.steamos(changed, 'lease', 'show', '--json').stdout)['holder']
+      self.assertNotEqual(holder, minted)
+      self.release(changed, holder)
     # Single-provider sessions are unchanged.
     self.configure({'default': 'unit', 'devices': {
       'unit': {'address': '10.0.0.5', 'name': 'unit'}}})

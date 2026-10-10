@@ -408,8 +408,11 @@ only the innermost process has: a `codex exec` child of Claude Code sees
 a Claude child of Codex inherits `CODEX_THREAD_ID` the same way. Process
 ancestry could name the nearest agent, but sandboxes hide `ps` and wrappers
 rename processes, so it is not relied on. `agent-id new` still works there
-but records no minting session, so the ID is not tied to the outer one.
-`steamos` skips `agent-id show` in that case, prints a notice, and uses
+and binds the ID to the whole mixed context (every set session variable,
+hashed): `AGENT_ID` is honoured only where that exact context recurs, and
+ignored with the notice when either provider's session changes or another
+nesting level adds a variable. `steamos` skips `agent-id show` in that
+case, prints a notice, and uses
 `user@host`. An ID that is not in the registry, or whose registry row has no
 minting session (older or sessionless mints), is trusted. Start a nested
 CLI with `env -u AGENT_ID` and give it its own ID with `--agent`. A

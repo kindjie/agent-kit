@@ -109,14 +109,31 @@ class SetupTest(RecordsFixture):
       handmade = self.show(dict(both, AGENT_ID="handmade-1"))
       self.assertEqual((handmade.returncode, handmade.stdout.strip()),
                        (0, "handmade-1"))
-      # Minting still works, but binds to no session: the child cannot say
-      # which session it is, and a claude-derived binding would be wrong.
+      # Minting still works. The ID binds to the whole mixed context, not
+      # to the outer provider's session and not to "no session".
       own = self.run_cmd("agent-id", "new", "helper", env=both).strip()
       row = json.loads((self.base / "agent-kit" / "agent-ids.log")
                        .read_text().splitlines()[-1])
-      self.assertEqual((row["id"], row["minted_session"]), (own, None))
+      self.assertEqual(row["id"], own)
+      self.assertTrue(row["minted_session"].startswith("mixed:"))
       self.assertEqual(self.show(dict(both, AGENT_ID=own)).stdout.strip(),
                        own)
+      # Any change to either provider's session, or a further nesting level,
+      # is a different context: the ID is ignored with the notice.
+      names = [first[0], second[0]]
+      variants = [dict(both, **{names[0]: "other-session"}),
+                  dict(both, **{names[1]: "other-session"}),
+                  dict(both, **{names[0]: "other-a", names[1]: "other-b"})]
+      third = "CODEX_SESSION_ID" if "CODEX_SESSION_ID" not in names \
+        else "CODEX_THREAD_ID"
+      variants.append(dict(both, **{third: "third-level"}))
+      for nested in variants:
+        shown = self.show(dict(nested, AGENT_ID=own))
+        self.assertEqual((shown.returncode, shown.stdout), (1, ""), nested)
+        self.assertIn("ignoring AGENT_ID=" + own, shown.stderr)
+      # Dropping to one provider is also a different context.
+      alone = dict(self.env, **dict([first]), AGENT_ID=own)
+      self.assertIn("ignoring AGENT_ID=" + own, self.show(alone).stderr)
 
   def test_agent_id_ignored_by_a_nested_session(self):
     env = dict(self.env, CLAUDE_CODE_SESSION_ID="parent-session")

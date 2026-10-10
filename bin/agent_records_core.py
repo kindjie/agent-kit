@@ -208,18 +208,39 @@ def session_providers():
   return found
 
 
+def session_context():
+  """Return (token, source) naming this environment's session context.
+
+  One provider: its session-derived ID. Several providers (a nested CLI
+  inheriting its parent's variables): "mixed:" plus every present
+  session variable's hash, sorted, so any change to any of them, or a
+  further nesting level, gives a different token. (None, None) when no
+  session variable is set.
+  """
+  if len(session_providers()) < 2:
+    return session_id()
+  parts = {}
+  for key in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID",
+              "CODEX_SESSION_ID"):
+    if os.environ.get(key):
+      parts[key] = hashlib.sha256(os.environ[key].encode()).hexdigest()[:16]
+  return "mixed:" + ",".join(f"{k}={v}" for k, v in sorted(parts.items())), \
+    "mixed"
+
+
 def agent_env_id():
   """Return AGENT_ID when it names this session's identity, else None.
 
   Empty means unset; anything else must be a valid agent ID, or this raises.
   A subagent shares its parent's session, so an ID minted in this session
   passes. A nested CLI inherits the variable but has its own session, so
-  an ID bound to a session is honoured only when exactly one provider's
-  session variables are set and they name the minting session. It is ignored
-  (with a stderr notice) when they name another session, when there are none,
-  or when several providers' variables are present, because variable
-  precedence does not show which of them is current. An ID not in the
-  registry, or minted without a session, is trusted.
+  an ID bound to a session is honoured only when the current session
+  context equals the minting one: one provider's session, or, for an ID
+  minted where several providers' variables were set, the exact set of
+  their sessions. It is ignored (with a stderr notice) otherwise, because
+  precedence does not show which session is current. An ID not in the
+  registry, or minted with no session variable (or before sessions were
+  recorded), is trusted.
   """
   value = os.environ.get("AGENT_ID")
   if not value:
@@ -229,9 +250,10 @@ def agent_env_id():
   minted = minted_session(value)
   if minted:
     ambiguous = len(session_providers()) > 1
-    if ambiguous or minted != session_id()[0]:
-      why = ("session variables from several providers (ambiguous)"
-             if ambiguous else "a different or missing session")
+    if minted != session_context()[0]:
+      why = ("a different session context, or several providers' "
+             "variables (ambiguous)" if ambiguous or
+             minted.startswith("mixed:") else "a different or missing session")
       print(f"agent-kit: ignoring AGENT_ID={value}: minted by a session "
             f"that is not provably this one ({why}); pass --agent or "
             "--holder explicitly", file=sys.stderr)
