@@ -68,17 +68,47 @@ the entire configured budget for an exclusive run, such as a performance
 measurement. Credits are admission units, not enforced memory or compute
 allocations; choose weights based on the workload.
 
+Configure `cpu` once with one credit per logical core (`sysctl -n hw.logicalcpu`
+on macOS, `nproc` on Linux):
+
+```sh
+agent-resource capacity --resource cpu --credits <logical cores>
+agent-resource run --resource cpu:8 --wait 3600 -- cmake --build build -j8
+```
+
+Take CPU credits for a process expected to use more than roughly 30% of the
+machine's CPU for an extended period, or more than about 90% even briefly:
+parallel builds, `ctest -jN`, sanitizer suites, benchmarks and heavy model work.
+Request credits matching its parallelism. The child receives
+`AGENT_RESOURCE_<NAME>_CREDITS` for each resource; names are upper-cased with
+non-alphanumeric characters replaced by `_`. A wrapper script can use
+`-j"$AGENT_RESOURCE_CPU_CREDITS"` for its granted parallelism. Never wrap quick
+or single-threaded commands such as cat, git, grep, editors, reviews or docs
+checks; they must not wait on admission.
+
+An exclusive timing measurement requests the whole budget (`cpu:<all>`).
+Once it holds the admission turnstile, later requests cannot overtake it.
+Still confirm machine quiet after admission: non-cooperating processes are
+not governed. Choose `--wait` long enough for the queue; the 600-second default
+suits GPU steps, not build queues.
+
 Capacity changes wait until no cooperating job holds that resource, then
 replace its budget atomically. A wait timeout leaves the old budget intact.
 Existing callers pick up the budget without changing their commands. Older
 tool versions still exclude all new callers through the original gate lock,
 so mixed versions remain safe but old callers cannot share capacity.
 Requests above the budget fail immediately (exit 1). Request each resource
-only once. Acquisition is ordered by name to avoid deadlocks; all credits
-for one resource are acquired together or released before waiting. This is
-cooperative admission, not a capacity monitor or proof that the machine is
-quiet. It provides no FIFO/fairness guarantee. A waiter may hold a subset
-while acquiring another resource, so use only resources the command needs.
+only once. Acquisition is ordered by name to avoid deadlocks. Each resource
+has an exclusive admission turnstile: its holder retains partial credits
+until the full request is available, then releases the turnstile and keeps
+the credits. Later requesters cannot collect slots while it waits, so small
+jobs cannot keep overtaking a full-budget holder. Turnstile acquisition uses
+polling locks, without strict FIFO order among waiting requesters. Older tool
+versions do not use the turnstile. A timeout or interrupt releases the
+turnstile and all partial credits without starting the command. A waiter may
+hold credits while acquiring another resource; use only resources the command
+needs. This is cooperative admission, not a capacity monitor or proof that
+the machine is quiet.
 Existing project leases still apply; do not invent a competing authority.
 
 Admission expires after `--wait` seconds (exit 75, command never started).
@@ -96,8 +126,9 @@ beyond the command timeout.
 
 Stable lock files live under `$XDG_STATE_HOME/agent-kit/resources`, defaulting
 to `$HOME/.local/state/agent-kit/resources`. Budget files are named
-`NAME.capacity`; `NAME.lock` is the compatibility and configuration gate, and
-`NAME.slots/` holds credit locks. They contain no commands or task text. Never
+`NAME.capacity`; `NAME.lock` is the compatibility and configuration gate,
+`NAME.turnstile` serializes admission, and `NAME.slots/` holds credit locks.
+They contain no commands or task text. Never
 delete lock files to break a live lock: that creates two independent locks.
 Idle files may remain indefinitely and cost no running process. The wrapper
 does not write task records or claim resource ownership for other agents. It
