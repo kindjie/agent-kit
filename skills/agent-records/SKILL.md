@@ -20,9 +20,9 @@ options; `agent-task --help` also prints the status transition table.
 
 ## Identity
 
-Every writing call takes `--agent <id>`. Use the ID you were assigned when
-given one; otherwise `agent-id show`: it is stable for your session and
-derived from it. A delegated agent, fork or fresh,
+Every writing call takes `--agent <id>`: the ID you were assigned when you
+were given one, otherwise `agent-id show`, which is stable for your session
+and derived from it. A delegated agent, fork or fresh,
 gets its own from `agent-id new <label>`; a subagent shares your session,
 so without its own ID it writes as you.
 
@@ -32,8 +32,10 @@ Implicit lookups (`agent-id show`, the `steamos` holder) take `--holder`
 each Bash call with `export AGENT_ID=<id>;` (it does not persist between
 calls; a one-off `AGENT_ID=<id> cmd` prefix covers only the first command of
 `a && b`) and passes `--agent <id>`. `AGENT_ID` is honoured only in the
-session that minted the ID (ignoring it prints a notice on stderr), and an
-ID not in the registry, or minted without a session, is trusted. Start
+session that minted the ID: it is ignored, with a stderr notice, when no
+session variable is set or when several providers' variables are present
+(a codex child of Claude, or the reverse). An ID not in the registry, or
+minted without a session, is trusted. Start
 nested `claude -p`/`codex exec` with `env -u AGENT_ID`; a cross-tool
 delegate handed a coordinator-minted ID must pass `--agent`/`--holder`
 explicitly.

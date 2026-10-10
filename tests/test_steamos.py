@@ -1463,6 +1463,13 @@ class SteamosTest(unittest.TestCase):
     self.assertEqual(holder, self.session_derived(
       {k: v for k, v in nested.items() if k != 'AGENT_ID'}))
     self.release(nested, holder)
+    # Without any session variable, or with two providers', it is ignored.
+    for extra in ({}, {'CODEX_THREAD_ID': 'codex-thread'}):
+      env2 = dict(env, STEAMOS_NO_AGENT_ID='1', **extra)
+      if not extra:
+        env2.pop('CLAUDE_CODE_SESSION_ID')
+      proc = self.steamos(env2, 'lease', 'show', '--json')
+      self.assertIn('ignoring AGENT_ID=' + own, proc.stderr)
     # An ID the registry has never seen is trusted.
     nested['AGENT_ID'] = 'handmade-1'
     self.assertEqual(self.lease_holder(nested), 'handmade-1')

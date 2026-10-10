@@ -394,7 +394,13 @@ counts as unset. `AGENT_ID` leaks into nested CLIs, so `agent-id show` and
 `steamos` honour it only when the current session is the one that minted
 it (a subagent passes; a nested `claude -p` or `codex exec` has its own
 session and falls back to its own ID, printing a one-line notice on
-stderr). An ID that is not in the registry, or whose registry row has no
+stderr). An ID bound to a session is also ignored, with the notice, when
+the current process has no session variable, or when variables from more
+than one provider are set (for example a Codex child that inherits
+`CLAUDE_CODE_SESSION_ID`): variable precedence does not show which session
+is current, so the safe choice is to require `--agent`/`--holder`. In that
+mixed case the fallback `agent-id show` still follows the usual variable
+precedence and may name the parent. An ID that is not in the registry, or whose registry row has no
 minting session (older or sessionless mints), is trusted. Start a nested
 CLI with `env -u AGENT_ID` and give it its own ID with `--agent`. A
 cross-tool delegate (`claude -p`, `codex exec`) handed a coordinator-minted

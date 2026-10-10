@@ -32,9 +32,8 @@ class SetupTest(RecordsFixture):
     env["AGENT_ID"] = own
     self.assertEqual(self.run_cmd("agent-id", "show", env=env).strip(), own)
     self.assertNotEqual(own, parent)
-    env.pop("CLAUDE_CODE_SESSION_ID")
-    self.assertEqual(self.run_cmd("agent-id", "show", env=env).strip(), own)
     env["AGENT_ID"] = ""
+    env.pop("CLAUDE_CODE_SESSION_ID")
     self.run_cmd("agent-id", "show", env=env, code=1)
     env["CLAUDE_CODE_SESSION_ID"] = "parent-session"
     self.assertEqual(self.run_cmd("agent-id", "show", env=env).strip(),
@@ -42,6 +41,46 @@ class SetupTest(RecordsFixture):
     for bad in ("bad id!", " ", "\t"):
       env["AGENT_ID"] = bad
       self.run_cmd("agent-id", "show", env=env, code=2)
+
+  def show(self, env):
+    return subprocess.run(
+      [sys.executable, str(BIN / "agent-id"), "show"], env=env,
+      capture_output=True, text=True)
+
+  def test_session_bound_id_needs_a_matching_session(self):
+    claude = dict(self.env, CLAUDE_CODE_SESSION_ID="parent-session")
+    own = self.run_cmd("agent-id", "new", "helper", env=claude).strip()
+    # No session variable at all: a session-bound ID cannot be proven.
+    bare = dict(self.env, AGENT_ID=own)
+    shown = self.show(bare)
+    self.assertEqual((shown.returncode, shown.stdout), (1, ""))
+    self.assertIn("ignoring AGENT_ID=" + own, shown.stderr)
+    # Same session passes.
+    shown = self.show(dict(claude, AGENT_ID=own))
+    self.assertEqual((shown.stdout.strip(), shown.stderr), (own, ""))
+    # An ID minted with no session stays trusted without one.
+    sessionless = self.run_cmd("agent-id", "new", "bare").strip()
+    shown = self.show(dict(self.env, AGENT_ID=sessionless))
+    self.assertEqual((shown.stdout.strip(), shown.stderr), (sessionless, ""))
+
+  def test_mixed_provider_sessions_are_ambiguous(self):
+    # Either order of nesting leaves variables from two providers set, and
+    # variable precedence does not say which session is current.
+    for first, second in ((("CLAUDE_CODE_SESSION_ID", "claude-sess"),
+                           ("CODEX_THREAD_ID", "codex-thread")),
+                          (("CODEX_THREAD_ID", "codex-thread"),
+                           ("CLAUDE_CODE_SESSION_ID", "claude-sess"))):
+      parent = dict(self.env, **dict([first]))
+      own = self.run_cmd("agent-id", "new", "helper", env=parent).strip()
+      self.assertEqual(self.show(dict(parent, AGENT_ID=own)).stdout.strip(),
+                       own)
+      nested = dict(parent, AGENT_ID=own, **dict([second]))
+      shown = self.show(nested)
+      self.assertIn("ignoring AGENT_ID=" + own, shown.stderr)
+      self.assertNotEqual(shown.stdout.strip(), own)
+      # Even when the ambiguous environment still contains the minting
+      # session's variable, AGENT_ID is not honoured.
+      self.assertIn("ambiguous", shown.stderr)
 
   def test_agent_id_ignored_by_a_nested_session(self):
     env = dict(self.env, CLAUDE_CODE_SESSION_ID="parent-session")

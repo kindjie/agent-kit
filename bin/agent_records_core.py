@@ -197,27 +197,45 @@ def minted_session(agent_id):
   return found if isinstance(found, str) else None
 
 
+def session_providers():
+  """Providers whose session variables are set in this environment."""
+  found = set()
+  for key, label in (("CLAUDE_CODE_SESSION_ID", "claude"),
+                     ("CODEX_THREAD_ID", "codex"),
+                     ("CODEX_SESSION_ID", "codex")):
+    if os.environ.get(key):
+      found.add(label)
+  return found
+
+
 def agent_env_id():
   """Return AGENT_ID when it names this session's identity, else None.
 
   Empty means unset; anything else must be a valid agent ID, or this raises.
   A subagent shares its parent's session, so an ID minted in this session
-  passes. A nested CLI inherits the variable but has its own session: an ID
-  minted by a different session is ignored there, so the child does not
-  report the spawner. An ID not in the registry, or minted without a
-  session, is honoured.
+  passes. A nested CLI inherits the variable but has its own session, so
+  an ID bound to a session is honoured only when exactly one provider's
+  session variables are set and they name the minting session. It is ignored
+  (with a stderr notice) when they name another session, when there are none,
+  or when several providers' variables are present, because variable
+  precedence does not show which of them is current. An ID not in the
+  registry, or minted without a session, is trusted.
   """
   value = os.environ.get("AGENT_ID")
   if not value:
     return None
   if not ID_RE.fullmatch(value):
     raise RecordsError("AGENT_ID is not a valid agent ID", 2)
-  current = session_id()[0]
-  minted = minted_session(value) if current else None
-  if minted and minted != current:
-    print(f"agent-kit: ignoring AGENT_ID={value}: minted by another session; "
-          "pass --agent or --holder explicitly", file=sys.stderr)
-    return None
+  minted = minted_session(value)
+  if minted:
+    ambiguous = len(session_providers()) > 1
+    if ambiguous or minted != session_id()[0]:
+      why = ("session variables from several providers (ambiguous)"
+             if ambiguous else "a different or missing session")
+      print(f"agent-kit: ignoring AGENT_ID={value}: minted by a session "
+            f"that is not provably this one ({why}); pass --agent or "
+            "--holder explicitly", file=sys.stderr)
+      return None
   return value
 
 
