@@ -56,7 +56,10 @@ On each device, it uses a lease directory and
 `~/.agent-kit-steamos-lease.log` in the user's home. The lease holder identity
 (`agent-id` or `user@hostname` by default) is stored in the lease info,
 lease log and launch ledger, readable by anyone with device access. Set
-`STEAMOS_LEASE_HOLDER` or the config `holder` to override it. The device also
+`STEAMOS_LEASE_HOLDER` or the config `holder` to override it. An exported
+`AGENT_ID` also names the holder, ahead of the config `holder`, so a
+configured privacy name does not apply while it is set; use
+`STEAMOS_LEASE_HOLDER` or `--holder` to keep the name. The device also
 stores title launch times in `~/.agent-kit-steamos-launches`, benchmark runs
 in `~/.agent-kit-steamos-bench/`, the capture lock at
 `~/.agent-kit-steamos-capture`, temporary capture files under

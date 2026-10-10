@@ -41,9 +41,11 @@ building there usually beats emulating x86-64 on a host of another
 architecture.
 
 A subagent shares its parent's session, so the holder would default to the
-parent. Pass `--holder <your agent ID>` to every `steamos lease` call (or
-export `AGENT_ID=<id>` in the same command); `steamos lease show` confirms
-the holder.
+parent. Prefix every `steamos` command with `AGENT_ID=<your agent ID>`
+(the variable does not persist between shell calls). `--holder <id>` works
+on every `steamos` command too, not only `lease`: deploy, title, devkit,
+frametimes and bench check the lease as the same holder. `steamos lease
+show` confirms it.
 
 Taking or renewing a lease prevents sleep/idle by default until its expiry. The
 transient user unit `agent-kit-steamos-lease-inhibit` runs `systemd-inhibit`

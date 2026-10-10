@@ -39,8 +39,41 @@ class SetupTest(RecordsFixture):
     env["CLAUDE_CODE_SESSION_ID"] = "parent-session"
     self.assertEqual(self.run_cmd("agent-id", "show", env=env).strip(),
                      parent)
-    env["AGENT_ID"] = "bad id!"
-    self.run_cmd("agent-id", "show", env=env, code=2)
+    for bad in ("bad id!", " ", "\t"):
+      env["AGENT_ID"] = bad
+      self.run_cmd("agent-id", "show", env=env, code=2)
+
+  def test_agent_id_ignored_by_a_nested_session(self):
+    env = dict(self.env, CLAUDE_CODE_SESSION_ID="parent-session")
+    own = self.run_cmd("agent-id", "new", "helper", env=env).strip()
+    row = json.loads(
+      (self.base / "agent-kit" / "agent-ids.log").read_text().splitlines()[-1])
+    self.assertEqual(row["minted_session"],
+                     self.run_cmd("agent-id", "show", env=env).strip())
+    # A nested claude -p or codex exec inherits AGENT_ID, not the session.
+    nested = dict(env, AGENT_ID=own, CLAUDE_CODE_SESSION_ID="child-session")
+    child = self.run_cmd("agent-id", "show",
+                         env={k: v for k, v in nested.items()
+                              if k != "AGENT_ID"}).strip()
+    self.assertNotEqual(child, own)
+    self.assertEqual(self.run_cmd("agent-id", "show", env=nested).strip(),
+                     child)
+    codex = dict(nested, CODEX_THREAD_ID="thread")
+    codex.pop("CLAUDE_CODE_SESSION_ID")
+    self.assertTrue(self.run_cmd("agent-id", "show", env=codex)
+                    .startswith("codex-"))
+    # IDs the registry has not seen, or minted with no session, are trusted.
+    nested["AGENT_ID"] = "handmade-1"
+    self.assertEqual(self.run_cmd("agent-id", "show", env=nested).strip(),
+                     "handmade-1")
+    bare = self.run_cmd("agent-id", "new", "bare").strip()
+    nested["AGENT_ID"] = bare
+    self.assertEqual(self.run_cmd("agent-id", "show", env=nested).strip(),
+                     bare)
+    # An ID minted with no session variable records no minting session.
+    self.assertEqual(
+      json.loads((self.base / "agent-kit" / "agent-ids.log").read_text()
+                 .splitlines()[-1])["minted_session"], None)
 
   def test_id_derivation_and_registry(self):
     env = dict(self.env, CLAUDE_CODE_SESSION_ID="same-prefix-111")

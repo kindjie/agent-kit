@@ -24,10 +24,15 @@ Every writing call takes `--agent <id>`. Use the ID you were assigned when
 given one; otherwise `agent-id show`: it is stable for your session and
 derived from it. A delegated agent, fork or fresh,
 gets its own from `agent-id new <label>`; a subagent shares your session,
-so without its own ID it writes as you. `agent-id show` returns `AGENT_ID`
-when set (explicit `--agent`/`--holder` > `AGENT_ID` > session), so a
-subagent must export its ID (the variable does not persist between Bash
-calls: set it in each command) or pass it explicitly.
+so without its own ID it writes as you.
+
+Records writes take `--agent`, else `AGENT_ID`; the session is never used.
+Implicit lookups (`agent-id show`, the `steamos` holder) take `--holder`
+(steamos), else `AGENT_ID`, else the session. A subagent therefore prefixes
+every shell command with `AGENT_ID=<id>` (it does not persist between
+calls) and passes `--agent <id>`. `AGENT_ID` is honoured only in the session
+that minted the ID, so start nested `claude -p`/`codex exec` with
+`env -u AGENT_ID`.
 
 ## Tasks
 

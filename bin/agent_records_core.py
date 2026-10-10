@@ -179,16 +179,50 @@ def session_id():
   return None, None
 
 
-def current_id():
-  """Return (ID, source): AGENT_ID when set, else the session-derived ID.
+def minted_session(agent_id):
+  """The session that minted agent_id, or None when unknown."""
+  try:
+    with state_path("agent-ids.log").open("r", encoding="utf-8") as stream:
+      lines = stream.read().splitlines()
+  except OSError:
+    return None
+  found = None
+  for line in lines:
+    try:
+      row = json.loads(line)
+    except ValueError:
+      continue
+    if isinstance(row, dict) and row.get("id") == agent_id:
+      found = row.get("minted_session")
+  return found if isinstance(found, str) else None
 
-  An in-process subagent shares its parent's session variables, so only an
-  explicit AGENT_ID can give it a distinct implicit identity.
+
+def agent_env_id():
+  """Return AGENT_ID when it names this session's identity, else None.
+
+  Empty means unset; anything else must be a valid agent ID, or this raises.
+  A subagent shares its parent's session, so an ID minted in this session
+  passes. A nested CLI inherits the variable but has its own session: an ID
+  minted by a different session is ignored there, so the child does not
+  report the spawner. An ID not in the registry, or minted without a
+  session, is honoured.
   """
   value = os.environ.get("AGENT_ID")
+  if not value:
+    return None
+  if not ID_RE.fullmatch(value):
+    raise RecordsError("AGENT_ID is not a valid agent ID", 2)
+  current = session_id()[0]
+  minted = minted_session(value) if current else None
+  if minted and minted != current:
+    return None
+  return value
+
+
+def current_id():
+  """Return (ID, source): AGENT_ID when it applies, else the session ID."""
+  value = agent_env_id()
   if value:
-    if not ID_RE.fullmatch(value):
-      raise RecordsError("AGENT_ID is not a valid agent ID", 2)
     return value, "AGENT_ID"
   return session_id()
 

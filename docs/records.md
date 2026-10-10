@@ -375,22 +375,35 @@ unchanged; resolve the reported error before retrying. The tool does not
 automatically retry failed commits.
 Records document state but never authorize deleting it.
 
-Give each writer an explicit identity. `agent-id show` prints `AGENT_ID`
-when it is set and otherwise derives an ID from a session variable;
-`agent-id new helper` mints and stores one for a delegated agent. An
-in-process subagent shares its parent's session variables, so without an
-explicit ID every implicit lookup (`agent-id show`, the `steamos` lease
-holder) returns the parent. Precedence for implicit identity: an explicit
-`--agent` or `--holder` flag, then `AGENT_ID`, then the session-derived ID.
-A malformed `AGENT_ID` is refused rather than ignored. The delegating agent
-can pass this prompt fragment:
+Give each writer an explicit identity. `agent-id new helper` mints and
+stores one for a delegated agent, together with the session that minted it.
+An in-process subagent shares its parent's session variables, so without an
+explicit ID every implicit lookup returns the parent. Two separate rules
+apply:
+
+- Records writes (`agent-task`, `agent-changelog`): `--agent ID`, then
+  `AGENT_ID`. The session is never consulted; with neither, the write is
+  refused.
+- Implicit lookups (`agent-id show`, the `steamos` lease holder): an
+  explicit `--holder` (steamos only), then `AGENT_ID`, then the
+  session-derived ID. `steamos` has more sources; see the lease section of
+  `bin/steamos.md`.
+
+A malformed `AGENT_ID` is refused (exit 2) rather than ignored; an empty one
+counts as unset. `AGENT_ID` leaks into nested CLIs, so `agent-id show` and
+`steamos` honour it only when the current session is the one that minted
+it (a subagent passes; a nested `claude -p` or `codex exec` has its own
+session and falls back to its own ID). An ID that is not in the registry is
+trusted. Start a nested CLI with `env -u AGENT_ID` and give it its own ID
+with `--agent`. The delegating agent can pass this prompt fragment:
 
 ```text
 Your agent ID is helper-0123456789abcdef. Work on T-0001.
-Run `export AGENT_ID=helper-0123456789abcdef` in each shell command (or
-prefix commands with it) and pass --agent helper-0123456789abcdef to every
-records mutation and --holder helper-0123456789abcdef to steamos lease
-commands, so nothing falls back to the coordinator's session ID.
+Prefix every shell command with `AGENT_ID=helper-0123456789abcdef` (the
+variable does not persist between commands) so implicit lookups such as
+steamos use it, and pass --agent helper-0123456789abcdef to every records
+mutation. `--holder helper-0123456789abcdef` works on every steamos command.
+Start nested claude or codex sessions with `env -u AGENT_ID`.
 Use agent-task --agent helper-0123456789abcdef log T-0001
   --to all 'Progress update' for coordination.
 ```

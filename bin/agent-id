@@ -77,9 +77,10 @@ def main():
     value = args.label + "-" + secrets.token_hex(8)
     if not ID_RE.fullmatch(value):
       raise RecordsError("label is too long", 2)
-    _, source = session_id()
+    minted, source = session_id()
     row = {"time": stamp(), "id": value, "label": args.label,
-           "cwd": os.getcwd(), "session_variable": source}
+           "cwd": os.getcwd(), "session_variable": source,
+           "minted_session": minted}
     try:
       private_append(state_path("agent-ids.log"), json.dumps(row) + "\n")
     except OSError as exc:
