@@ -32,6 +32,14 @@ or address rather than guessing.
    with `steamos lease renew`.
 4. `steamos lease release` when done, including when you stop early.
 
+On a shared device, hold a lease only for the device steps themselves; a
+build or benchmark running on the device is a device step. Release it before
+long work that does not use the device (local builds, reviews, CI waits) and
+take it again when you next need it. Build SteamOS bundles in the project's
+supported build environment; where that includes an available SteamOS device,
+building there usually beats emulating x86-64 on a host of another
+architecture.
+
 Taking or renewing a lease prevents sleep/idle by default until its expiry. The
 transient user unit `agent-kit-steamos-lease-inhibit` runs `systemd-inhibit`
 outside the ssh session scope. Take/renew stop the old unit before starting

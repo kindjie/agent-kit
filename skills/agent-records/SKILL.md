@@ -12,14 +12,17 @@ description: >-
 # Agent records
 
 `agent-task` holds the shared work queue; `agent-changelog` holds state on
-this machine that outlives a session, and mistakes. Both are git-backed and
-shared by every agent here. Run `--help` on any command for its options;
-`agent-task --help` also prints the status transition table.
+this machine that outlives a session, and mistakes. Records help agents remember
+cleanup and let a successor safely finish it after an interruption. They are
+not approval gates or obstacles to cleaning up your own finished work. Both are
+git-backed and shared by every agent here. Run `--help` on any command for its
+options; `agent-task --help` also prints the status transition table.
 
 ## Identity
 
-Every writing call takes `--agent <id>`. Use `agent-id show`: it is stable
-for your session and derived from it. A delegated agent, fork or fresh,
+Every writing call takes `--agent <id>`. Use the ID you were assigned when
+given one; otherwise `agent-id show`: it is stable for your session and
+derived from it. A delegated agent, fork or fresh,
 gets its own from `agent-id new <label>`; a subagent shares your session,
 so without its own ID it writes as you.
 
@@ -174,20 +177,31 @@ clean up".
 To combine kinds, pass one quoted value with spaces around `+`, for example
 `--kind 'backup + scratch'`. The compact form `backup+scratch` is invalid.
 
-Before cleaning anything up, read `agent-changelog list --open --machine`
-(add `--here` for this repository). An entry explains why state exists; it
-never authorizes deleting it.
+Consult relevant cleanup records with `agent-changelog list --open --machine`
+(add `--here` for this repository), especially when taking over another agent's
+state. An entry explains why state exists; it never authorizes deleting it. An
+open task or entry alone does not require retention or prior closure. Missing
+or stale records do not prohibit cleanup when current evidence establishes
+safety; reconcile records after the cleanup.
 
 Clean up state after it serves its purpose. The creator does it; otherwise
 the delegating agent or the next agent on the task or entry does. Verify that
-the work landed on the default branch by searching its symbols and introducing
-commit; no unique uncommitted, unpushed, or untracked work remains; and no
-process, open entry, or active agent still needs it. Before removing a
-directory, read every open entry inside it and preserve or account for each
-file it names; never infer contents from one pattern. Remove exactly the
-verified state and close its entry with the evidence. Verified cleanup needs
-no extra owner approval unless the user requires it. Leave anything uncertain
-in place and say why.
+retained work reached its intended integration branch (usually the default
+branch) by searching its symbols and introducing commit, or account for an
+intentionally discarded experiment; no unique uncommitted, unpushed, or untracked work remains; and no
+process or active agent uses it, and no actual retention need remains. When
+removing a directory, consult relevant records and preserve or account for each
+file they name; never infer contents from one pattern. Remove exactly the
+verified state, then close or update its records with the evidence. A records
+write failure does not undo safe cleanup or require keeping disposable state;
+retain the verification evidence and reconcile the records when writes work.
+Clean up agent-created worktrees and branches safely one by one when they have
+served their purpose, including corresponding remote branches where the
+repository's policy allows. Verify each item separately before removing it; do
+not batch-delete from names, age, or expired claims. Follow the user's or
+repository's cleanup policy: where it grants standing authorization, these
+cleanups need no further approval; otherwise ask first. Leave anything
+uncertain in place and say why.
 
 ## Mistakes
 

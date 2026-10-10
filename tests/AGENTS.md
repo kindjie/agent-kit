@@ -689,3 +689,15 @@ containers out of the portable Markdown source.
 Demo regressions check both current and archived accounts through the actual
 quota timeline schema. Visually inspect light/dark and narrow layouts; build
 success alone does not prove readable diagrams, screenshots or colours.
+
+## Asset library client
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_asset_library
+```
+
+Uses fictional backend processes and temporary 0600 configuration files.
+Covers literal argument forwarding, full commit identities, unsafe/missing
+configuration, help without configuration and backend exit propagation.
+The owning backend separately qualifies network trust, verified fetches and
+publication; this launcher suite does not prove those operations.

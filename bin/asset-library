@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Delegate pinned asset reads and publication to the configured owner."""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+
+sys.dont_write_bytecode = True
+
+
+def revision(value):
+  if not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', value):
+    raise argparse.ArgumentTypeError('revision must be a full commit OID')
+  return value
+
+
+def configuration(path):
+  fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+  with os.fdopen(fd, 'rb') as stream:
+    info = os.fstat(stream.fileno())
+    mode = stat.S_IMODE(info.st_mode)
+    # Exactly 0600 or 0400: execute, setuid, setgid, sticky and every group
+    # or other bit are refused.
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+        or mode not in (0o600, 0o400) or info.st_size > 65536):
+      raise ValueError('client configuration must be an owned file readable '
+                       'only by its owner (0600 or 0400)')
+    data = json.load(stream)
+  if not isinstance(data, dict) or set(data) != {
+      'backend', 'directory', 'config'}:
+    raise ValueError('client configuration requires backend/directory/config')
+  argv = data['backend']
+  if (not isinstance(argv, list) or not argv
+      or any(not isinstance(x, str) or not x or '\0' in x for x in argv)
+      or not Path(argv[0]).is_absolute()):
+    raise ValueError('backend must be argv with an absolute executable')
+  for key in ('directory', 'config'):
+    if (not isinstance(data[key], str) or '\0' in data[key]
+        or not Path(data[key]).is_absolute()):
+      raise ValueError('backend paths must be absolute')
+  if not Path(data['directory']).is_dir():
+    raise ValueError('backend directory is unavailable')
+  return data
+
+
+def main():
+  parser = argparse.ArgumentParser(description=__doc__)
+  root = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config'))
+  parser.add_argument('--client-config', type=Path,
+    default=root / 'asset-library/client.json')
+  sub = parser.add_subparsers(dest='command', required=True)
+  sub.add_parser('status', help='report revisions, pending work and backup age')
+  sub.add_parser('doctor', help='check configured versions and connectivity')
+  fetch = sub.add_parser('fetch', help='materialize verified selected inputs')
+  fetch.add_argument('--revision', required=True, type=revision)
+  fetch.add_argument('--paths-file', required=True)
+  fetch.add_argument('--into', required=True)
+  publish = sub.add_parser('publish', help='invoke the owning publisher')
+  publish.add_argument('--flush', action='store_true')
+  tunnel = sub.add_parser('tunnel', help='own a foreground private tunnel')
+  run = tunnel.add_subparsers(
+    dest='tunnel_action', required=True).add_parser('run')
+  run.add_argument('execute', nargs=argparse.REMAINDER)
+  options = parser.parse_args()
+  try:
+    data = configuration(options.client_config)
+    args = [options.command, '--config', data['config']]
+    if options.command == 'tunnel':
+      command = (options.execute[1:] if options.execute[:1] == ['--']
+        else options.execute)
+      if not command:
+        raise ValueError('foreground tunnel command required')
+      args = ['tunnel', 'run', '--config', data['config'],
+        '--directory', os.getcwd(), '--', *command]
+    if options.command == 'fetch':
+      args += ['--revision', options.revision, '--paths-file',
+        os.path.abspath(options.paths_file), '--into',
+        os.path.abspath(options.into)]
+    elif options.command == 'publish' and options.flush:
+      args.append('--flush')
+    os.chdir(data['directory'])
+    # No shell, output interception, retries or credential handling here.
+    # Exec preserves backend status and normal foreground signal behavior.
+    os.execv(data['backend'][0], data['backend'] + args)
+  except (OSError, ValueError, TypeError):
+    print('asset-library: client configuration or backend unavailable; '
+      'check the owner-managed client configuration', file=sys.stderr)
+    return 2
+
+
+if __name__ == '__main__':
+  sys.exit(main())
