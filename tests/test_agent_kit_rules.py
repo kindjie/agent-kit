@@ -127,6 +127,27 @@ class RulesTest(unittest.TestCase):
     self.assertNotIn("agent-kit:records", text)
     self.assertIn("records section omitted: absent", out)
 
+  def test_cleanup_authority_is_conditional_with_or_without_records(self):
+    for records in (True, False):
+      with self.subTest(records=records):
+        body = RULES.snippet_body(records)
+        flat = " ".join(body.split())
+        self.assertNotIn("needs no explicit permission", flat)
+        self.assertIn("standing authorization", flat)
+        self.assertIn("otherwise ask first", flat)
+        self.assertIn("one by one", flat)
+        self.assertIn("no unique uncommitted, unpushed, or untracked work",
+                      flat)
+        self.assertIn("introducing commit", flat)
+        if not records:
+          self.assertNotIn("agent-changelog", body)
+          self.assertNotIn("agent-task", body)
+
+  def test_agent_id_prefers_an_assigned_identity(self):
+    flat = " ".join(RULES.snippet_body(True).split())
+    self.assertIn("ID you were assigned when given one; otherwise "
+                  "`$(agent-id show)`", flat)
+
   def test_dry_run_changes_nothing_and_shows_a_diff(self):
     self.target.write_text("Mine.\n")
     code, out = self.install(dry_run=True)
