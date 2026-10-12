@@ -359,8 +359,11 @@ flowchart TD
 For larger workflows, [coordination tools](docs/coordination.md) include
 multi-task event waits, cooperative resource admission, explicit scheduler
 grants, and offline usage reports. Resource admission allows fitting jobs to
-backfill for 30 seconds before draining for a waiting request, with all-or-none
-credits per resource and bounded private admission history. The scheduler is
+backfill for 30 seconds from the oldest live ticket before draining, with
+fitting-head precedence and all-or-none credits per resource. Read-only queue
+status shows participating waits and reserved/free credits with unknown ETA;
+one long-wait CPU/GPU reminder suggests only compatible alternate hosts.
+Private admission history remains bounded. The scheduler is
 an opt-in pilot with
 manual recovery boundaries, not an unattended scheduling service.
 

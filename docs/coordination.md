@@ -93,20 +93,26 @@ or single-threaded commands such as cat, git, grep, editors, reviews or docs
 checks; they must not wait on admission.
 
 An exclusive timing measurement requests the whole budget (`cpu:<all>`).
-A waiting request holds no partial credits for that resource. The first
-waiter to take its priority token allows fitting jobs to backfill for 30
-seconds (adjust with `--backfill SECONDS`), then stops new admissions for
-that resource until its whole request fits. Active jobs continue until they
-finish; the drain does not interrupt them or take idle slots. Backfill jobs
-can outlive the window, so eventual admission still depends on current
-holders finishing. After admission the priority token is released, and the
-next waiter starts its own window. Waiting token acquisition is polling,
-without strict FIFO order. Do not nest
-`agent-resource run` inside a wrapped command for the same resource: the inner
-call waits on its parent's credits until its `--wait` expires.
+A waiting request holds no partial credits for that resource. New callers
+register private live tickets under the admission turnstile. Registration
+orders them and starts each resource's backfill age. The oldest live ticket
+wins immediately when its whole weight fits. Otherwise younger fitting jobs
+may backfill until that head's original registration plus 30 seconds (adjust
+with `--backfill SECONDS`), then new admissions stop until the head fits.
+An already-aged successor receives no fresh window. Ticket flocks prove
+liveness; timeout, interruption or death cannot leave a ticket holding a turn.
+Active jobs continue until they finish; draining does not interrupt them or
+reserve idle slots. Backfill jobs may run longer than the arrival window.
+This bounds repeated overtaking opportunities among participating callers,
+not admission time or strict admission FIFO. A small job may wait behind a
+large head even with free credits. Running jobs retain their requested weight,
+including serial phases. Do not nest `agent-resource run` for the same
+resource: the inner call waits on its parent's credits until `--wait` expires.
 Still confirm machine quiet after admission: non-cooperating processes are
 not governed. Choose `--wait` from the expected queue duration; the
-600-second default suits short steps, not long build queues.
+600-second default suits short steps, not long build queues. Give optional
+measurements a decision/evidence budget: when a wait expires, reconsider
+whether the result still changes a decision before retrying with more time.
 
 Capacity changes wait until no cooperating job holds or is waiting for that
 resource, then replace its budget atomically. A wait timeout leaves the old
@@ -122,8 +128,9 @@ supervisor death releases the waiting priority token, so stale token contents
 cannot reserve capacity. Earlier fully granted resources remain held while
 acquiring a later resource; acquisition is atomic per resource, not across
 the whole bundle. Use only resources the command needs. Mixed versions keep
-their capacity and legacy gate safety; pre-backfill weighted versions can
-still retain partial credits while holding the turnstile. This is cooperative
+their capacity and legacy gate safety, but old callers do not participate in
+ticket ordering. Pre-backfill weighted versions can still retain partial
+credits while holding the turnstile. This is cooperative
 admission, not a capacity monitor or proof that the machine is quiet.
 Existing project leases still apply; do not invent a competing authority.
 
@@ -144,24 +151,58 @@ Stable lock files live under `$XDG_STATE_HOME/agent-kit/resources`, defaulting
 to `$HOME/.local/state/agent-kit/resources`. Budget files are named
 `NAME.capacity`; `NAME.lock` is the compatibility and configuration gate,
 `NAME.turnstile` serializes short admission attempts, `NAME.priority` holds
-the waiting token deadline, and `NAME.slots/` holds credit locks.
+the waiting token deadline, `NAME.slots/` holds credit locks, and
+`NAME.queue/` holds ephemeral private tickets. Only an unlocked ticket can be
+pruned, under the admission turnstile; a status read never prunes tickets.
 They contain no commands or task text. Never delete lock files to break a live
 lock: that creates two independent locks.
+Read queue health on demand:
+
+```sh
+agent-resource status --resource cpu --resource gpu
+```
+
+The JSON snapshot groups participating waiters by credits and shows their
+current ages/order, oldest head weight and backfill/drain state, configured
+capacity and reserved/free credits. Reserved credits are lock reservations,
+not measured CPU/GPU utilization. Status creates or prunes no files and uses
+a short bounded turnstile attempt; busy, unsafe or unconfigured state is
+unknown. The top-level policy identifies the observer and new participating
+callers, not every live wrapper. Legacy queue/priority coverage remains
+unknown, so an empty participating queue does not prove nobody is waiting.
+`eta_seconds: null` means unknown: ongoing ages and historical completed waits
+cannot predict remaining durations. Completed wait medians/tails are useful
+historical context only, with sample counts and ongoing ages alongside them.
+
+A CPU/GPU request prints one notice after 300 seconds of waiting (configure
+with `--notice-after SECONDS`). It includes requested weights, elapsed wait,
+compact queue counts/head/reserved/free state and the status command. The
+threshold is an operator reminder, not a latency promise. A compatible
+managed host or SteamOS device may help portable work only after availability,
+lease, storage and target/evidence requirements are checked. No work is
+rerouted automatically; target-specific evidence stays on its required target.
+Custom-resource-only requests and immediate admissions emit no host reminder.
+
 `admission.jsonl` records request, admitted and released events with an opaque
 request ID, timestamp, requested credits, wait seconds, held seconds and exit
-code. Held duration starts once all requested resources are admitted and ends
-after process-group cleanup and lock release. Waiting failures have no admitted
-event and zero held seconds. Earlier resource holds during bundle acquisition
-are included in wait time, not held time. Events are best effort: write failure
-prints a warning but does not change admission, and abrupt supervisor death
-may leave a request without a released event. The request-event attempt runs
-before the `--wait` budget starts; recorded wait measures request-to-admission
-time including that attempt. Short writes are completed where possible, and
-incomplete trailing records are discarded before the next append. No command arguments, working
-directories, agent IDs or task text are recorded. The private mode-0600 file
-is capped at 1 MiB; when an append would exceed it, only whole recent records
-from the last 512 KiB are retained. History is diagnostic, not an ownership or
-acceptance authority.
+code. Schema 2 adds the participating policy, request backfill budget,
+per-resource wait/acquire/release stages with configured capacity and captured
+monotonic times, and terminal reasons. `admission_timeout` distinguishes a
+prestart exit 75 from `child_exit` with exit 75. Resource wait starts before its
+compatibility gate; acquired/released stages expose earlier complete bundle
+grants. Capture precedes logging, outside the admission turnstile. Whole-bundle
+held duration starts once every resource is admitted and ends after group
+cleanup and lock release. Waiting failures have no admitted event and zero
+whole-bundle held seconds, even if an earlier resource was temporarily held.
+Events are best effort: write failure prints a warning but does not change
+admission, and abrupt supervisor death may leave unmatched history. Request
+telemetry runs before the `--wait` budget starts; recorded wait includes that
+attempt. Short writes are completed where possible; incomplete trailing records
+are discarded before the next append. No command arguments, working
+directories, agent IDs, task text or reminder payloads are recorded. The
+private mode-0600 file is capped at 1 MiB, retaining only whole recent records
+and leaving space for the next row. History is diagnostic, not an ownership,
+forecast or acceptance authority. There is no daemon or utilization sampler.
 
 Idle files may remain indefinitely and cost no running process. The wrapper
 does not write task records or claim resource ownership for other agents. It
