@@ -643,7 +643,8 @@ fixtures control the temporary priority deadline under its turnstile, so
 subprocess startup time cannot expire the intended test phase. Real slot
 flocks and child markers provide independent admission oracles.
 Private history cases check lifecycle/exit timing, payload exclusion, symlink
-preservation, short-write recovery, telemetry-independent wait and the 1 MiB
+preservation, complete priority-deadline writes, short-write history recovery,
+telemetry-independent wait and the 1 MiB
 cap. All resource state is temporary; the suite
 never changes live capacities or runs CPU/GPU workloads. Efficiency tests use
 independent synthetic ledgers for provider accounting, copied history,

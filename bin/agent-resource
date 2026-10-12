@@ -114,7 +114,8 @@ def acquire_credits(root, name, needed, available, slots, deadline, backfill):
             fcntl.flock(priority, fcntl.LOCK_EX | fcntl.LOCK_NB)
             owns_priority = True
             os.ftruncate(priority, 0)
-            os.pwrite(priority, str(time.monotonic() + backfill).encode(), 0)
+            write_history(priority,
+                          str(time.monotonic() + backfill).encode(), 0)
           except BlockingIOError:
             raw = os.pread(priority, 128, 0)
             try:

@@ -389,6 +389,37 @@ class ResourceTest(unittest.TestCase):
     self.assertIn('exceeds history limit', error.getvalue())
     self.assertEqual(self.contender().returncode, 0)
 
+  def test_priority_short_writes_publish_complete_deadline(self):
+    self.assertEqual(self.configure(2).returncode, 0)
+    self.holder('active')
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    functions = runpy.run_path(str(BIN))
+    namespace = functions['acquire'].__globals__
+    original = os.pwrite
+    def short_write(fd, data, offset):
+      return original(fd, data[:1], offset)
+    def inspect_wait(deadline):
+      self.assertEqual(float((root / 'gpu.priority').read_text()), 130.0)
+      with (root / 'gpu.priority').open('r+') as priority:
+        with self.assertRaises(BlockingIOError):
+          fcntl.flock(priority, fcntl.LOCK_EX | fcntl.LOCK_NB)
+      raise TimeoutError('fixture admission stop')
+    with mock.patch.object(os, 'pwrite', short_write), \
+         mock.patch.object(time, 'monotonic', return_value=100.0), \
+         mock.patch.dict(namespace, retry=inspect_wait):
+      with self.assertRaises(TimeoutError):
+        functions['acquire'](root, [('gpu', 2)], 200.0)
+    self.assertEqual(self.contender().returncode, 0)
+
+  def test_priority_zero_write_rejects_and_releases_turn(self):
+    self.assertEqual(self.configure(2).returncode, 0)
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    functions = runpy.run_path(str(BIN))
+    with mock.patch.object(os, 'pwrite', return_value=0):
+      with self.assertRaisesRegex(OSError, 'write made no progress'):
+        functions['acquire'](root, [('gpu', 1)], time.monotonic() + .2)
+    self.assertEqual(self.contender('--resource', 'gpu:2').returncode, 0)
+
   def test_priority_symlink_refused(self):
     self.assertEqual(self.configure(2).returncode, 0)
     root = Path(self.tmp.name) / 'agent-kit/resources'
