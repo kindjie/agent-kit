@@ -123,6 +123,14 @@ entry with what was verified. A later agent on the same task or entry inherits
 the same duty. Leave anything uncertain in place and say why; do not leave
 verified-disposable state for the user to clear.
 
+Schedule CPU-heavy steps within the shared credit budget, rather than
+launching many cold builds and leaving agents waiting on them. Reuse an owned
+warm build tree when its source, dependencies and configuration still match;
+never share a mutable build directory across owners. Batch a coherent change
+through final validation once. A fresh context or reviewer does not by itself
+invalidate completed evidence. Prefer completion notifications while waiting,
+and record admission wait separately from command execution time.
+
 ## Routing between Codex and Claude Code
 
 Before declaring a task unsupported, check the current session's tools and

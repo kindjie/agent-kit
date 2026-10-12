@@ -634,11 +634,19 @@ They also cover opt-in renewal suppression versus default header delivery,
 observed expiry, preserved messages/ownership, actor options after subcommands,
 and literal `--` message arguments.
 Resource tests run harmless child processes to check default exclusion,
-weighted concurrency, full-budget exclusion, turnstile admission without
-overtaking, retained partial credits, timeout and signal rollback, reversed
-multi-resource order and child credit variables,
+weighted concurrency, full-budget exclusion, all-or-none slot scans, small-job
+backfill followed by bounded drain, priority recovery after timeout, signal and
+supervisor death, reversed multi-resource order and child credit variables,
 legacy gate compatibility, idle-only capacity changes, unsafe file refusal,
-timeout, interruption cleanup and exit propagation. Efficiency tests use
+timeout, interruption during child execution and exit propagation. Backfill
+fixtures control the temporary priority deadline under its turnstile, so
+subprocess startup time cannot expire the intended test phase. Real slot
+flocks and child markers provide independent admission oracles.
+Private history cases check lifecycle/exit timing, payload exclusion, symlink
+preservation, complete priority-deadline writes, short-write history recovery,
+telemetry-independent wait and the 1 MiB
+cap. All resource state is temporary; the suite
+never changes live capacities or runs CPU/GPU workloads. Efficiency tests use
 independent synthetic ledgers for provider accounting, copied history,
 cumulative resets, request-record precedence and visibly incomplete input.
 Coordination fixtures cover supported call/result envelopes, exact same-thread cell/session resumes,

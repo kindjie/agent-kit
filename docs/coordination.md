@@ -93,10 +93,15 @@ or single-threaded commands such as cat, git, grep, editors, reviews or docs
 checks; they must not wait on admission.
 
 An exclusive timing measurement requests the whole budget (`cpu:<all>`).
-Once it holds the admission turnstile, later requests cannot overtake it;
-before that, waiters poll for the turnstile without FIFO order. While it
-waits, the credits it already holds sit idle until the longest current holder
-finishes, which is the cost of not being overtaken. Do not nest
+A waiting request holds no partial credits for that resource. The first
+waiter to take its priority token allows fitting jobs to backfill for 30
+seconds (adjust with `--backfill SECONDS`), then stops new admissions for
+that resource until its whole request fits. Active jobs continue until they
+finish; the drain does not interrupt them or take idle slots. Backfill jobs
+can outlive the window, so eventual admission still depends on current
+holders finishing. After admission the priority token is released, and the
+next waiter starts its own window. Waiting token acquisition is polling,
+without strict FIFO order. Do not nest
 `agent-resource run` inside a wrapped command for the same resource: the inner
 call waits on its parent's credits until its `--wait` expires.
 Still confirm machine quiet after admission: non-cooperating processes are
@@ -110,17 +115,16 @@ commands. Older tool versions still exclude all new callers through the
 original gate lock, so mixed versions remain safe but old callers cannot share
 capacity.
 Requests above the budget fail immediately (exit 1). Request each resource
-only once. Acquisition is ordered by name to avoid deadlocks. Each resource
-has an exclusive admission turnstile: its holder retains partial credits
-until the full request is available, then releases the turnstile and keeps
-the credits. Later requesters cannot collect slots while it waits, so small
-jobs cannot keep overtaking a full-budget holder. Turnstile acquisition uses
-polling locks, without strict FIFO order among waiting requesters. Older tool
-versions do not use the turnstile. A timeout or interrupt releases the
-turnstile and all partial credits without starting the command. A waiter may
-hold credits while acquiring another resource; use only resources the command
-needs. This is cooperative admission, not a capacity monitor or proof that
-the machine is quiet.
+only once. Acquisition is ordered by name to avoid deadlocks. Each attempt
+under a resource's short admission turnstile acquires its complete requested
+weight or immediately releases every slot collected. Timeout, interrupt or
+supervisor death releases the waiting priority token, so stale token contents
+cannot reserve capacity. Earlier fully granted resources remain held while
+acquiring a later resource; acquisition is atomic per resource, not across
+the whole bundle. Use only resources the command needs. Mixed versions keep
+their capacity and legacy gate safety; pre-backfill weighted versions can
+still retain partial credits while holding the turnstile. This is cooperative
+admission, not a capacity monitor or proof that the machine is quiet.
 Existing project leases still apply; do not invent a competing authority.
 
 Admission expires after `--wait` seconds (exit 75, command never started).
@@ -139,9 +143,26 @@ beyond the command timeout.
 Stable lock files live under `$XDG_STATE_HOME/agent-kit/resources`, defaulting
 to `$HOME/.local/state/agent-kit/resources`. Budget files are named
 `NAME.capacity`; `NAME.lock` is the compatibility and configuration gate,
-`NAME.turnstile` serializes admission, and `NAME.slots/` holds credit locks.
+`NAME.turnstile` serializes short admission attempts, `NAME.priority` holds
+the waiting token deadline, and `NAME.slots/` holds credit locks.
 They contain no commands or task text. Never delete lock files to break a live
 lock: that creates two independent locks.
+`admission.jsonl` records request, admitted and released events with an opaque
+request ID, timestamp, requested credits, wait seconds, held seconds and exit
+code. Held duration starts once all requested resources are admitted and ends
+after process-group cleanup and lock release. Waiting failures have no admitted
+event and zero held seconds. Earlier resource holds during bundle acquisition
+are included in wait time, not held time. Events are best effort: write failure
+prints a warning but does not change admission, and abrupt supervisor death
+may leave a request without a released event. The request-event attempt runs
+before the `--wait` budget starts; recorded wait measures request-to-admission
+time including that attempt. Short writes are completed where possible, and
+incomplete trailing records are discarded before the next append. No command arguments, working
+directories, agent IDs or task text are recorded. The private mode-0600 file
+is capped at 1 MiB; when an append would exceed it, only whole recent records
+from the last 512 KiB are retained. History is diagnostic, not an ownership or
+acceptance authority.
+
 Idle files may remain indefinitely and cost no running process. The wrapper
 does not write task records or claim resource ownership for other agents. It
 runs only the explicitly supplied command.
