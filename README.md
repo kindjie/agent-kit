@@ -358,7 +358,10 @@ flowchart TD
 
 For larger workflows, [coordination tools](docs/coordination.md) include
 multi-task event waits, cooperative resource admission, explicit scheduler
-grants, and offline usage reports. The scheduler is an opt-in pilot with
+grants, and offline usage reports. Resource admission allows fitting jobs to
+backfill for 30 seconds before draining for a waiting request, with all-or-none
+credits per resource and bounded private admission history. The scheduler is
+an opt-in pilot with
 manual recovery boundaries, not an unattended scheduling service.
 
 ## As your work grows

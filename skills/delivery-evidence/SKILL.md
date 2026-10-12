@@ -33,6 +33,16 @@ a broader backstop. This does not require failing a change merely because its
 classification is uncertain. Document what may be skipped so a list of CI jobs
 is not mistaken for evidence that every job ran.
 
+Before an expensive performance or visual experiment, name the decision its
+result can change, the useful gain, the target workload and relevant display resolution,
+and a total time/resource budget. Start with the cheapest discriminating check.
+If the candidate already fails a necessary storage, correctness or visible-gain
+condition, stop that candidate before running the full qualification matrix.
+Keep the rejected evidence; another run needs a changed hypothesis or input.
+Target-device results answer target-device questions. A busy functional run can
+still establish correctness; its timing is descriptive and cannot qualify a
+performance claim.
+
 ## Gates, Telemetry, And Calibration
 
 Separate gates that answer "may this proceed?" from telemetry that answers

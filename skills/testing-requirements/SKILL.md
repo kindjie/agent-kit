@@ -35,6 +35,13 @@ Do not recreate a compiler, parser, package manager, database, or platform
 oracle in a weaker test when the authoritative mechanism can be exercised
 directly.
 
+For time-dependent logic, prefer a controlled clock and deterministic work
+completion at the lowest useful layer. Keep real mixer/device integration
+checks where they prove behavior a fake cannot. Label timing-sensitive cases
+separately so resource starvation does not force unrelated correctness checks
+to wait for a quiet machine. A busy-machine timing failure is inconclusive;
+it does not invalidate independent functional assertions that passed.
+
 ## Build Independent Evidence
 
 Follow the project's test-first rule where one applies. At minimum, reproduce

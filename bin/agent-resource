@@ -2,6 +2,7 @@
 """Cooperative machine-local admission around foreground process groups."""
 import argparse
 import fcntl
+import json
 import math
 import os
 from pathlib import Path
@@ -95,7 +96,59 @@ def capacity(root, name):
     os.close(fd)
 
 
-def acquire(root, requests, deadline, configuring=False):
+def acquire_credits(root, name, needed, available, slots, deadline, backfill):
+  # The priority token holds no credits. Its flock owns the timestamp, so
+  # stale contents after a crash cannot reserve capacity.
+  priority = secure_open(root / (name + '.priority'))
+  turnstile = None
+  owns_priority = False
+  try:
+    turnstile = secure_open(root / (name + '.turnstile'))
+    while True:
+      lock(turnstile, fcntl.LOCK_EX, deadline)
+      trial = []
+      try:
+        blocked = False
+        if not owns_priority:
+          try:
+            fcntl.flock(priority, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            owns_priority = True
+            os.ftruncate(priority, 0)
+            os.pwrite(priority, str(time.monotonic() + backfill).encode(), 0)
+          except BlockingIOError:
+            raw = os.pread(priority, 128, 0)
+            try:
+              until = float(raw)
+              if not math.isfinite(until):
+                raise ValueError()
+            except ValueError:
+              raise OSError('invalid resource priority deadline') from None
+            blocked = time.monotonic() >= until
+        if not blocked:
+          for index in range(available):
+            fd = secure_open(slots / ('%d.lock' % index))
+            try:
+              fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+              os.close(fd)
+              continue
+            trial.append(fd)
+            if len(trial) == needed:
+              granted, trial = trial, []
+              return granted
+      finally:
+        # Failed scans give every idle credit back before allowing backfill.
+        for fd in trial:
+          os.close(fd)
+        fcntl.flock(turnstile, fcntl.LOCK_UN)
+      retry(deadline)
+  finally:
+    if turnstile is not None:
+      os.close(turnstile)
+    os.close(priority)
+
+
+def acquire(root, requests, deadline, configuring=False, backfill=30):
   handles = []
   try:
     for name, needed in sorted(requests):
@@ -115,35 +168,48 @@ def acquire(root, requests, deadline, configuring=False):
       if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
           info.st_mode & 0o077):
         raise OSError('unsafe resource slots directory')
-      turnstile = secure_open(root / (name + '.turnstile'))
-      try:
-        lock(turnstile, fcntl.LOCK_EX, deadline)
-        # Keep partial credits so later small requests cannot overtake us.
-        held = set()
-        while len(held) < needed:
-          for index in range(available):
-            if index in held:
-              continue
-            fd = secure_open(slots / ('%d.lock' % index))
-            try:
-              fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-              os.close(fd)
-              continue
-            handles.append(fd)
-            held.add(index)
-            if len(held) == needed:
-              break
-          if len(held) < needed:
-            retry(deadline)
-      finally:
-        # Only the gates and granted credits survive admission or reach children.
-        os.close(turnstile)
+      handles.extend(acquire_credits(root, name, needed, available, slots,
+                                     deadline, backfill))
     return handles
   except BaseException:
     for fd in handles:
       os.close(fd)
     raise
+
+
+HISTORY_LIMIT = 1024 * 1024
+
+
+def admission_event(root, request_id, requests, event, wait_seconds=0,
+                    held_seconds=0, result=None):
+  """Best-effort private telemetry; no command, directory or agent payload."""
+  fd = None
+  try:
+    fd = secure_open(root / 'admission.jsonl')
+    lock(fd, fcntl.LOCK_EX, time.monotonic() + .1)
+    row = json.dumps({'event': event, 'request_id': request_id,
+                      'timestamp': time.time(), 'resources': requests,
+                      'wait_seconds': round(wait_seconds, 6),
+                      'held_seconds': round(held_seconds, 6), 'exit': result},
+                     separators=(',', ':')).encode() + b'\n'
+    if len(row) > HISTORY_LIMIT:
+      raise OSError('admission event exceeds history limit')
+    size = os.fstat(fd).st_size
+    if size + len(row) > HISTORY_LIMIT:
+      # Keep whole recent records, with space for subsequent appends. Never
+      # replace the locked inode: other writers may already have it open.
+      tail = os.pread(fd, HISTORY_LIMIT // 2, max(0, size - HISTORY_LIMIT // 2))
+      if size > len(tail):
+        tail = tail.partition(b'\n')[2]
+      os.ftruncate(fd, 0)
+      os.pwrite(fd, tail, 0)
+      size = len(tail)
+    os.pwrite(fd, row, size)
+  except (OSError, TimeoutError) as exc:
+    print('admission history unavailable: %s' % exc, file=sys.stderr)
+  finally:
+    if fd is not None:
+      os.close(fd)
 
 
 def group_alive(pid):
@@ -184,6 +250,11 @@ def stop_group(proc):
   proc.wait()
 
 
+class ResourceInterrupted(Exception):
+  # subprocess.wait treats InterruptedError as retryable EINTR.
+  pass
+
+
 def main():
   parser = argparse.ArgumentParser(description=__doc__)
   commands = parser.add_subparsers(dest='action', required=True)
@@ -192,6 +263,8 @@ def main():
                    metavar='NAME[:CREDITS]')
   run.add_argument('--wait', type=seconds, default=600)
   run.add_argument('--timeout', type=seconds, default=3600)
+  run.add_argument('--backfill', type=seconds, default=30,
+                   help='backfill seconds before draining for a waiter')
   run.add_argument('command', nargs=argparse.REMAINDER)
   config = commands.add_parser('capacity')
   config.add_argument('--resource', required=True)
@@ -220,14 +293,20 @@ def main():
       parser.error('capacity requires a name without a credit request')
     requests = {name: 1}
   handles, proc = [], None
+  root, admitted, result = None, None, 1
+  requested_at = time.monotonic()
+  request_id = '%x-%x' % (os.getpid(), time.time_ns())
   def interrupted(signum, frame):
-    raise InterruptedError(signum)
+    raise ResourceInterrupted(signum)
   for sig in (signal.SIGINT, signal.SIGTERM):
     signal.signal(sig, interrupted)
   try:
     root = secure_directory()
-    handles = acquire(root, requests.items(), time.monotonic() + args.wait,
-                      configuring=args.action == 'capacity')
+    if args.action == 'run':
+      admission_event(root, request_id, requests, 'request')
+    handles = acquire(root, requests.items(), requested_at + args.wait,
+                      configuring=args.action == 'capacity',
+                      backfill=args.backfill if args.action == 'run' else 30)
     if args.action == 'capacity':
       target = root / (name + '.capacity')
       os.close(secure_open(target))
@@ -242,6 +321,9 @@ def main():
           os.unlink(temporary)
       print('%s: %d credits' % (name, args.credits))
       return 0
+    admitted = time.monotonic()
+    admission_event(root, request_id, requests, 'admitted',
+                    wait_seconds=admitted - requested_at)
     env = os.environ.copy()
     for name, granted in requests.items():
       env[credit_variable(name)] = str(granted)
@@ -251,13 +333,16 @@ def main():
       result = proc.wait(timeout=args.timeout)
     except subprocess.TimeoutExpired:
       result = 124
-    return result if result >= 0 else 128 - result
+    result = result if result >= 0 else 128 - result
+    return result
   except TimeoutError:
     print('resource wait expired; no command started or capacity changed',
           file=sys.stderr)
-    return 75
-  except InterruptedError as exc:
-    return 128 + exc.args[0]
+    result = 75
+    return result
+  except ResourceInterrupted as exc:
+    result = 128 + exc.args[0]
+    return result
   except OSError as exc:
     print(str(exc), file=sys.stderr)
     return 1
@@ -269,6 +354,12 @@ def main():
       stop_group(proc)
     for fd in handles:
       os.close(fd)
+    if root is not None and args.action == 'run':
+      now = time.monotonic()
+      admission_event(root, request_id, requests, 'released',
+                      wait_seconds=(admitted or now) - requested_at,
+                      held_seconds=now - admitted if admitted else 0,
+                      result=result)
 
 
 if __name__ == '__main__':
