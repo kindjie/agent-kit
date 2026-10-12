@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 BIN = Path(__file__).resolve().parents[1] / 'bin' / 'agent-resource'
 
@@ -168,8 +169,17 @@ class ResourceTest(unittest.TestCase):
     waiter = self.waiting_holder('exclusive', '--resource', 'cpu:3',
                                  '--backfill', '.4')
     self.wait_locked('cpu.priority')
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    def set_deadline(value):
+      # Control the clock boundary while preserving real independent child
+      # and slot-lock oracles. Startup delays cannot expire this phase.
+      with (root / 'cpu.turnstile').open('r+') as turnstile:
+        fcntl.flock(turnstile, fcntl.LOCK_EX)
+        with (root / 'cpu.priority').open('w') as priority:
+          priority.write(str(value))
+    set_deadline(1e20)
     self.assertEqual(self.contender('--resource', 'cpu').returncode, 0)
-    time.sleep(.5)
+    set_deadline(0)
     for _ in range(3):
       self.assertEqual(self.contender('--resource', 'cpu').returncode, 75)
     # The drain stops new jobs without reserving the two idle slots.
@@ -273,6 +283,83 @@ class ResourceTest(unittest.TestCase):
     self.assertEqual(self.contender().returncode, 0)
     self.assertLessEqual(path.stat().st_size, 1024 * 1024)
     self.assertEqual(self.history()[-1]['event'], 'released')
+
+  def test_history_delay_does_not_spend_admission_wait(self):
+    self.assertEqual(self.configure(1).returncode, 0)
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    functions = runpy.run_path(str(BIN))
+    namespace = functions['main'].__globals__
+    clock = [100.0]
+    with (root / 'gpu.lock').open('r+') as gate:
+      fcntl.flock(gate, fcntl.LOCK_EX)
+      def delayed_history(*args, **kwargs):
+        if args[3] == 'request':
+          clock[0] += .2
+      def release_on_retry(seconds):
+        clock[0] += .01
+        fcntl.flock(gate, fcntl.LOCK_UN)
+      handlers = {sig: signal.getsignal(sig)
+                  for sig in (signal.SIGINT, signal.SIGTERM)}
+      try:
+        with mock.patch.dict(os.environ, self.env), \
+             mock.patch.object(sys, 'argv', [str(BIN), 'run', '--resource',
+                               'gpu', '--wait', '.1', '--', 'true']), \
+             mock.patch.dict(namespace, admission_event=delayed_history), \
+             mock.patch.object(time, 'monotonic', lambda: clock[0]), \
+             mock.patch.object(time, 'sleep', release_on_retry):
+          result = functions['main']()
+      finally:
+        for sig, handler in handlers.items():
+          signal.signal(sig, handler)
+    self.assertEqual(result, 0)
+
+  def test_short_history_writes_preserve_complete_rows(self):
+    self.assertEqual(self.contender().returncode, 0)
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    path = root / 'admission.jsonl'
+    old = json.dumps({'event': 'old', 'padding': 'x' * 512}) + '\n'
+    functions = runpy.run_path(str(BIN))
+    original = os.pwrite
+    for retained in (False, True):
+      with self.subTest(retained=retained):
+        path.write_text(old * (2000 if retained else 1))
+        calls = [0]
+        def short_write(fd, data, offset):
+          calls[0] += 1
+          return original(fd, data[:7] if calls[0] <= 3 else data, offset)
+        with mock.patch.object(os, 'pwrite', short_write):
+          functions['admission_event'](root, 'first', {'cpu': 1}, 'request')
+          functions['admission_event'](root, 'second', {'cpu': 1}, 'request')
+        rows = self.history()
+        self.assertEqual([row['request_id'] for row in rows[-2:]],
+                         ['first', 'second'])
+        self.assertTrue(all(row['event'] == 'old' for row in rows[:-2]))
+        self.assertLessEqual(path.stat().st_size, 1024 * 1024)
+
+  def test_failed_history_write_discards_only_incomplete_record(self):
+    self.assertEqual(self.contender().returncode, 0)
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    path = root / 'admission.jsonl'
+    old = json.dumps({'event': 'old'}) + '\n'
+    functions = runpy.run_path(str(BIN))
+    original = os.pwrite
+    path.write_text(old)
+    calls = [0]
+    def failed_write(fd, data, offset):
+      calls[0] += 1
+      if calls[0] == 1:
+        return original(fd, data[:7], offset)
+      raise OSError('fixture filesystem full')
+    with mock.patch.object(os, 'pwrite', failed_write), \
+         contextlib.redirect_stderr(io.StringIO()):
+      functions['admission_event'](root, 'lost', {'cpu': 1}, 'request')
+    self.assertEqual(path.read_text(), old)
+    # A previous writer may have died without running its repair path.
+    with path.open('a') as stream:
+      stream.write('{"partial":')
+    functions['admission_event'](root, 'next', {'cpu': 1}, 'request')
+    self.assertEqual([row['event'] for row in self.history()], ['old', 'request'])
+    self.assertEqual(self.history()[-1]['request_id'], 'next')
 
   def test_large_history_event_leaves_space_for_pending_row(self):
     self.assertEqual(self.configure(1).returncode, 0)

@@ -639,10 +639,12 @@ backfill followed by bounded drain, priority recovery after timeout, signal and
 supervisor death, reversed multi-resource order and child credit variables,
 legacy gate compatibility, idle-only capacity changes, unsafe file refusal,
 timeout, interruption during child execution and exit propagation. Backfill
-fixtures use `--backfill .4` rather than waiting for the 30-second default;
-real slot flocks and child markers provide independent admission oracles.
+fixtures control the temporary priority deadline under its turnstile, so
+subprocess startup time cannot expire the intended test phase. Real slot
+flocks and child markers provide independent admission oracles.
 Private history cases check lifecycle/exit timing, payload exclusion, symlink
-preservation and the 1 MiB cap. All resource state is temporary; the suite
+preservation, short-write recovery, telemetry-independent wait and the 1 MiB
+cap. All resource state is temporary; the suite
 never changes live capacities or runs CPU/GPU workloads. Efficiency tests use
 independent synthetic ledgers for provider accounting, copied history,
 cumulative resets, request-record precedence and visibly incomplete input.

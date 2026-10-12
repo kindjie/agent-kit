@@ -180,13 +180,36 @@ def acquire(root, requests, deadline, configuring=False, backfill=30):
 HISTORY_LIMIT = 1024 * 1024
 
 
+def write_history(fd, contents, offset):
+  while contents:
+    written = os.pwrite(fd, contents, offset)
+    if written <= 0:
+      raise OSError('admission history write made no progress')
+    offset += written
+    contents = contents[written:]
+
+
+def trim_incomplete_history(fd):
+  size = os.fstat(fd).st_size
+  if not size or os.pread(fd, 1, size - 1) == b'\n':
+    return
+  # Only interrupted writes need the bounded scan; normal appends read one
+  # final byte. Discard an incomplete record rather than concatenating JSON.
+  start = max(0, size - HISTORY_LIMIT)
+  tail = os.pread(fd, size - start, start)
+  newline = tail.rfind(b'\n')
+  os.ftruncate(fd, start + newline + 1 if newline >= 0 else 0)
+
+
 def admission_event(root, request_id, requests, event, wait_seconds=0,
                     held_seconds=0, result=None):
   """Best-effort private telemetry; no command, directory or agent payload."""
-  fd = None
+  fd, locked = None, False
   try:
     fd = secure_open(root / 'admission.jsonl')
     lock(fd, fcntl.LOCK_EX, time.monotonic() + .1)
+    locked = True
+    trim_incomplete_history(fd)
     row = json.dumps({'event': event, 'request_id': request_id,
                       'timestamp': time.time(), 'resources': requests,
                       'wait_seconds': round(wait_seconds, 6),
@@ -203,14 +226,22 @@ def admission_event(root, request_id, requests, event, wait_seconds=0,
       if size > len(tail):
         tail = tail.partition(b'\n')[2]
       os.ftruncate(fd, 0)
-      os.pwrite(fd, tail, 0)
+      write_history(fd, tail, 0)
       size = len(tail)
-    os.pwrite(fd, row, size)
+    write_history(fd, row, size)
   except (OSError, TimeoutError) as exc:
     print('admission history unavailable: %s' % exc, file=sys.stderr)
   finally:
     if fd is not None:
-      os.close(fd)
+      try:
+        if locked:
+          try:
+            trim_incomplete_history(fd)
+          except OSError as exc:
+            print('admission history repair unavailable: %s' % exc,
+                  file=sys.stderr)
+      finally:
+        os.close(fd)
 
 
 def group_alive(pid):
@@ -305,7 +336,8 @@ def main():
     root = secure_directory()
     if args.action == 'run':
       admission_event(root, request_id, requests, 'request')
-    handles = acquire(root, requests.items(), requested_at + args.wait,
+    admission_started = time.monotonic()
+    handles = acquire(root, requests.items(), admission_started + args.wait,
                       configuring=args.action == 'capacity',
                       backfill=args.backfill if args.action == 'run' else 30)
     if args.action == 'capacity':

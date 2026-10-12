@@ -154,7 +154,10 @@ after process-group cleanup and lock release. Waiting failures have no admitted
 event and zero held seconds. Earlier resource holds during bundle acquisition
 are included in wait time, not held time. Events are best effort: write failure
 prints a warning but does not change admission, and abrupt supervisor death
-may leave a request without a released event. No command arguments, working
+may leave a request without a released event. The request-event attempt runs
+before the `--wait` budget starts; recorded wait measures request-to-admission
+time including that attempt. Short writes are completed where possible, and
+incomplete trailing records are discarded before the next append. No command arguments, working
 directories, agent IDs or task text are recorded. The private mode-0600 file
 is capped at 1 MiB; when an append would exceed it, only whole recent records
 from the last 512 KiB are retained. History is diagnostic, not an ownership or
