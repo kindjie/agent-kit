@@ -103,6 +103,20 @@ def capacity(root, name):
 POLICY = 'oldest-ticket-v1'
 
 
+def queue_clock_ns():
+  if sys.platform == 'darwin':
+    clock = getattr(time, 'CLOCK_UPTIME_RAW', None)
+    if clock is None:
+      raise OSError('resource admission requires macOS 10.12+ '
+                    'shared clock support')
+    return time.clock_gettime_ns(clock)
+  return time.monotonic_ns()
+
+
+def queue_clock():
+  return queue_clock_ns() / 1e9
+
+
 def queue_directory(root, name, create=False):
   path = root / (name + '.queue')
   if create:
@@ -162,12 +176,13 @@ def acquire_credits(root, name, needed, available, slots, deadline, backfill,
       try:
         if own is None:
           # Both order and age begin at registration under this turnstile.
+          registered = queue_clock_ns()
           path = queue / ('%020d-%s.ticket' %
-                          (time.monotonic_ns(), os.urandom(8).hex()))
+                          (registered, os.urandom(8).hex()))
           ticket = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR |
                            os.O_NOFOLLOW, 0o600)
           fcntl.flock(ticket, fcntl.LOCK_EX | fcntl.LOCK_NB)
-          own = (path, {'credits': needed, 'enqueued': time.monotonic(),
+          own = (path, {'credits': needed, 'enqueued': registered / 1e9,
                         'grace': backfill})
           write_history(ticket, json.dumps(own[1]).encode(), 0)
           if context is not None:
@@ -192,7 +207,7 @@ def acquire_credits(root, name, needed, available, slots, deadline, backfill,
                 raise ValueError()
             except ValueError:
               raise OSError('invalid resource priority deadline') from None
-            blocked = time.monotonic() >= legacy_until
+            blocked = queue_clock() >= legacy_until
         for index in range(available):
           fd = secure_open(slots / ('%d.lock' % index))
           try:
@@ -204,7 +219,7 @@ def acquire_credits(root, name, needed, available, slots, deadline, backfill,
         # Count every free credit: a fitting head wins even during its grace.
         allowed = (not blocked and (is_head or
                    (len(trial) < head[1]['credits'] and
-                    time.monotonic() < until)))
+                    queue_clock() < until)))
         if allowed and len(trial) >= needed:
           granted, trial = trial[:needed], trial[needed:]
           return granted
@@ -240,16 +255,28 @@ def resource_status(root, name, owned=None):
   try:
     if root is None:
       raise OSError('resource state unavailable')
-    turn = secure_open(root / (name + '.turnstile'), create=False, readonly=True)
-    lock(turn, fcntl.LOCK_EX, time.monotonic() + .02)
+    try:
+      turn = secure_open(root / (name + '.turnstile'), create=False,
+                         readonly=True)
+    except FileNotFoundError:
+      pass
+    if turn is not None:
+      lock(turn, fcntl.LOCK_EX, time.monotonic() + .02)
     gate = secure_open(root / (name + '.lock'), create=False, readonly=True)
-    fcntl.flock(gate, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    # Before first admission creates a turnstile, only exclusive gate
+    # ownership proves idle; shared ownership could race a starting caller.
+    fcntl.flock(gate, (fcntl.LOCK_SH if turn is not None else fcntl.LOCK_EX) |
+                fcntl.LOCK_NB)
     fd = secure_open(root / (name + '.capacity'), create=False, readonly=True)
     try:
       raw = os.pread(fd, 128, 0)
       row['capacity'] = credits(raw.decode().strip()) if raw else 1
     finally:
       os.close(fd)
+    if turn is None:
+      row.update(reserved=0, free=row['capacity'],
+                 queued_by_credits={}, queued=[])
+      return row
     slots = root / (name + '.slots')
     info = slots.lstat()
     if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
@@ -276,16 +303,16 @@ def resource_status(root, name, owned=None):
       rows = []
     else:
       rows = live_tickets(queue, (owned or {}).get(name))
+    now = queue_clock() if rows else None
     row.update(queued_by_credits={}, queued=[])
     for position, (_, ticket) in enumerate(rows, 1):
       row['queued'].append({'position': position, 'credits': ticket['credits'],
-                            'age_seconds': round(max(0, time.monotonic() -
+                            'age_seconds': round(max(0, now -
                                                      ticket['enqueued']), 3)})
       weight = str(ticket['credits'])
       row['queued_by_credits'][weight] = row['queued_by_credits'].get(weight, 0) + 1
     if rows:
       head = rows[0][1]
-      now = time.monotonic()
       row['head'] = {'credits': head['credits'],
                      'age_seconds': round(max(0, now - head['enqueued']), 3),
                      'phase': 'head_fits' if free >= head['credits'] else
@@ -314,7 +341,7 @@ def acquire(root, requests, deadline, configuring=False, backfill=30,
       # Legacy callers hold this gate exclusively; they still exclude us.
       if context is not None and not configuring:
         stage = {'event': 'resource_wait', 'name': name, 'credits': needed,
-                 'monotonic': time.monotonic(), 'capacity': None}
+                 'monotonic': queue_clock(), 'capacity': None}
         context['stages'].append(stage)
       lock(gate, fcntl.LOCK_EX if configuring else fcntl.LOCK_SH, deadline,
            context.get('notify') if context is not None else None)
@@ -336,7 +363,7 @@ def acquire(root, requests, deadline, configuring=False, backfill=30,
                                      deadline, backfill, context))
       if context is not None:
         stage = dict(stage, event='resource_acquired',
-                     monotonic=time.monotonic())
+                     monotonic=queue_clock())
         context['stages'].append(stage)
         context['grants'].append(stage)
     return handles
@@ -372,33 +399,41 @@ def trim_incomplete_history(fd):
 
 def admission_event(root, request_id, requests, event, wait_seconds=0,
                     held_seconds=0, result=None, **metadata):
-  """Best-effort private telemetry; no command, directory or agent payload."""
+  admission_events(root, request_id, [(requests, dict(metadata, event=event,
+                   wait_seconds=round(wait_seconds, 6),
+                   held_seconds=round(held_seconds, 6), exit=result))])
+
+
+def admission_events(root, request_id, events):
+  """One best-effort journal lock budget for all captured transition rows."""
+  if not events:
+    return
   fd, locked = None, False
   try:
     fd = secure_open(root / 'admission.jsonl')
     lock(fd, fcntl.LOCK_EX, time.monotonic() + .1)
     locked = True
     trim_incomplete_history(fd)
-    row = json.dumps({'schema': 2, 'policy': POLICY, **metadata,
-                      'event': event, 'request_id': request_id,
-                      'timestamp': time.time(), 'resources': requests,
-                      'wait_seconds': round(wait_seconds, 6),
-                      'held_seconds': round(held_seconds, 6), 'exit': result},
-                     separators=(',', ':')).encode() + b'\n'
-    if len(row) > HISTORY_LIMIT:
-      raise OSError('admission event exceeds history limit')
-    size = os.fstat(fd).st_size
-    if size + len(row) > HISTORY_LIMIT:
-      # Keep whole recent records, with space for subsequent appends. Never
-      # replace the locked inode: other writers may already have it open.
-      tail_limit = min(HISTORY_LIMIT // 2, HISTORY_LIMIT - len(row))
-      tail = os.pread(fd, tail_limit, max(0, size - tail_limit))
-      if size > len(tail):
-        tail = tail.partition(b'\n')[2]
-      os.ftruncate(fd, 0)
-      write_history(fd, tail, 0)
-      size = len(tail)
-    write_history(fd, row, size)
+    for requests, metadata in events:
+      row = json.dumps({'schema': 2, 'policy': POLICY, 'request_id': request_id,
+                        'timestamp': time.time(), 'wait_seconds': 0,
+                        'held_seconds': 0, 'exit': None, **metadata,
+                        'resources': requests},
+                       separators=(',', ':')).encode() + b'\n'
+      if len(row) > HISTORY_LIMIT:
+        raise OSError('admission event exceeds history limit')
+      size = os.fstat(fd).st_size
+      if size + len(row) > HISTORY_LIMIT:
+        # Keep whole recent records, with space for subsequent appends. Never
+        # replace the locked inode: other writers may already have it open.
+        tail_limit = min(HISTORY_LIMIT // 2, HISTORY_LIMIT - len(row))
+        tail = os.pread(fd, tail_limit, max(0, size - tail_limit))
+        if size > len(tail):
+          tail = tail.partition(b'\n')[2]
+        os.ftruncate(fd, 0)
+        write_history(fd, tail, 0)
+        size = len(tail)
+      write_history(fd, row, size)
   except (OSError, TimeoutError) as exc:
     print('admission history unavailable: %s' % exc, file=sys.stderr)
   finally:
@@ -536,12 +571,13 @@ def main():
                                             for name in sorted(requests))),
           file=sys.stderr)
   context['notify'] = notify
-  def emit_stages():
-    for stage in context['stages']:
-      admission_event(root, request_id, {stage['name']: stage['credits']},
-                      stage['event'], monotonic=stage['monotonic'],
-                      capacity=stage['capacity'])
+  def emit_stages(terminal):
+    events = [({stage['name']: stage['credits']},
+               {'event': stage['event'], 'monotonic': stage['monotonic'],
+                'capacity': stage['capacity']}) for stage in context['stages']]
     context['stages'].clear()
+    events.append((requests, terminal))
+    admission_events(root, request_id, events)
   request_id = '%x-%x' % (os.getpid(), time.time_ns())
   def interrupted(signum, frame):
     raise ResourceInterrupted(signum)
@@ -572,9 +608,8 @@ def main():
       print('%s: %d credits' % (name, args.credits))
       return 0
     admitted = time.monotonic()
-    emit_stages()
-    admission_event(root, request_id, requests, 'admitted',
-                    wait_seconds=admitted - requested_at)
+    emit_stages({'event': 'admitted',
+                 'wait_seconds': round(admitted - requested_at, 6)})
     env = os.environ.copy()
     for name, granted in requests.items():
       env[credit_variable(name)] = str(granted)
@@ -611,14 +646,13 @@ def main():
       os.close(fd)
     if root is not None and args.action == 'run':
       now = time.monotonic()
+      released_at = queue_clock() if context['grants'] else None
       for stage in context['grants']:
         context['stages'].append(dict(stage, event='resource_released',
-                                      monotonic=now))
-      emit_stages()
-      admission_event(root, request_id, requests, 'released',
-                      wait_seconds=(admitted or now) - requested_at,
-                      held_seconds=now - admitted if admitted else 0,
-                      result=result, reason=reason)
+                                      monotonic=released_at))
+      emit_stages({'event': 'released', 'exit': result, 'reason': reason,
+                   'wait_seconds': round((admitted or now) - requested_at, 6),
+                   'held_seconds': round(now - admitted if admitted else 0, 6)})
 
 
 if __name__ == '__main__':

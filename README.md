@@ -363,7 +363,8 @@ backfill for 30 seconds from the oldest live ticket before draining, with
 fitting-head precedence and all-or-none credits per resource. Read-only queue
 status shows participating waits and reserved/free credits with unknown ETA;
 one long-wait CPU/GPU reminder suggests only compatible alternate hosts.
-Private admission history remains bounded. The scheduler is
+Private admission history remains bounded. Resource admission on macOS
+requires macOS 10.12+ for its shared clock; Python 3.9+ remains supported. The scheduler is
 an opt-in pilot with
 manual recovery boundaries, not an unattended scheduling service.
 

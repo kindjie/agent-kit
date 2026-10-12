@@ -647,7 +647,13 @@ oracles. Registration age, no ticket resurrection and malformed live tickets
 have focused cases. Timeout, cancellation and death prove ticket cleanup.
 Status fixtures verify grouped weights/ongoing ages, unknown ETA/legacy
 coverage, bounded busy reads and no creation or pruning. Notice cases check
-exactly-once CPU/GPU waits, no immediate/custom-resource reminder, and no paths. Real slot
+exactly-once CPU/GPU waits, no immediate/custom-resource reminder, and no paths.
+Fresh configured-idle status must prove exclusive-gate ownership without
+creating state. Clock cases use two real processes with different local
+origins and an independent shared-uptime oracle; unavailable clocks refuse
+cleanly through both main and status. Contended telemetry uses a real held
+journal flock and syscall-count/child-start barrier, without a subsecond wall
+threshold; batch retention still checks whole rows and the size cap. Real slot
 flocks and child markers provide independent admission oracles.
 Private history cases check lifecycle/exit timing, payload exclusion, symlink
 preservation, complete priority-deadline writes, short-write history recovery,

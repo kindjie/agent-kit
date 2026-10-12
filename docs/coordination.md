@@ -92,6 +92,12 @@ non-alphanumeric characters replaced by `_`. A wrapper script can use
 or single-threaded commands such as cat, git, grep, editors, reviews or docs
 checks; they must not wait on admission.
 
+On macOS, resource admission requires macOS 10.12+ for the shared uptime
+clock, with Python 3.9+ unchanged. Ticket order, ages and priority deadlines
+use the system-wide uptime clock even on Python 3.9. Older process-relative
+priority timestamps have unknown mixed-version timing; their flocks still
+preserve exclusion and are never overridden.
+
 An exclusive timing measurement requests the whole budget (`cpu:<all>`).
 A waiting request holds no partial credits for that resource. New callers
 register private live tickets under the admission turnstile. Registration
@@ -109,7 +115,9 @@ large head even with free credits. Running jobs retain their requested weight,
 including serial phases. Do not nest `agent-resource run` for the same
 resource: the inner call waits on its parent's credits until `--wait` expires.
 Still confirm machine quiet after admission: non-cooperating processes are
-not governed. Choose `--wait` from the expected queue duration; the
+not governed. If timing work cannot start while unrelated load remains busy,
+release admission and reconsider or retry later within its decision/evidence
+budget. Choose `--wait` from the expected queue duration; the
 600-second default suits short steps, not long build queues. Give optional
 measurements a decision/evidence budget: when a wait expires, reconsider
 whether the result still changes a decision before retrying with more time.
@@ -166,7 +174,9 @@ The JSON snapshot groups participating waiters by credits and shows their
 current ages/order, oldest head weight and backfill/drain state, configured
 capacity and reserved/free credits. Reserved credits are lock reservations,
 not measured CPU/GPU utilization. Status creates or prunes no files and uses
-a short bounded turnstile attempt; busy, unsafe or unconfigured state is
+a short bounded turnstile attempt. Before a configured resource has any
+turnstile, exclusive ownership of its existing compatibility gate proves an
+idle snapshot without creating state; busy, unsafe or unconfigured state is
 unknown. The top-level policy identifies the observer and new participating
 callers, not every live wrapper. Legacy queue/priority coverage remains
 unknown, so an empty participating queue does not prove nobody is waiting.
@@ -187,10 +197,12 @@ Custom-resource-only requests and immediate admissions emit no host reminder.
 request ID, timestamp, requested credits, wait seconds, held seconds and exit
 code. Schema 2 adds the participating policy, request backfill budget,
 per-resource wait/acquire/release stages with configured capacity and captured
-monotonic times, and terminal reasons. `admission_timeout` distinguishes a
+shared uptime/monotonic times, and terminal reasons. `admission_timeout` distinguishes a
 prestart exit 75 from `child_exit` with exit 75. Resource wait starts before its
 compatibility gate; acquired/released stages expose earlier complete bundle
-grants. Capture precedes logging, outside the admission turnstile. Whole-bundle
+grants. Capture precedes logging, outside the admission turnstile. Captured stage rows
+and their admitted/released event share one bounded journal-lock attempt, so
+lock contention before child start does not add a wait per resource. Whole-bundle
 held duration starts once every resource is admitted and ends after group
 cleanup and lock release. Waiting failures have no admitted event and zero
 whole-bundle held seconds, even if an earlier resource was temporarily held.
