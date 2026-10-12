@@ -639,13 +639,26 @@ backfill followed by bounded drain, priority recovery after timeout, signal and
 supervisor death, reversed multi-resource order and child credit variables,
 legacy gate compatibility, idle-only capacity changes, unsafe file refusal,
 timeout, interruption during child execution and exit propagation. Backfill
-fixtures control the temporary priority deadline under its turnstile, so
-subprocess startup time cannot expire the intended test phase. Real slot
+fixtures control the temporary priority deadline and ticket age under the
+turnstile, so subprocess startup cannot expire the intended test phase.
+Paused registered contenders prove fitting-head precedence and original-age
+successor drain with real child exits; controlled mutations must fail these
+oracles. Registration age, no ticket resurrection and malformed live tickets
+have focused cases. Timeout, cancellation and death prove ticket cleanup.
+Status fixtures verify grouped weights/ongoing ages, unknown ETA/legacy
+coverage, bounded busy reads and no creation or pruning. Notice cases check
+exactly-once CPU/GPU waits, no immediate/custom-resource reminder, and no paths.
+Fresh configured-idle status must prove exclusive-gate ownership without
+creating state. Clock cases use two real processes with different local
+origins and an independent shared-uptime oracle; unavailable clocks refuse
+cleanly through both main and status. Contended telemetry uses a real held
+journal flock and syscall-count/child-start barrier, without a subsecond wall
+threshold; batch retention still checks whole rows and the size cap. Real slot
 flocks and child markers provide independent admission oracles.
 Private history cases check lifecycle/exit timing, payload exclusion, symlink
 preservation, complete priority-deadline writes, short-write history recovery,
-telemetry-independent wait and the 1 MiB
-cap. All resource state is temporary; the suite
+telemetry-independent wait, monotonic stages/configured budgets, distinct
+admission-timeout versus child-exit reasons and the 1 MiB cap. All resource state is temporary; the suite
 never changes live capacities or runs CPU/GPU workloads. Efficiency tests use
 independent synthetic ledgers for provider accounting, copied history,
 cumulative resets, request-record precedence and visibly incomplete input.

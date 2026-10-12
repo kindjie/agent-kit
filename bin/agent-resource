@@ -22,10 +22,11 @@ def seconds(value):
   return number
 
 
-def secure_directory():
+def secure_directory(create=True):
   root = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state'))
   root = root / 'agent-kit' / 'resources'
-  root.mkdir(mode=0o700, parents=True, exist_ok=True)
+  if create:
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
   info = root.lstat()
   if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
       info.st_mode & 0o077):
@@ -55,9 +56,10 @@ def credit_variable(name):
   return 'AGENT_RESOURCE_%s_CREDITS' % re.sub(r'[^A-Z0-9]', '_', name.upper())
 
 
-def secure_open(path):
-  fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW |
-               os.O_NONBLOCK, 0o600)
+def secure_open(path, create=True, readonly=False):
+  flags = os.O_RDONLY if readonly else os.O_RDWR
+  fd = os.open(path, flags | (os.O_CREAT if create else 0) |
+               os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
   info = os.fstat(fd)
   if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
       info.st_mode & 0o077 or info.st_nlink != 1):
@@ -73,12 +75,14 @@ def retry(deadline):
   time.sleep(min(.1, remaining))
 
 
-def lock(fd, mode, deadline):
+def lock(fd, mode, deadline, on_wait=None):
   while True:
     try:
       fcntl.flock(fd, mode | fcntl.LOCK_NB)
       return
     except BlockingIOError:
+      if on_wait:
+        on_wait()
       retry(deadline)
 
 
@@ -96,70 +100,256 @@ def capacity(root, name):
     os.close(fd)
 
 
-def acquire_credits(root, name, needed, available, slots, deadline, backfill):
-  # The priority token holds no credits. Its flock owns the timestamp, so
-  # stale contents after a crash cannot reserve capacity.
+POLICY = 'oldest-ticket-v1'
+
+
+def queue_clock_ns():
+  if sys.platform == 'darwin':
+    clock = getattr(time, 'CLOCK_UPTIME_RAW', None)
+    if clock is None:
+      raise OSError('resource admission requires macOS 10.12+ '
+                    'shared clock support')
+    return time.clock_gettime_ns(clock)
+  return time.monotonic_ns()
+
+
+def queue_clock():
+  return queue_clock_ns() / 1e9
+
+
+def queue_directory(root, name, create=False):
+  path = root / (name + '.queue')
+  if create:
+    path.mkdir(mode=0o700, exist_ok=True)
+  info = path.lstat()
+  if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+      info.st_mode & 0o077):
+    raise OSError('unsafe resource queue directory')
+  return path
+
+
+def live_tickets(queue, own=None, prune=False):
+  rows = []
+  for path in sorted(queue.glob('*.ticket')):
+    if own and path == own[0]:
+      rows.append((path, own[1]))  # Never probe our own live flock.
+      continue
+    try:
+      fd = secure_open(path, create=False, readonly=not prune)
+    except FileNotFoundError:
+      continue  # A retiring owner must not be recreated by a scan.
+    try:
+      try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+      except BlockingIOError:
+        try:
+          row = json.loads(os.pread(fd, 1024, 0))
+          if (not isinstance(row, dict) or
+              type(row.get('credits')) is not int or
+              not 1 <= row['credits'] <= 64 or
+              not math.isfinite(row.get('enqueued', -1)) or
+              row['enqueued'] < 0 or
+              not math.isfinite(row.get('grace', -1)) or row['grace'] <= 0):
+            raise ValueError()
+        except (ValueError, TypeError, OverflowError):
+          raise OSError('invalid live resource ticket') from None
+        rows.append((path, row))
+      else:
+        if prune:
+          path.unlink()  # Registration is protected by the caller's turnstile.
+    finally:
+      os.close(fd)
+  return rows
+
+
+def acquire_credits(root, name, needed, available, slots, deadline, backfill,
+                    context=None):
   priority = secure_open(root / (name + '.priority'))
-  turnstile = None
-  owns_priority = False
+  turnstile, ticket, own, owns_priority = None, None, None, False
+  on_wait = context.get('notify') if context is not None else None
   try:
     turnstile = secure_open(root / (name + '.turnstile'))
+    queue = queue_directory(root, name, create=True)
     while True:
-      lock(turnstile, fcntl.LOCK_EX, deadline)
+      lock(turnstile, fcntl.LOCK_EX, deadline, on_wait)
       trial = []
       try:
+        if own is None:
+          # Both order and age begin at registration under this turnstile.
+          registered = queue_clock_ns()
+          path = queue / ('%020d-%s.ticket' %
+                          (registered, os.urandom(8).hex()))
+          ticket = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR |
+                           os.O_NOFOLLOW, 0o600)
+          fcntl.flock(ticket, fcntl.LOCK_EX | fcntl.LOCK_NB)
+          own = (path, {'credits': needed, 'enqueued': registered / 1e9,
+                        'grace': backfill})
+          write_history(ticket, json.dumps(own[1]).encode(), 0)
+          if context is not None:
+            context['owned'][name] = own
+        head = live_tickets(queue, own, prune=True)[0]
+        until = head[1]['enqueued'] + head[1]['grace']
+        is_head = head[0] == own[0]
         blocked = False
         if not owns_priority:
           try:
             fcntl.flock(priority, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            owns_priority = True
-            os.ftruncate(priority, 0)
-            write_history(priority,
-                          str(time.monotonic() + backfill).encode(), 0)
+            if is_head:
+              owns_priority = True
+              os.ftruncate(priority, 0)
+              write_history(priority, str(until).encode(), 0)
+            else:
+              fcntl.flock(priority, fcntl.LOCK_UN)
           except BlockingIOError:
-            raw = os.pread(priority, 128, 0)
             try:
-              until = float(raw)
-              if not math.isfinite(until):
+              legacy_until = float(os.pread(priority, 128, 0))
+              if not math.isfinite(legacy_until):
                 raise ValueError()
             except ValueError:
               raise OSError('invalid resource priority deadline') from None
-            blocked = time.monotonic() >= until
-        if not blocked:
-          for index in range(available):
-            fd = secure_open(slots / ('%d.lock' % index))
-            try:
-              fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-              os.close(fd)
-              continue
-            trial.append(fd)
-            if len(trial) == needed:
-              granted, trial = trial, []
-              return granted
+            blocked = queue_clock() >= legacy_until
+        for index in range(available):
+          fd = secure_open(slots / ('%d.lock' % index))
+          try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+          except BlockingIOError:
+            os.close(fd)
+            continue
+          trial.append(fd)
+        # Count every free credit: a fitting head wins even during its grace.
+        allowed = (not blocked and (is_head or
+                   (len(trial) < head[1]['credits'] and
+                    queue_clock() < until)))
+        if allowed and len(trial) >= needed:
+          granted, trial = trial[:needed], trial[needed:]
+          return granted
       finally:
-        # Failed scans give every idle credit back before allowing backfill.
         for fd in trial:
           os.close(fd)
         fcntl.flock(turnstile, fcntl.LOCK_UN)
+      if on_wait:
+        on_wait()
       retry(deadline)
   finally:
+    if own is not None:
+      try:
+        own[0].unlink(missing_ok=True)
+      except OSError:
+        # Closing its flock makes a failed unlink harmless to future turns.
+        pass
+    if ticket is not None:
+      os.close(ticket)
+    if context is not None:
+      context['owned'].pop(name, None)
     if turnstile is not None:
       os.close(turnstile)
     os.close(priority)
 
 
-def acquire(root, requests, deadline, configuring=False, backfill=30):
+def resource_status(root, name, owned=None):
+  row = {'capacity': None, 'reserved': None, 'free': None,
+         'queued_by_credits': None, 'queued': None, 'head': None,
+         'eta_seconds': None,
+         'coverage': 'participating tickets only; legacy queue/priority unknown'}
+  turn, gate = None, None
+  try:
+    if root is None:
+      raise OSError('resource state unavailable')
+    try:
+      turn = secure_open(root / (name + '.turnstile'), create=False,
+                         readonly=True)
+    except FileNotFoundError:
+      pass
+    if turn is not None:
+      lock(turn, fcntl.LOCK_EX, time.monotonic() + .02)
+    gate = secure_open(root / (name + '.lock'), create=False, readonly=True)
+    # Before first admission creates a turnstile, only exclusive gate
+    # ownership proves idle; shared ownership could race a starting caller.
+    fcntl.flock(gate, (fcntl.LOCK_SH if turn is not None else fcntl.LOCK_EX) |
+                fcntl.LOCK_NB)
+    fd = secure_open(root / (name + '.capacity'), create=False, readonly=True)
+    try:
+      raw = os.pread(fd, 128, 0)
+      row['capacity'] = credits(raw.decode().strip()) if raw else 1
+    finally:
+      os.close(fd)
+    if turn is None:
+      row.update(reserved=0, free=row['capacity'],
+                 queued_by_credits={}, queued=[])
+      return row
+    slots = root / (name + '.slots')
+    info = slots.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+        info.st_mode & 0o077):
+      raise OSError('unsafe resource slots directory')
+    free = 0
+    for index in range(row['capacity']):
+      try:
+        fd = secure_open(slots / ('%d.lock' % index), create=False, readonly=True)
+      except FileNotFoundError:
+        free += 1
+        continue
+      try:
+        try:
+          fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+          free += 1
+        except BlockingIOError:
+          pass
+      finally:
+        os.close(fd)
+    try:
+      queue = queue_directory(root, name)
+    except FileNotFoundError:
+      rows = []
+    else:
+      rows = live_tickets(queue, (owned or {}).get(name))
+    now = queue_clock() if rows else None
+    row.update(queued_by_credits={}, queued=[])
+    for position, (_, ticket) in enumerate(rows, 1):
+      row['queued'].append({'position': position, 'credits': ticket['credits'],
+                            'age_seconds': round(max(0, now -
+                                                     ticket['enqueued']), 3)})
+      weight = str(ticket['credits'])
+      row['queued_by_credits'][weight] = row['queued_by_credits'].get(weight, 0) + 1
+    if rows:
+      head = rows[0][1]
+      row['head'] = {'credits': head['credits'],
+                     'age_seconds': round(max(0, now - head['enqueued']), 3),
+                     'phase': 'head_fits' if free >= head['credits'] else
+                              'backfill' if now < head['enqueued'] + head['grace']
+                              else 'drain'}
+    row.update(free=free, reserved=row['capacity'] - free)
+  except (OSError, TimeoutError, ValueError, TypeError,
+          argparse.ArgumentTypeError) as exc:
+    row['unknown'] = ('snapshot busy' if isinstance(exc,
+                      (TimeoutError, BlockingIOError)) else
+                      'state unavailable or unsafe')
+  finally:
+    for fd in (gate, turn):
+      if fd is not None:
+        os.close(fd)
+  return row
+
+
+def acquire(root, requests, deadline, configuring=False, backfill=30,
+            context=None):
   handles = []
   try:
     for name, needed in sorted(requests):
       gate = secure_open(root / (name + '.lock'))
       handles.append(gate)
       # Legacy callers hold this gate exclusively; they still exclude us.
-      lock(gate, fcntl.LOCK_EX if configuring else fcntl.LOCK_SH, deadline)
+      if context is not None and not configuring:
+        stage = {'event': 'resource_wait', 'name': name, 'credits': needed,
+                 'monotonic': queue_clock(), 'capacity': None}
+        context['stages'].append(stage)
+      lock(gate, fcntl.LOCK_EX if configuring else fcntl.LOCK_SH, deadline,
+           context.get('notify') if context is not None else None)
       if configuring:
         continue
       available = capacity(root, name)
+      if context is not None:
+        stage['capacity'] = available
       if needed > available:
         raise OSError('%s requests %d credits but has %d' %
                       (name, needed, available))
@@ -170,7 +360,12 @@ def acquire(root, requests, deadline, configuring=False, backfill=30):
           info.st_mode & 0o077):
         raise OSError('unsafe resource slots directory')
       handles.extend(acquire_credits(root, name, needed, available, slots,
-                                     deadline, backfill))
+                                     deadline, backfill, context))
+      if context is not None:
+        stage = dict(stage, event='resource_acquired',
+                     monotonic=queue_clock())
+        context['stages'].append(stage)
+        context['grants'].append(stage)
     return handles
   except BaseException:
     for fd in handles:
@@ -203,33 +398,42 @@ def trim_incomplete_history(fd):
 
 
 def admission_event(root, request_id, requests, event, wait_seconds=0,
-                    held_seconds=0, result=None):
-  """Best-effort private telemetry; no command, directory or agent payload."""
+                    held_seconds=0, result=None, **metadata):
+  admission_events(root, request_id, [(requests, dict(metadata, event=event,
+                   wait_seconds=round(wait_seconds, 6),
+                   held_seconds=round(held_seconds, 6), exit=result))])
+
+
+def admission_events(root, request_id, events):
+  """One best-effort journal lock budget for all captured transition rows."""
+  if not events:
+    return
   fd, locked = None, False
   try:
     fd = secure_open(root / 'admission.jsonl')
     lock(fd, fcntl.LOCK_EX, time.monotonic() + .1)
     locked = True
     trim_incomplete_history(fd)
-    row = json.dumps({'event': event, 'request_id': request_id,
-                      'timestamp': time.time(), 'resources': requests,
-                      'wait_seconds': round(wait_seconds, 6),
-                      'held_seconds': round(held_seconds, 6), 'exit': result},
-                     separators=(',', ':')).encode() + b'\n'
-    if len(row) > HISTORY_LIMIT:
-      raise OSError('admission event exceeds history limit')
-    size = os.fstat(fd).st_size
-    if size + len(row) > HISTORY_LIMIT:
-      # Keep whole recent records, with space for subsequent appends. Never
-      # replace the locked inode: other writers may already have it open.
-      tail_limit = min(HISTORY_LIMIT // 2, HISTORY_LIMIT - len(row))
-      tail = os.pread(fd, tail_limit, max(0, size - tail_limit))
-      if size > len(tail):
-        tail = tail.partition(b'\n')[2]
-      os.ftruncate(fd, 0)
-      write_history(fd, tail, 0)
-      size = len(tail)
-    write_history(fd, row, size)
+    for requests, metadata in events:
+      row = json.dumps({'schema': 2, 'policy': POLICY, 'request_id': request_id,
+                        'timestamp': time.time(), 'wait_seconds': 0,
+                        'held_seconds': 0, 'exit': None, **metadata,
+                        'resources': requests},
+                       separators=(',', ':')).encode() + b'\n'
+      if len(row) > HISTORY_LIMIT:
+        raise OSError('admission event exceeds history limit')
+      size = os.fstat(fd).st_size
+      if size + len(row) > HISTORY_LIMIT:
+        # Keep whole recent records, with space for subsequent appends. Never
+        # replace the locked inode: other writers may already have it open.
+        tail_limit = min(HISTORY_LIMIT // 2, HISTORY_LIMIT - len(row))
+        tail = os.pread(fd, tail_limit, max(0, size - tail_limit))
+        if size > len(tail):
+          tail = tail.partition(b'\n')[2]
+        os.ftruncate(fd, 0)
+        write_history(fd, tail, 0)
+        size = len(tail)
+      write_history(fd, row, size)
   except (OSError, TimeoutError) as exc:
     print('admission history unavailable: %s' % exc, file=sys.stderr)
   finally:
@@ -298,12 +502,25 @@ def main():
   run.add_argument('--timeout', type=seconds, default=3600)
   run.add_argument('--backfill', type=seconds, default=30,
                    help='backfill seconds before draining for a waiter')
+  run.add_argument('--notice-after', type=seconds, default=300,
+                   help='emit one wait snapshot after these seconds')
   run.add_argument('command', nargs=argparse.REMAINDER)
+  status = commands.add_parser('status')
+  status.add_argument('--resource', type=resource, action='append', required=True)
   config = commands.add_parser('capacity')
   config.add_argument('--resource', required=True)
   config.add_argument('--credits', type=credits, required=True)
   config.add_argument('--wait', type=seconds, default=600)
   args = parser.parse_args()
+  if args.action == 'status':
+    names = [name for name, _ in args.resource]
+    try:
+      root = secure_directory(create=False)
+    except OSError:
+      root = None
+    print(json.dumps({'policy': POLICY, 'resources': {
+      name: resource_status(root, name) for name in names}}, indent=2))
+    return 0
   if args.action == 'run':
     command = args.command[1:] if args.command[:1] == ['--'] else args.command
     if not command:
@@ -328,6 +545,39 @@ def main():
   handles, proc = [], None
   root, admitted, result = None, None, 1
   requested_at = time.monotonic()
+  reason, notice_sent = 'error', False
+  context = {'owned': {}, 'stages': [], 'grants': []}
+  def notify():
+    nonlocal notice_sent
+    elapsed = time.monotonic() - requested_at
+    if (notice_sent or args.action != 'run' or
+        not {'cpu', 'gpu'}.intersection(requests) or elapsed < args.notice_after):
+      return
+    notice_sent = True
+    snapshot = {}
+    for name in requests:
+      row = resource_status(root, name, context['owned'])
+      snapshot[name] = {key: row[key] for key in
+                        ('capacity', 'reserved', 'free', 'queued_by_credits',
+                         'head', 'coverage')}
+    weights = ", ".join('%s:%d' % item for item in sorted(requests.items()))
+    print('Long resource wait: %s after %.1fs; ETA unknown. %s\n'
+          'Details: agent-resource status %s\n'
+          'Consider another compatible managed host or SteamOS device only '
+          'for portable work, after checking availability, lease, storage and '
+          'target/evidence requirements. Target-specific evidence stays on '
+          'its required target.' % (weights, elapsed, json.dumps(snapshot),
+                                   ' '.join('--resource ' + name
+                                            for name in sorted(requests))),
+          file=sys.stderr)
+  context['notify'] = notify
+  def emit_stages(terminal):
+    events = [({stage['name']: stage['credits']},
+               {'event': stage['event'], 'monotonic': stage['monotonic'],
+                'capacity': stage['capacity']}) for stage in context['stages']]
+    context['stages'].clear()
+    events.append((requests, terminal))
+    admission_events(root, request_id, events)
   request_id = '%x-%x' % (os.getpid(), time.time_ns())
   def interrupted(signum, frame):
     raise ResourceInterrupted(signum)
@@ -336,11 +586,13 @@ def main():
   try:
     root = secure_directory()
     if args.action == 'run':
-      admission_event(root, request_id, requests, 'request')
+      admission_event(root, request_id, requests, 'request',
+                      backfill_seconds=args.backfill)
     admission_started = time.monotonic()
     handles = acquire(root, requests.items(), admission_started + args.wait,
                       configuring=args.action == 'capacity',
-                      backfill=args.backfill if args.action == 'run' else 30)
+                      backfill=args.backfill if args.action == 'run' else 30,
+                      context=context if args.action == 'run' else None)
     if args.action == 'capacity':
       target = root / (name + '.capacity')
       os.close(secure_open(target))
@@ -356,26 +608,30 @@ def main():
       print('%s: %d credits' % (name, args.credits))
       return 0
     admitted = time.monotonic()
-    admission_event(root, request_id, requests, 'admitted',
-                    wait_seconds=admitted - requested_at)
+    emit_stages({'event': 'admitted',
+                 'wait_seconds': round(admitted - requested_at, 6)})
     env = os.environ.copy()
     for name, granted in requests.items():
       env[credit_variable(name)] = str(granted)
     proc = subprocess.Popen(command, env=env, start_new_session=True,
                             pass_fds=handles)
+    reason = 'child_exit'
     try:
       result = proc.wait(timeout=args.timeout)
     except subprocess.TimeoutExpired:
       result = 124
+      reason = 'child_timeout'
     result = result if result >= 0 else 128 - result
     return result
   except TimeoutError:
     print('resource wait expired; no command started or capacity changed',
           file=sys.stderr)
     result = 75
+    reason = 'admission_timeout'
     return result
   except ResourceInterrupted as exc:
     result = 128 + exc.args[0]
+    reason = 'child_cancel' if proc is not None else 'admission_cancel'
     return result
   except OSError as exc:
     print(str(exc), file=sys.stderr)
@@ -390,10 +646,13 @@ def main():
       os.close(fd)
     if root is not None and args.action == 'run':
       now = time.monotonic()
-      admission_event(root, request_id, requests, 'released',
-                      wait_seconds=(admitted or now) - requested_at,
-                      held_seconds=now - admitted if admitted else 0,
-                      result=result)
+      released_at = queue_clock() if context['grants'] else None
+      for stage in context['grants']:
+        context['stages'].append(dict(stage, event='resource_released',
+                                      monotonic=released_at))
+      emit_stages({'event': 'released', 'exit': result, 'reason': reason,
+                   'wait_seconds': round((admitted or now) - requested_at, 6),
+                   'held_seconds': round(now - admitted if admitted else 0, 6)})
 
 
 if __name__ == '__main__':

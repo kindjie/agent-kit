@@ -17,6 +17,12 @@ from unittest import mock
 BIN = Path(__file__).resolve().parents[1] / 'bin' / 'agent-resource'
 
 
+def shared_test_clock():
+  # Independent platform clock oracle; local fixture deadlines stay local.
+  return (time.clock_gettime_ns(time.CLOCK_UPTIME_RAW) / 1e9
+          if sys.platform == 'darwin' else time.monotonic())
+
+
 class ResourceTest(unittest.TestCase):
   def setUp(self):
     self.tmp = tempfile.TemporaryDirectory()
@@ -177,6 +183,11 @@ class ResourceTest(unittest.TestCase):
         fcntl.flock(turnstile, fcntl.LOCK_EX)
         with (root / 'cpu.priority').open('w') as priority:
           priority.write(str(value))
+        for path in (root / 'cpu.queue').glob('*.ticket'):
+          row = json.loads(path.read_text())
+          row['enqueued'] = value
+          row['grace'] = .001
+          path.write_text(json.dumps(row))
     set_deadline(1e20)
     self.assertEqual(self.contender('--resource', 'cpu').returncode, 0)
     set_deadline(0)
@@ -204,6 +215,7 @@ class ResourceTest(unittest.TestCase):
     _, error = waiter.communicate(timeout=5)
     self.assertEqual(waiter.returncode, 75, error)
     self.assertFalse((Path(self.tmp.name) / 'timed-out').exists())
+    self.assertEqual(self.tickets(0, 'gpu'), [])
     self.assertEqual(self.contender().returncode, 0)
     active.terminate()
     active.communicate(timeout=5)
@@ -221,6 +233,7 @@ class ResourceTest(unittest.TestCase):
         _, error = waiter.communicate(timeout=5)
         self.assertEqual(waiter.returncode, 128 + sig, error)
         self.assertFalse((Path(self.tmp.name) / 'interrupted').exists())
+        self.assertEqual(self.tickets(0, 'gpu'), [])
         self.assertEqual(self.contender().returncode, 0)
     active.terminate()
     active.communicate(timeout=5)
@@ -237,6 +250,7 @@ class ResourceTest(unittest.TestCase):
     waiter.kill()
     waiter.communicate(timeout=5)
     self.assertEqual(self.contender().returncode, 0)
+    self.assertEqual(self.tickets(0, 'gpu'), [])
 
   def history(self):
     path = Path(self.tmp.name) / 'agent-kit/resources/admission.jsonl'
@@ -250,12 +264,15 @@ class ResourceTest(unittest.TestCase):
     self.assertEqual(result.returncode, 7, result.stderr)
     rows = self.history()
     self.assertEqual([row['event'] for row in rows],
-                     ['request', 'admitted', 'released'])
+                     ['request', 'resource_wait', 'resource_acquired',
+                      'admitted', 'resource_released', 'released'])
     self.assertEqual(len({row['request_id'] for row in rows}), 1)
     self.assertTrue(all(row['resources'] == {'cpu': 1} for row in rows))
-    self.assertGreaterEqual(rows[1]['wait_seconds'], 0)
-    self.assertGreater(rows[2]['held_seconds'], 0)
-    self.assertEqual(rows[2]['exit'], 7)
+    self.assertGreaterEqual(rows[3]['wait_seconds'], 0)
+    self.assertGreater(rows[-1]['held_seconds'], 0)
+    self.assertEqual(rows[-1]['exit'], 7)
+    self.assertLessEqual(rows[1]['monotonic'], rows[2]['monotonic'])
+    self.assertLessEqual(rows[2]['monotonic'], rows[4]['monotonic'])
     path = Path(self.tmp.name) / 'agent-kit/resources/admission.jsonl'
     self.assertEqual(path.stat().st_mode & 0o777, 0o600)
     self.assertNotIn('sensitive-command-payload', path.read_text())
@@ -389,6 +406,513 @@ class ResourceTest(unittest.TestCase):
     self.assertIn('exceeds history limit', error.getvalue())
     self.assertEqual(self.contender().returncode, 0)
 
+  def paused_waiter(self, name, weight, *extra, clock_origin=None):
+    paused, resume = (Path(self.tmp.name) / (name + suffix)
+                      for suffix in ('.paused', '.resume'))
+    marker = Path(self.tmp.name) / name
+    script = """import pathlib,runpy,sys,time
+functions=runpy.run_path(%r)
+origin=%r
+if origin is not None:
+  local_seconds,local_ns=time.monotonic,time.monotonic_ns
+  time.monotonic=lambda: local_seconds()+origin
+  time.monotonic_ns=lambda: local_ns()+int(origin*1000000000)
+namespace=functions['main'].__globals__
+original=namespace['retry']
+def paused_retry(deadline, *args):
+  pathlib.Path(%r).touch()
+  while not pathlib.Path(%r).exists():
+    original(deadline, *args)
+  original(deadline, *args)
+namespace['retry']=paused_retry
+sys.argv=%r
+sys.exit(functions['main']())
+""" % (str(BIN), clock_origin, str(paused), str(resume),
+       self.command('--resource', 'cpu:' + str(weight), *extra, '--',
+                    sys.executable, '-c', 'import pathlib,time; '
+                    'pathlib.Path(%r).touch(); time.sleep(20)' % str(marker))[1:])
+    proc = subprocess.Popen([sys.executable, '-c', script], env=self.env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    def cleanup():
+      if proc.poll() is None:
+        proc.terminate()
+      proc.communicate(timeout=5)
+    self.addCleanup(cleanup)
+    self.wait_ready(name + '.paused', proc)
+    return proc, resume
+
+  def tickets(self, count, name='cpu'):
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+      paths = sorted((root / (name + '.queue')).glob('*.ticket'))
+      if len(paths) == count:
+        return paths
+      time.sleep(.02)
+    self.fail('registered queue did not contain %d tickets' % count)
+
+  def age_tickets(self, paths):
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    with (root / 'cpu.turnstile').open('r+') as gate:
+      fcntl.flock(gate, fcntl.LOCK_EX)
+      for path in paths:
+        row = json.loads(path.read_text())
+        row['enqueued'] = max(0, shared_test_clock() - 100)
+        row['grace'] = 30
+        path.write_text(json.dumps(row))
+
+  def status(self, name='cpu'):
+    return subprocess.run([sys.executable, str(BIN), 'status', '--resource',
+                           name], env=self.env, capture_output=True, timeout=2)
+
+  def test_ticket_age_starts_only_after_atomic_registration(self):
+    self.assertEqual(self.configure(1, 'cpu').returncode, 0)
+    self.holder('active', '--resource', 'cpu')
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    with (root / 'cpu.turnstile').open('r+') as gate:
+      fcntl.flock(gate, fcntl.LOCK_EX)
+      waiter, resume = self.paused_waiter('registering', 1)
+      self.assertEqual(list((root / 'cpu.queue').glob('*.ticket')), [])
+      released = shared_test_clock()
+    resume.touch()
+    path = self.tickets(1)[0]
+    self.assertGreaterEqual(json.loads(path.read_text())['enqueued'], released)
+    waiter.terminate()
+    waiter.communicate(timeout=5)
+    self.tickets(0)
+
+  def test_scanning_disappearing_ticket_never_recreates_it(self):
+    self.assertEqual(self.configure(1, 'cpu').returncode, 0)
+    self.holder('active', '--resource', 'cpu')
+    head, _ = self.paused_waiter('head', 1)
+    path = self.tickets(1)[0]
+    functions = runpy.run_path(str(BIN))
+    namespace = functions['live_tickets'].__globals__
+    original = namespace['secure_open']
+    def disappearing(candidate, *args, **kwargs):
+      candidate.unlink()
+      return original(candidate, *args, **kwargs)
+    with mock.patch.dict(namespace, secure_open=disappearing):
+      self.assertEqual(functions['live_tickets'](path.parent, prune=True), [])
+    self.assertFalse(path.exists())
+    head.terminate()
+    head.communicate(timeout=5)
+
+  def test_malformed_live_ticket_refuses_without_traceback_or_slots(self):
+    self.assertEqual(self.configure(3, 'cpu').returncode, 0)
+    self.holder('active', '--resource', 'cpu')
+    head, _ = self.paused_waiter('head', 3)
+    path = self.tickets(1)[0]
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    with (root / 'cpu.turnstile').open('r+') as gate:
+      fcntl.flock(gate, fcntl.LOCK_EX)
+      path.write_text('{incomplete')
+    result = self.contender('--resource', 'cpu')
+    self.assertEqual(result.returncode, 1)
+    self.assertNotIn(b'Traceback', result.stderr)
+    for index in (1, 2):
+      with (root / 'cpu.slots' / ('%d.lock' % index)).open('r+') as slot:
+        fcntl.flock(slot, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    head.terminate()
+    head.communicate(timeout=5)
+    self.assertEqual(self.contender('--resource', 'cpu').returncode, 0)
+
+  def test_fitting_registered_head_cannot_be_overtaken(self):
+    self.assertEqual(self.configure(3, 'cpu').returncode, 0)
+    active = self.holder('active', '--resource', 'cpu')
+    head, resume = self.paused_waiter('head', 3)
+    self.tickets(1)
+    active.terminate()
+    active.communicate(timeout=5)
+    # Head is registered but deliberately not polling. All credits are free;
+    # a younger one-credit child must still not steal its admission.
+    self.assertEqual(self.contender('--resource', 'cpu').returncode, 75)
+    self.assertFalse((Path(self.tmp.name) / 'head').exists())
+    resume.touch()
+    self.wait_ready('head', head)
+
+  def test_aged_successor_drains_without_a_fresh_window(self):
+    self.assertEqual(self.configure(3, 'cpu').returncode, 0)
+    active = self.holder('active', '--resource', 'cpu')
+    first, _ = self.paused_waiter('first', 3)
+    self.tickets(1)
+    second, resume = self.paused_waiter('second', 3)
+    paths = self.tickets(2)
+    self.age_tickets(paths)
+    first.kill()
+    first.communicate(timeout=5)
+    self.assertEqual(self.contender('--resource', 'cpu').returncode, 75)
+    remaining = self.tickets(1)
+    self.assertEqual(remaining, paths[1:])
+    for index in (1, 2):
+      with (Path(self.tmp.name) / 'agent-kit/resources/cpu.slots' /
+            ('%d.lock' % index)).open('r+') as slot:
+        fcntl.flock(slot, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    active.terminate()
+    active.communicate(timeout=5)
+    resume.touch()
+    self.wait_ready('second', second)
+
+  def test_ticket_registration_order_and_private_cleanup(self):
+    self.assertEqual(self.configure(1, 'cpu').returncode, 0)
+    self.holder('active', '--resource', 'cpu')
+    first, _ = self.paused_waiter('first', 1)
+    before = self.tickets(1)
+    second, _ = self.paused_waiter('second', 1)
+    paths = self.tickets(2)
+    self.assertEqual(paths[:1], before)
+    self.assertEqual(paths[0].stat().st_mode & 0o777, 0o600)
+    self.assertLessEqual(json.loads(paths[0].read_text())['enqueued'],
+                         json.loads(paths[1].read_text())['enqueued'])
+    for proc in (first, second):
+      proc.terminate()
+      proc.communicate(timeout=5)
+    self.assertEqual(self.tickets(0), [])
+
+  def test_status_groups_live_weights_and_explains_drain(self):
+    self.assertEqual(self.configure(3, 'cpu').returncode, 0)
+    self.holder('active', '--resource', 'cpu')
+    self.paused_waiter('head', 3)
+    self.age_tickets(self.tickets(1))
+    self.paused_waiter('younger', 2)
+    self.tickets(2)
+    result = self.status()
+    self.assertEqual(result.returncode, 0, result.stderr)
+    row = json.loads(result.stdout)['resources']['cpu']
+    self.assertEqual((row['capacity'], row['reserved'], row['free']), (3, 1, 2))
+    self.assertEqual(row['queued_by_credits'], {'2': 1, '3': 1})
+    self.assertEqual(row['head']['credits'], 3)
+    self.assertEqual(row['head']['phase'], 'drain')
+    self.assertGreaterEqual(row['head']['age_seconds'], 99)
+    self.assertIsNone(row['eta_seconds'])
+    self.assertIn('legacy', row['coverage'])
+
+  def test_status_fresh_capacity_is_idle_without_creating_state(self):
+    self.assertEqual(self.configure(3, 'cpu').returncode, 0)
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    before = {str(p): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+    self.assertFalse((root / 'cpu.turnstile').exists())
+    result = self.status()
+    self.assertEqual(result.returncode, 0, result.stderr)
+    row = json.loads(result.stdout)['resources']['cpu']
+    self.assertEqual((row['capacity'], row['reserved'], row['free']), (3, 0, 3))
+    self.assertEqual(row['queued_by_credits'], {})
+    self.assertNotIn('unknown', row)
+    self.assertEqual({str(p): p.read_bytes() for p in root.rglob('*')
+                      if p.is_file()}, before)
+
+  def test_fresh_status_needs_exclusive_gate_to_establish_idle(self):
+    self.assertEqual(self.configure(3, 'cpu').returncode, 0)
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    with (root / 'cpu.lock').open('r+') as gate:
+      # A first caller can hold the shared gate before creating its turnstile.
+      fcntl.flock(gate, fcntl.LOCK_SH)
+      result = self.status()
+    row = json.loads(result.stdout)['resources']['cpu']
+    self.assertIsNone(row['capacity'])
+    self.assertIsNone(row['queued_by_credits'])
+    self.assertIn('unknown', row)
+    self.assertFalse((root / 'cpu.turnstile').exists())
+
+  def test_contended_stage_history_has_one_prechild_lock_budget(self):
+    self.assertEqual(self.configure(1, 'r0').returncode, 0)
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    journal = root / 'admission.jsonl'
+    journal.write_text('')
+    journal.chmod(0o600)
+    attempts, marker = (Path(self.tmp.name) / name
+                        for name in ('journal-attempts', 'child-started'))
+    resources = [value for n in range(8) for value in
+                 ('--resource', 'r%d' % n)]
+    script = """import fcntl,os,pathlib,runpy,sys
+journal_inode=os.stat(%r).st_ino
+original=fcntl.flock
+def observed(fd, flags):
+  if os.fstat(fd).st_ino==journal_inode:
+    with open(%r, 'a') as stream:
+      stream.write('attempt\\n')
+  return original(fd, flags)
+fcntl.flock=observed
+sys.argv=%r
+sys.exit(runpy.run_path(%r)['main']())
+""" % (str(journal), str(attempts),
+       self.command(*resources, '--', sys.executable, '-c',
+                    'import pathlib; pathlib.Path(%r).touch()' % str(marker))[1:],
+       str(BIN))
+    with journal.open('r+') as held:
+      fcntl.flock(held, fcntl.LOCK_EX)
+      proc = subprocess.Popen([sys.executable, '-c', script], env=self.env,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+      try:
+        deadline = time.monotonic() + 5
+        while proc.poll() is None and time.monotonic() < deadline:
+          count = (len(attempts.read_text().splitlines())
+                   if attempts.exists() else 0)
+          if marker.exists() or count >= 8:
+            break
+          time.sleep(.01)
+        # Real held journal + kernel-call counter, not a subsecond wall bound:
+        # child starts before additive per-row lock waits accumulate.
+        if not marker.exists():
+          self.assertGreaterEqual(count, 8, 'journal observer did not reach barrier')
+        self.assertTrue(marker.exists(), 'journal attempts delayed child start')
+        _, error = proc.communicate(timeout=10)
+        self.assertEqual(proc.returncode, 0, error)
+      finally:
+        if proc.poll() is None:
+          proc.terminate()
+        proc.communicate(timeout=10)
+
+  @unittest.skipUnless(sys.platform == 'darwin', 'macOS clock compatibility')
+  def test_ticket_order_and_age_ignore_process_local_clock_origins(self):
+    self.assertEqual(self.configure(3, 'cpu').returncode, 0)
+    self.holder('active', '--resource', 'cpu')
+    self.paused_waiter('first', 3, clock_origin=1000)
+    first = self.tickets(1)[0]
+    self.paused_waiter('second', 3, clock_origin=-1000)
+    paths = self.tickets(2)
+    self.assertEqual(paths[0], first)
+    rows = [json.loads(path.read_text()) for path in paths]
+    shared_now = time.clock_gettime_ns(time.CLOCK_UPTIME_RAW) / 1e9
+    self.assertTrue(all(0 <= shared_now - row['enqueued'] < 10 for row in rows))
+    result = self.status()
+    self.assertEqual([row['position'] for row in
+                      json.loads(result.stdout)['resources']['cpu']['queued']],
+                     [1, 2])
+
+  def test_darwin_queue_clock_uses_explicit_shared_uptime_clock(self):
+    functions = runpy.run_path(str(BIN))
+    with mock.patch.object(sys, 'platform', 'darwin'), \
+         mock.patch.object(time, 'CLOCK_UPTIME_RAW', 123, create=True), \
+         mock.patch.object(time, 'clock_gettime_ns', return_value=456) as clock, \
+         mock.patch.object(time, 'monotonic_ns', side_effect=AssertionError):
+      self.assertEqual(functions['queue_clock_ns'](), 456)
+    clock.assert_called_once_with(123)
+
+  def test_missing_darwin_shared_clock_refuses_cleanly(self):
+    functions = runpy.run_path(str(BIN))
+    with mock.patch.object(sys, 'platform', 'darwin'), \
+         mock.patch.object(time, 'CLOCK_UPTIME_RAW', None, create=True):
+      with self.assertRaisesRegex(OSError, 'macOS 10.12'):
+        functions['queue_clock_ns']()
+
+  def test_missing_shared_clock_main_returns_cleanly_without_child(self):
+    functions = runpy.run_path(str(BIN))
+    marker = Path(self.tmp.name) / 'must-not-start'
+    handlers = {sig: signal.getsignal(sig)
+                for sig in (signal.SIGINT, signal.SIGTERM)}
+    error = io.StringIO()
+    try:
+      with mock.patch.dict(os.environ, self.env), \
+           mock.patch.object(sys, 'platform', 'darwin'), \
+           mock.patch.object(time, 'CLOCK_UPTIME_RAW', None, create=True), \
+           mock.patch.object(sys, 'argv', self.command('--', sys.executable,
+                             '-c', 'import pathlib; pathlib.Path(%r).touch()'
+                             % str(marker))[1:]), \
+           contextlib.redirect_stderr(error):
+        result = functions['main']()
+    finally:
+      for sig, handler in handlers.items():
+        signal.signal(sig, handler)
+    self.assertEqual(result, 1)
+    self.assertIn('macOS 10.12', error.getvalue())
+    self.assertNotIn('Traceback', error.getvalue())
+    self.assertFalse(marker.exists())
+    self.assertEqual(self.history()[-1]['reason'], 'error')
+
+  def test_missing_shared_clock_status_preserves_unknown_queue_fields(self):
+    self.assertEqual(self.configure(3, 'cpu').returncode, 0)
+    self.holder('active', '--resource', 'cpu')
+    self.paused_waiter('head', 3)
+    self.tickets(1)
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    functions = runpy.run_path(str(BIN))
+    namespace = functions['resource_status'].__globals__
+    def unavailable():
+      raise OSError('shared clock unavailable')
+    with mock.patch.dict(namespace, queue_clock=unavailable):
+      row = functions['resource_status'](root, 'cpu')
+    self.assertIsNone(row['queued_by_credits'])
+    self.assertIsNone(row['queued'])
+    self.assertIn('unknown', row)
+
+  def test_batched_history_short_writes_retain_whole_rows_and_cap(self):
+    self.assertEqual(self.configure(1).returncode, 0)
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    functions = runpy.run_path(str(BIN))
+    events = [({'cpu': 1}, {'event': 'resource_wait', 'padding': 'x' * 70000})
+              for _ in range(20)]
+    events.append(({'cpu': 1}, {'event': 'admitted'}))
+    original = os.pwrite
+    calls = [0]
+    def short_write(fd, data, offset):
+      calls[0] += 1
+      return original(fd, data[:7] if calls[0] <= 5 else data, offset)
+    with mock.patch.object(os, 'pwrite', short_write):
+      functions['admission_events'](root, 'batch', events)
+    rows = self.history()
+    self.assertEqual(rows[-1]['event'], 'admitted')
+    self.assertTrue(all(row['request_id'] == 'batch' for row in rows))
+    self.assertTrue(all(len(row['padding']) == 70000 for row in rows[:-1]))
+    self.assertLessEqual((root / 'admission.jsonl').stat().st_size, 1024 * 1024)
+
+  def test_foreign_legacy_priority_flock_is_never_overridden(self):
+    self.assertEqual(self.configure(3).returncode, 0)
+    self.holder('active', '--resource', 'gpu:2')
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    with (root / 'gpu.priority').open('r+') as owner:
+      fcntl.flock(owner, fcntl.LOCK_EX)
+      for timestamp, result in ((0, 75), (1e20, 0)):
+        with self.subTest(timestamp=timestamp):
+          owner.seek(0)
+          owner.truncate()
+          owner.write(str(timestamp))
+          owner.flush()
+          self.assertEqual(self.contender().returncode, result)
+          with (root / 'gpu.priority').open('r+') as probe:
+            with self.assertRaises(BlockingIOError):
+              fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    self.assertEqual(self.contender().returncode, 0)
+
+  def test_status_existing_empty_capacity_uses_default_one(self):
+    self.assertEqual(self.contender('--resource', 'cpu').returncode, 0)
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    self.assertEqual((root / 'cpu.capacity').read_bytes(), b'')
+    result = self.status()
+    self.assertEqual(result.returncode, 0, result.stderr)
+    row = json.loads(result.stdout)['resources']['cpu']
+    self.assertEqual((row['capacity'], row['reserved'], row['free']), (1, 0, 1))
+    self.assertNotIn('unknown', row)
+
+  def test_status_unconfigured_creates_nothing(self):
+    before = set(Path(self.tmp.name).rglob('*'))
+    result = self.status('unconfigured')
+    self.assertEqual(result.returncode, 0, result.stderr)
+    row = json.loads(result.stdout)['resources']['unconfigured']
+    self.assertIsNone(row['capacity'])
+    self.assertEqual(set(Path(self.tmp.name).rglob('*')), before)
+
+  def test_status_never_prunes_dead_tickets_or_recreates_slots(self):
+    self.assertEqual(self.configure(3, 'cpu').returncode, 0)
+    self.holder('active', '--resource', 'cpu')
+    head, _ = self.paused_waiter('head', 3)
+    paths = self.tickets(1)
+    head.kill()
+    head.communicate(timeout=5)
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    (root / 'cpu.slots/2.lock').unlink()
+    before = {str(p): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+    result = self.status()
+    self.assertEqual(result.returncode, 0, result.stderr)
+    row = json.loads(result.stdout)['resources']['cpu']
+    self.assertEqual(row['queued_by_credits'], {})
+    self.assertEqual({str(p): p.read_bytes() for p in root.rglob('*')
+                      if p.is_file()}, before)
+    self.assertTrue(paths[0].exists())
+
+  def test_status_capacity_read_is_guarded_against_reconfiguration(self):
+    self.assertEqual(self.configure(2, 'cpu').returncode, 0)
+    self.assertEqual(self.contender('--resource', 'cpu').returncode, 0)
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    functions = runpy.run_path(str(BIN))
+    namespace = functions['resource_status'].__globals__
+    original = namespace['secure_open']
+    changed = [False]
+    def replace_before_guard(path, *args, **kwargs):
+      if path.name == 'cpu.turnstile' and not changed[0]:
+        changed[0] = True
+        self.assertEqual(self.configure(3, 'cpu').returncode, 0)
+      return original(path, *args, **kwargs)
+    with mock.patch.dict(namespace, secure_open=replace_before_guard):
+      row = functions['resource_status'](root, 'cpu')
+    self.assertTrue(changed[0])
+    self.assertEqual((row['capacity'], row['reserved'], row['free']), (3, 0, 3))
+    self.assertNotIn('unknown', row)
+
+  def test_status_busy_turnstile_is_bounded_unknown(self):
+    self.assertEqual(self.configure(1, 'cpu').returncode, 0)
+    self.holder('active', '--resource', 'cpu')
+    self.paused_waiter('head', 1)
+    self.tickets(1)
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    with (root / 'cpu.turnstile').open('r+') as gate:
+      fcntl.flock(gate, fcntl.LOCK_EX)
+      result = self.status()
+    self.assertEqual(result.returncode, 0, result.stderr)
+    row = json.loads(result.stdout)['resources']['cpu']
+    self.assertIsNone(row['free'])
+    self.assertIsNone(row['capacity'])
+    self.assertIsNone(row['queued_by_credits'])
+    self.assertIsNone(row['queued'])
+
+  def test_status_unsafe_files_are_unknown_and_preserved(self):
+    self.assertEqual(self.configure(1, 'cpu').returncode, 0)
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    target = Path(self.tmp.name) / 'private-target'
+    target.write_text('preserve')
+    (root / 'cpu.capacity').unlink()
+    (root / 'cpu.capacity').symlink_to(target)
+    result = self.status()
+    self.assertEqual(result.returncode, 0, result.stderr)
+    self.assertIsNone(json.loads(result.stdout)['resources']['cpu']['capacity'])
+    self.assertEqual(target.read_text(), 'preserve')
+
+  def test_notice_once_for_long_cpu_gpu_wait(self):
+    self.assertEqual(self.configure(1, 'cpu').returncode, 0)
+    self.holder('active', '--resource', 'cpu')
+    result = subprocess.run(self.command('--resource', 'cpu', '--resource',
+                            'gpu', '--notice-after', '.01', '--wait', '.3',
+                            '--', 'true'), env=self.env,
+                            capture_output=True, timeout=3)
+    self.assertEqual(result.returncode, 75)
+    self.assertEqual(result.stderr.count(b'Long resource wait:'), 1)
+    self.assertIn(b'cpu:1', result.stderr)
+    self.assertIn(b'gpu:1', result.stderr)
+    self.assertIn(b'SteamOS', result.stderr)
+    self.assertIn(b'compatible', result.stderr)
+    self.assertIn(b'unknown', result.stderr.lower())
+    self.assertNotIn(self.tmp.name.encode(), result.stderr)
+    self.assertIn(b'agent-resource status', result.stderr)
+
+  def test_custom_resource_wait_emits_no_host_reminder(self):
+    self.assertEqual(self.configure(1, 'custom').returncode, 0)
+    self.holder('custom-active', '--resource', 'custom')
+    result = subprocess.run(self.command('--resource', 'custom', '--notice-after',
+                            '.01', '--wait', '.2', '--', 'true'), env=self.env,
+                            capture_output=True, timeout=3)
+    self.assertEqual(result.returncode, 75)
+    self.assertNotIn(b'Long resource wait:', result.stderr)
+    self.assertNotIn(b'SteamOS', result.stderr)
+
+  def test_immediate_jobs_emit_no_notice(self):
+    result = subprocess.run(self.command('--notice-after', '.001', '--',
+                            'true'), env=self.env, capture_output=True, timeout=3)
+    self.assertEqual(result.returncode, 0, result.stderr)
+    self.assertNotIn(b'Long resource wait:', result.stderr)
+
+  def test_terminal_reason_distinguishes_admission_and_child_75(self):
+    self.assertEqual(self.configure(1).returncode, 0)
+    active = self.holder('active')
+    self.assertEqual(self.contender().returncode, 75)
+    self.assertEqual(self.history()[-1]['reason'], 'admission_timeout')
+    active.terminate()
+    active.communicate(timeout=5)
+    result = subprocess.run(self.command('--', sys.executable, '-c',
+                            'raise SystemExit(75)'), env=self.env,
+                            capture_output=True, timeout=3)
+    self.assertEqual(result.returncode, 75)
+    self.assertEqual(self.history()[-1]['reason'], 'child_exit')
+    self.assertEqual(self.history()[-1]['schema'], 2)
+    self.assertEqual(self.history()[-1]['policy'], 'oldest-ticket-v1')
+    stages = [r for r in self.history()
+              if r['request_id'] == self.history()[-1]['request_id']
+              and r['event'].startswith('resource_')]
+    self.assertEqual([r['event'] for r in stages],
+                     ['resource_wait', 'resource_acquired', 'resource_released'])
+    self.assertTrue(all(isinstance(r['monotonic'], float) for r in stages))
+    self.assertTrue(all(r['capacity'] == 1 for r in stages))
+    self.assertNotIn('raise SystemExit', json.dumps(stages))
+
   def test_priority_short_writes_publish_complete_deadline(self):
     self.assertEqual(self.configure(2).returncode, 0)
     self.holder('active')
@@ -406,7 +930,8 @@ class ResourceTest(unittest.TestCase):
       raise TimeoutError('fixture admission stop')
     with mock.patch.object(os, 'pwrite', short_write), \
          mock.patch.object(time, 'monotonic', return_value=100.0), \
-         mock.patch.dict(namespace, retry=inspect_wait):
+         mock.patch.dict(namespace, retry=inspect_wait,
+                         queue_clock_ns=lambda: 100000000000):
       with self.assertRaises(TimeoutError):
         functions['acquire'](root, [('gpu', 2)], 200.0)
     self.assertEqual(self.contender().returncode, 0)
