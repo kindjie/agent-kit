@@ -198,7 +198,8 @@ def admission_event(root, request_id, requests, event, wait_seconds=0,
     if size + len(row) > HISTORY_LIMIT:
       # Keep whole recent records, with space for subsequent appends. Never
       # replace the locked inode: other writers may already have it open.
-      tail = os.pread(fd, HISTORY_LIMIT // 2, max(0, size - HISTORY_LIMIT // 2))
+      tail_limit = min(HISTORY_LIMIT // 2, HISTORY_LIMIT - len(row))
+      tail = os.pread(fd, tail_limit, max(0, size - tail_limit))
       if size > len(tail):
         tail = tail.partition(b'\n')[2]
       os.ftruncate(fd, 0)

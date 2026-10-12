@@ -274,6 +274,21 @@ class ResourceTest(unittest.TestCase):
     self.assertLessEqual(path.stat().st_size, 1024 * 1024)
     self.assertEqual(self.history()[-1]['event'], 'released')
 
+  def test_large_history_event_leaves_space_for_pending_row(self):
+    self.assertEqual(self.configure(1).returncode, 0)
+    root = Path(self.tmp.name) / 'agent-kit/resources'
+    path = root / 'admission.jsonl'
+    old = json.dumps({'event': 'old', 'padding': 'x' * 512}) + '\n'
+    path.write_text(old * 2000)
+    path.chmod(0o600)
+    functions = runpy.run_path(str(BIN))
+    requests = {'r%063d' % index: 1 for index in range(10000)}
+    functions['admission_event'](root, 'fixture', requests, 'request')
+    self.assertLessEqual(path.stat().st_size, 1024 * 1024)
+    rows = self.history()
+    self.assertEqual(rows[-1]['resources'], requests)
+    self.assertTrue(all(row['event'] == 'old' for row in rows[:-1]))
+
   def test_single_oversized_history_event_cannot_exceed_cap(self):
     self.assertEqual(self.configure(1).returncode, 0)
     root = Path(self.tmp.name) / 'agent-kit/resources'
