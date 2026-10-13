@@ -563,10 +563,11 @@ def main():
     weights = ", ".join('%s:%d' % item for item in sorted(requests.items()))
     print('Long resource wait: %s after %.1fs; ETA unknown. %s\n'
           'Details: agent-resource status %s\n'
-          'Consider another compatible managed host or SteamOS device only '
-          'for portable work, after checking availability, lease, storage and '
-          'target/evidence requirements. Target-specific evidence stays on '
-          'its required target.' % (weights, elapsed, json.dumps(snapshot),
+          'Consider an available VM, alternative build machine or SteamOS '
+          'device for compatible portable work. Check access, capacity, lease, '
+          'storage, cost and target/evidence requirements first. Target-specific '
+          'evidence stays on its required target.' % (weights, elapsed,
+                                   json.dumps(snapshot),
                                    ' '.join('--resource ' + name
                                             for name in sorted(requests))),
           file=sys.stderr)

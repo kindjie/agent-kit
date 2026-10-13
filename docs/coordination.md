@@ -187,10 +187,11 @@ historical context only, with sample counts and ongoing ages alongside them.
 A CPU/GPU request prints one notice after 300 seconds of waiting (configure
 with `--notice-after SECONDS`). It includes requested weights, elapsed wait,
 compact queue counts/head/reserved/free state and the status command. The
-threshold is an operator reminder, not a latency promise. A compatible
-managed host or SteamOS device may help portable work only after availability,
-lease, storage and target/evidence requirements are checked. No work is
-rerouted automatically; target-specific evidence stays on its required target.
+threshold is an operator reminder, not a latency promise. Check available VMs,
+alternative build machines or SteamOS devices for compatible portable work.
+Verify access, capacity, lease, storage, cost and target/evidence requirements
+before moving work. No work is rerouted automatically; target-specific
+evidence stays on its required target.
 Custom-resource-only requests and immediate admissions emit no host reminder.
 
 `admission.jsonl` records request, admitted and released events with an opaque
