@@ -625,7 +625,7 @@ SIGHUP. Also run the full records suite after parser/readiness changes.
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
   tests.test_agent_records_events tests.test_agent_resource \
-  tests.test_agent_efficiency
+  tests.test_agent_resource_ownership tests.test_agent_efficiency
 ```
 
 Events use real temporary records repositories to check coalescing, recipient
@@ -659,7 +659,41 @@ flocks and child markers provide independent admission oracles.
 Private history cases check lifecycle/exit timing, payload exclusion, symlink
 preservation, complete priority-deadline writes, short-write history recovery,
 telemetry-independent wait, monotonic stages/configured budgets, distinct
-admission-timeout versus child-exit reasons and the 1 MiB cap. All resource state is temporary; the suite
+admission-timeout versus child-exit reasons and the 1 MiB cap. Interactive cases
+check effective default/explicit timeouts without long waits, refusal before
+state creation or mutation, reason exclusion from output/history, profile
+metadata and standard-run compatibility. Real processes verify short timeout
+without controller action and cleanup of a TERM-resistant in-group descendant
+on timeout or normal leader exit. An independent admitted contender checks
+process disappearance at its own start. These checks do not launch native UI
+or prove an external UI API cannot relaunch an application.
+The ownership suite runs its synthetic cases in a separate interpreter, so
+its kernel-denial hooks cannot affect native process tests. The guarded runner
+installs denial hooks before importing either its fixture or the CLI. Its
+finite fake process accepts only a plain synthetic PID; it does not delegate
+to the host kernel. A persistent violation ledger makes a denied operation
+fail the run even when production exception handling catches the exception.
+The isolated runner keeps its 20-second alarm through interpreter shutdown.
+Its parent requires default child-signal handling, a single thread and an
+unblocked alarm. It retains the direct child through a 30-second collection
+bound and, on failure, a three-second cleanup bound. Cleanup signals only the
+unreaped owned PID and always attempts to reap it. Uncertain cleanup stops the
+suite; it cannot pass or start another case. Interruption handlers remain
+deferred through cleanup, and a secondary failure preserves the first error.
+Do not import `agent_resource_ownership_cases.py` directly or bypass its runner.
+
+The 26 synthetic cases check signal-before-reap ordering, lost/reaped and
+invalid child identities, one cleanup attempt, deferred interruption during
+spawn and handler installation, timeout/cancellation results, continued
+admission under repeated or missing cleanup observations, and preservation of
+primary failures when diagnostics, history, or shutdown flushing fail. They
+use semantic assertions rather than a fixed CLI hash. A separate negative
+control swallows a denied call and requires a failing runner exit. These
+cases complement real foreground-group tests and native Darwin ABI checks;
+they do not prove that detached sessions are contained or that orphans are
+reaped by the host.
+
+All resource state is temporary; the suite
 never changes live capacities or runs CPU/GPU workloads. Efficiency tests use
 independent synthetic ledgers for provider accounting, copied history,
 cumulative resets, request-record precedence and visibly incomplete input.

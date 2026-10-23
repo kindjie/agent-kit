@@ -143,17 +143,88 @@ admission, not a capacity monitor or proof that the machine is quiet.
 Existing project leases still apply; do not invent a competing authority.
 
 Admission expires after `--wait` seconds (exit 75, command never started).
-Execution defaults to a one-hour timeout (exit 124). Normal command exit
+Execution defaults to a one-hour timeout, or 120 seconds with `--interactive`
+(exit 124). The execution budget starts at the post-launch child wait, so
+admission wait, spawn overhead, and cleanup are outside it. Normal command exit
 codes pass through. Interrupts and timeouts terminate the foreground process
 group, then kill remaining members after a short grace period. Descendants
 must not detach: the wrapper also cleans up the group when its leader exits.
+
+The controller observes child completion without reaping it until the last
+group signal has been sent. The unreaped child reserves the numeric identity;
+a lost or already-reaped child does not authorize another group signal. After
+reaping, cleanup only observes group absence. Admission and the deferred
+interrupt handlers remain in place until that absence is verified. An
+observer error, failed diagnostic, or missing proof does not release credits
+or trigger another numeric cleanup attempt. A nonzero workload result survives
+later cleanup, history, handler-restoration, and stream-flush errors; a cleanup
+failure after a successful workload makes the run fail.
+
+Before a run creates resource state or spawns its child, it requires default
+`SIGCHLD` handling and a single-threaded controller. Linux uses Python's
+non-reaping `waitid` interface. macOS uses that interface when available or a
+checked 64-bit Darwin ABI; an unavailable interface refuses the run. These
+requirements do not change resource names, capacities, or admission order.
+
 Lock descriptors are inherited by the command so supervisor death alone
 cannot release its locks. Programs that close inherited descriptors or escape
 the group can defeat this safeguard; do not use this wrapper for daemons or
-as a security boundary. Admission remains held until the entire process group disappears. If cleanup
-cannot be confirmed within five seconds, a warning is printed and the wrapper
-keeps waiting with its locks held. An unkillable child can retain admission
-beyond the command timeout.
+as a security boundary. Admission remains held until the entire process group
+disappears. If cleanup cannot be confirmed within five seconds, a warning is
+attempted and the wrapper keeps waiting with its locks held. An unkillable
+child or an unreaped descendant on a host that does not reap orphans can retain
+admission beyond the command timeout. Neither a timeout nor a failed warning
+is permission to release credits or signal an unowned numeric identity.
+
+### Interactive runs
+
+Use `--interactive` for short resource-intensive viewers, captures, and UI
+checks. Build and prepare inputs before taking admission; keep the actual
+workload in the admitted foreground process group. Do not use a launcher
+that detaches the application or delegates it to a desktop service.
+
+```sh
+agent-resource run --resource gpu:1 --interactive -- ./viewer
+agent-resource run --resource gpu:1 --interactive --timeout 300 \
+  --interactive-reason 'planned multi-step capture' -- ./viewer
+```
+
+With `--interactive`, an omitted `--timeout` means 120 seconds; an explicit
+finite positive value up to 120 is accepted. Above 120, supply an explicit
+`--timeout` and nonblank `--interactive-reason`. The reason acknowledges the
+longer planned run; it does not authorize work outside the task or a grant.
+A reason without `--interactive`, without an explicit timeout above 120, or
+containing only whitespace is invalid. Invalid combinations exit 2 before
+creating resource state, recording history, taking admission, or starting a
+child. Ordinary runs retain their 3600-second default and explicit overrides.
+`--wait` remains a separate admission budget for both profiles.
+
+Reason text is neither echoed nor journaled. It is still visible in process
+arguments and potentially shell history, so never include private data.
+The supervisor enforces the execution deadline even if the agent is blocked
+in a UI call. Timeout initiates cleanup, not unconditional credit release:
+cleanup must establish that the process group is gone. An unkillable member
+can retain admission longer than the timeout. The existing supervisor-death
+and escaped-process limitations still apply; this is no application sandbox.
+
+For UI work, record the exact owned process identity from the admitted launch
+and inspect current UI state. Use only a documented operation that cannot
+launch or relaunch an application, targeting that existing owned process.
+This guarantee must hold for every subsequent operation, including calls
+that resume after the process exits. A presence check before a launch-capable
+name/path selector is insufficient: the process may exit between the check
+and the call. If the tool offers no guaranteed attach-only path, stop the UI
+step and report the capability gap. Do not attach an unrelated application or
+substitute another instance. The CLI cannot enforce this policy on UI tools.
+
+Discard the UI handle once the managed process exits or times out. A needed
+retry must take new admission with an explicit runtime bound; a stale handle
+must not recreate the workload. End successful interactions promptly and
+wait for wrapper cleanup and release. Do not hold credits across builds,
+review, or idle time. A stalled UI call can outlive the managed workload;
+process-group timeout evidence alone does not prove safe UI attachment.
+
+### Local state and observations
 
 Stable lock files live under `$XDG_STATE_HOME/agent-kit/resources`, defaulting
 to `$HOME/.local/state/agent-kit/resources`. Budget files are named
@@ -198,9 +269,14 @@ Custom-resource-only requests and immediate admissions emit no host reminder.
 request ID, timestamp, requested credits, wait seconds, held seconds and exit
 code. Schema 2 adds the participating policy, request backfill budget,
 per-resource wait/acquire/release stages with configured capacity and captured
-shared uptime/monotonic times, and terminal reasons. `admission_timeout` distinguishes a
-prestart exit 75 from `child_exit` with exit 75. Resource wait starts before its
-compatibility gate; acquired/released stages expose earlier complete bundle
+shared uptime/monotonic times, and terminal reasons. Request events also include
+`profile` (`standard` or `interactive`), resolved `timeout_seconds`, and
+`extended_timeout` (true only for an interactive timeout above 120 seconds).
+These are additive schema 2 fields; readers ignore unknown fields. No command,
+reason text, application identity, path, screenshot, or UI contents are logged.
+`admission_timeout` distinguishes a prestart exit 75 from `child_exit` with exit
+75. Resource wait starts before its compatibility gate; acquired/released
+stages expose earlier complete bundle
 grants. Capture precedes logging, outside the admission turnstile. Captured stage rows
 and their admitted/released event share one bounded journal-lock attempt, so
 lock contention before child start does not add a wait per resource. Whole-bundle

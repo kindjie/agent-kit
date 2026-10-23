@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Cooperative machine-local admission around foreground process groups."""
 import argparse
+from contextlib import ExitStack, contextmanager
+import ctypes
 import fcntl
 import json
 import math
@@ -12,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 
@@ -449,42 +452,186 @@ def admission_events(root, request_id, events):
         os.close(fd)
 
 
+def diagnostic(message, *values):
+  # Reporting must never replace a workload result or bypass required cleanup.
+  try:
+    print(message % values if values else message, file=sys.stderr)
+  except BaseException:
+    pass
+
+
 def group_alive(pid):
   try:
     os.killpg(pid, 0)
     return True
   except ProcessLookupError:
     return False
-  except PermissionError:
-    return True
+
+
+class DarwinSigval(ctypes.Union):
+  _fields_ = [('integer', ctypes.c_int), ('pointer', ctypes.c_void_p)]
+
+
+class DarwinSiginfo(ctypes.Structure):
+  # Darwin64 <sys/signal.h>; Linux uses Python's native os.waitid instead.
+  _fields_ = [('si_signo', ctypes.c_int), ('si_errno', ctypes.c_int),
+              ('si_code', ctypes.c_int), ('si_pid', ctypes.c_int),
+              ('si_uid', ctypes.c_uint), ('si_status', ctypes.c_int),
+              ('si_addr', ctypes.c_void_p), ('si_value', DarwinSigval),
+              ('si_band', ctypes.c_long), ('reserved', ctypes.c_ulong * 7)]
+
+
+def darwin_waitid_api():
+  if (sys.platform != 'darwin' or ctypes.sizeof(ctypes.c_void_p) != 8 or
+      ctypes.sizeof(DarwinSiginfo) != 104 or
+      DarwinSiginfo.si_pid.offset != 12 or DarwinSiginfo.si_status.offset != 20):
+    raise OSError('unsupported Darwin waitid ABI')
+  api = ctypes.CDLL(None, use_errno=True).waitid
+  api.argtypes = (ctypes.c_int, ctypes.c_uint,
+                  ctypes.POINTER(DarwinSiginfo), ctypes.c_int)
+  api.restype = ctypes.c_int
+  return api
+
+
+def darwin_waitid(pid):
+  # Python before 3.13 omits os.waitid on macOS. Zero the output each call:
+  # Darwin may leave siginfo untouched for a successful WNOHANG query.
+  info = DarwinSiginfo()
+  api = darwin_waitid_api()
+  ctypes.set_errno(0)
+  if api(1, pid, ctypes.byref(info), 0x04 | 0x01 | 0x20) != 0:
+    error = ctypes.get_errno()
+    raise OSError(error, os.strerror(error))
+  return info if info.si_pid else None
+
+
+def guard_child_ownership():
+  if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+    raise OSError('child ownership requires default SIGCHLD handling')
+  if threading.active_count() != 1:
+    raise OSError('child ownership requires a single-threaded controller')
+  if not hasattr(os, 'waitid'):
+    darwin_waitid_api()  # Refuse an unavailable ABI before admission/spawn.
+
+
+def observe_child(proc):
+  guard_child_ownership()
+  if type(proc.pid) is not int or proc.pid <= 1 or proc.returncode is not None:
+    raise ChildProcessError('unreaped child ownership is unavailable')
+  if hasattr(os, 'waitid'):
+    info = os.waitid(getattr(os, 'P_PID', 1), proc.pid,
+                     os.WEXITED | os.WNOHANG | os.WNOWAIT)
+  else:
+    info = darwin_waitid(proc.pid)
+  if info is None:
+    return None
+  if info.si_pid != proc.pid or info.si_code not in (1, 2, 3):
+    raise ChildProcessError('waitid returned an unexpected child status')
+  return info.si_status if info.si_code == 1 else -info.si_status
+
+
+def consume_cancel(pending):
+  if pending:
+    raise ResourceInterrupted(pending.pop(0)[0])
+
+
+def wait_child(proc, timeout, pending):
+  deadline = None if timeout is None else time.monotonic() + timeout
+  while True:
+    consume_cancel(pending)
+    try:
+      code = observe_child(proc)
+    except InterruptedError:
+      code = None
+    if code is not None:
+      return code
+    if deadline is None:
+      time.sleep(.1)
+    else:
+      remaining = deadline - time.monotonic()
+      if remaining <= 0:
+        raise subprocess.TimeoutExpired('owned child', timeout)
+      time.sleep(min(.1, remaining))
+
+
+@contextmanager
+def defer_interrupts():
+  # Defer Python handlers only; preserve the child's inherited OS signal mask.
+  pending, handlers, primary = [], {}, None
+  def queue_interrupt(signum, frame):
+    pending.append((signum, frame))
+  try:
+    for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+      handlers[sig] = signal.getsignal(sig)
+      signal.signal(sig, queue_interrupt)
+    yield pending
+  except BaseException as exc:
+    primary = exc
+    raise
+  finally:
+    restore_error = None
+    for sig, handler in handlers.items():
+      try:
+        signal.signal(sig, handler)
+      except BaseException as exc:
+        restore_error = restore_error or exc
+    if primary is not None:
+      if restore_error is not None:
+        diagnostic('signal restoration also failed: %s', restore_error)
+    elif restore_error is not None:
+      raise restore_error
+    # Normal waiting explicitly consumes cancellation. Pending cleanup signals
+    # never replace a completed child status. Restoration happens only after
+    # cleanup/release, or when entry failed before any child was spawned.
+
+
+def wait_group_absent(pid):
+  # Observation only: no nonzero numeric signal is permitted after reap.
+  warned = False
+  deadline = None
+  while True:
+    try:
+      if not group_alive(pid):
+        return True
+      now = time.monotonic()
+      if deadline is None:
+        deadline = now + 5
+      if not warned and now >= deadline:
+        diagnostic('child group still exists; retaining admission until exit')
+        warned = True
+    except BaseException as exc:
+      diagnostic('cannot verify child group absence; retaining admission: %s',
+                 exc)
+    try:
+      time.sleep(.1)
+    except BaseException as exc:
+      diagnostic('cleanup pause failed; retaining admission: %s', exc)
 
 
 def stop_group(proc):
-  # Keep admission until the whole group disappears, not just its leader.
+  if getattr(proc, '_resource_group_stopped', False):
+    return
+  if getattr(proc, '_resource_cleanup_attempted', False):
+    raise ChildProcessError('prior child cleanup is incomplete')
+  # main already installed its single deferral context before Popen. Do not
+  # swap handlers while an owned child or its descendants can still be live.
+  proc._resource_cleanup_attempted = True
+  # A zombie leader still reserves its PID/PGID. Never poll/wait before the
+  # final group signal, and never wait for that zombie to disappear first.
   for sig, grace in ((signal.SIGTERM, .5), (signal.SIGKILL, 0)):
-    proc.poll()  # Reap an exited leader before signalling on macOS.
+    observe_child(proc)  # ECHILD refuses a reaped/reused numeric identity.
     try:
       os.killpg(proc.pid, sig)
     except ProcessLookupError:
       break
     except PermissionError:
-      if proc.poll() is None:
-        print('cannot signal child group; retaining admission until exit',
-              file=sys.stderr)
+      diagnostic('cannot signal child group; retaining admission until exit')
     if grace:
       time.sleep(grace)
-  warned = False
-  deadline = time.monotonic() + 5
-  while True:
-    proc.poll()
-    if not group_alive(proc.pid):
-      break
-    if not warned and time.monotonic() >= deadline:
-      print('child group still exists; retaining admission until exit',
-            file=sys.stderr)
-      warned = True
-    time.sleep(.1)
   proc.wait()
+  if wait_group_absent(proc.pid) is not True:
+    raise ChildProcessError('child group absence was not verified')
+  proc._resource_group_stopped = True
 
 
 class ResourceInterrupted(Exception):
@@ -498,8 +645,16 @@ def main():
   run = commands.add_parser('run')
   run.add_argument('--resource', type=resource, action='append', required=True,
                    metavar='NAME[:CREDITS]')
-  run.add_argument('--wait', type=seconds, default=600)
-  run.add_argument('--timeout', type=seconds, default=3600)
+  run.add_argument('--wait', type=seconds, default=600,
+                   help='admission seconds, separate from execution '
+                        '(default: 600)')
+  run.add_argument('--timeout', type=seconds,
+                   help='execution seconds (default: 3600, interactive: 120)')
+  run.add_argument('--interactive', action='store_true',
+                   help='short foreground UI work; default timeout 120 seconds')
+  run.add_argument('--interactive-reason', metavar='REASON',
+                   help='nonblank acknowledgement for interactive timeouts '
+                        'above 120 seconds; never include private data')
   run.add_argument('--backfill', type=seconds, default=30,
                    help='backfill seconds before draining for a waiter')
   run.add_argument('--notice-after', type=seconds, default=300,
@@ -525,6 +680,17 @@ def main():
     command = args.command[1:] if args.command[:1] == ['--'] else args.command
     if not command:
       parser.error('a command is required')
+    extended = (args.interactive and args.timeout is not None
+                and args.timeout > 120)
+    if args.interactive_reason is not None:
+      if not extended or not args.interactive_reason.strip():
+        parser.error('--interactive-reason requires --interactive, an explicit '
+                     '--timeout above 120, and a nonblank reason')
+    elif extended:
+      parser.error('interactive timeouts above 120 require '
+                   '--interactive-reason')
+    if args.timeout is None:
+      args.timeout = 120 if args.interactive else 3600
     requests = dict(args.resource)
     if len(requests) != len(args.resource):
       parser.error('request each resource only once')
@@ -582,13 +748,19 @@ def main():
   request_id = '%x-%x' % (os.getpid(), time.time_ns())
   def interrupted(signum, frame):
     raise ResourceInterrupted(signum)
-  for sig in (signal.SIGINT, signal.SIGTERM):
-    signal.signal(sig, interrupted)
+  handlers, child_scope = {}, ExitStack()
   try:
+    if args.action == 'run':
+      guard_child_ownership()
+    for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+      handlers[sig] = signal.getsignal(sig)
+      signal.signal(sig, interrupted)
     root = secure_directory()
     if args.action == 'run':
       admission_event(root, request_id, requests, 'request',
-                      backfill_seconds=args.backfill)
+                      backfill_seconds=args.backfill,
+                      profile='interactive' if args.interactive else 'standard',
+                      timeout_seconds=args.timeout, extended_timeout=extended)
     admission_started = time.monotonic()
     handles = acquire(root, requests.items(), admission_started + args.wait,
                       configuring=args.action == 'capacity',
@@ -614,47 +786,116 @@ def main():
     env = os.environ.copy()
     for name, granted in requests.items():
       env[credit_variable(name)] = str(granted)
+    # Enter once with no child yet. Keep these same handlers through owned
+    # execution, group cleanup and admission release; no later entry window.
+    pending = child_scope.enter_context(defer_interrupts())
+    consume_cancel(pending)
     proc = subprocess.Popen(command, env=env, start_new_session=True,
                             pass_fds=handles)
     reason = 'child_exit'
     try:
-      result = proc.wait(timeout=args.timeout)
+      result = wait_child(proc, args.timeout, pending)
     except subprocess.TimeoutExpired:
       result = 124
       reason = 'child_timeout'
     result = result if result >= 0 else 128 - result
-    return result
   except TimeoutError:
-    print('resource wait expired; no command started or capacity changed',
-          file=sys.stderr)
     result = 75
     reason = 'admission_timeout'
-    return result
+    diagnostic('resource wait expired; no command started or capacity changed')
   except ResourceInterrupted as exc:
     result = 128 + exc.args[0]
     reason = 'child_cancel' if proc is not None else 'admission_cancel'
-    return result
   except OSError as exc:
-    print(str(exc), file=sys.stderr)
-    return 1
+    result = 1
+    diagnostic('%s', exc)
   finally:
-    # A second interrupt must not release admission during child cleanup.
-    for sig in (signal.SIGINT, signal.SIGTERM):
-      signal.signal(sig, signal.SIG_IGN)
     if proc is not None:
-      stop_group(proc)
-    for fd in handles:
-      os.close(fd)
-    if root is not None and args.action == 'run':
-      now = time.monotonic()
-      released_at = queue_clock() if context['grants'] else None
-      for stage in context['grants']:
-        context['stages'].append(dict(stage, event='resource_released',
-                                      monotonic=released_at))
-      emit_stages({'event': 'released', 'exit': result, 'reason': reason,
-                   'wait_seconds': round((admitted or now) - requested_at, 6),
-                   'held_seconds': round(now - admitted if admitted else 0, 6)})
+      try:
+        stop_group(proc)
+      except BaseException as exc:
+        diagnostic('child cleanup failed; primary exit %s: %s', result, exc)
+        if result == 0:
+          result, reason = 1, 'error'
+      # Mandatory gate, separate from best-effort diagnostics/telemetry. An
+      # observer exception or missing proof never permits release or handler
+      # restoration. Do not repeat numeric cleanup after its single attempt.
+      while True:
+        try:
+          if wait_group_absent(proc.pid) is True:
+            break
+          diagnostic('child group absence unverified; retaining admission')
+        except BaseException as exc:
+          diagnostic('child group verification failed; retaining admission: %s',
+                     exc)
+        try:
+          time.sleep(.1)
+        except BaseException as exc:
+          diagnostic('cleanup pause failed; retaining admission: %s', exc)
+    try:
+      for fd in handles:
+        os.close(fd)
+      if root is not None and args.action == 'run':
+        now = time.monotonic()
+        released_at = queue_clock() if context['grants'] else None
+        for stage in context['grants']:
+          context['stages'].append(dict(stage, event='resource_released',
+                                         monotonic=released_at))
+        emit_stages({'event': 'released', 'exit': result, 'reason': reason,
+                      'wait_seconds': round((admitted or now) - requested_at, 6),
+                      'held_seconds': round(now - admitted if admitted else 0, 6)})
+    except ResourceInterrupted as exc:
+      # Cancellation observed while the child ran already set its status.
+      # A later cleanup interrupt does not replace that completed result.
+      pass
+    except BaseException as exc:
+      diagnostic('resource finalization failed; primary exit %s: %s', result, exc)
+      if result == 0:
+        result = 1
+    finally:
+      try:
+        child_scope.close()
+      except BaseException as exc:
+        diagnostic('child handler restoration failed; primary exit %s: %s',
+                   result, exc)
+        if result == 0:
+          result = 1
+      for sig, handler in handlers.items():
+        try:
+          signal.signal(sig, handler)
+        except BaseException as exc:
+          diagnostic('handler restoration failed; primary exit %s: %s',
+                     result, exc)
+          if result == 0:
+            result = 1
+  return result
+
+
+class PrimaryExitStream:
+  """Forward output; a shutdown flush error cannot replace a primary failure."""
+  def __init__(self, stream):
+    self.stream = stream
+
+  def __getattr__(self, name):
+    return getattr(self.stream, name)
+
+  def flush(self):
+    try:
+      self.stream.flush()
+    except BaseException:
+      pass
+
+
+def preserve_primary_exit(result):
+  # main has completed mandatory Q and resource release before reaching here.
+  # Leave successful exits' normal shutdown error reporting unchanged.
+  if result:
+    for name in ('stdout', 'stderr'):
+      stream = getattr(sys, name)
+      if stream is not None:
+        setattr(sys, name, PrimaryExitStream(stream))
+  return result
 
 
 if __name__ == '__main__':
-  sys.exit(main())
+  sys.exit(preserve_primary_exit(main()))
