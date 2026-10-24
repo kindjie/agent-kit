@@ -1,6 +1,7 @@
 """Synthetic methods only. Import exclusively through the guarded launcher."""
 from contextlib import ExitStack
 import ctypes
+import errno
 import io
 import types
 import os
@@ -142,6 +143,13 @@ class SyntheticOwnershipTest(unittest.TestCase):
         outcome = self.q_schedule.pop(0) if self.q_schedule else 'absent'
         if outcome == 'present':
           return
+        if outcome == 'eperm':
+          raise PermissionError(errno.EPERM, 'synthetic transient group denial')
+        if outcome == 'eacces':
+          raise PermissionError(
+              errno.EACCES, 'synthetic other permission error')
+        if outcome == 'denied':
+          raise PermissionError('synthetic Q permission denial')
         if outcome == 'error':
           raise OSError('synthetic Q syscall error')
         if outcome != 'absent':
@@ -159,6 +167,135 @@ class SyntheticOwnershipTest(unittest.TestCase):
     patch(os, 'killpg', self.fake_killpg(child))
     patch(time, 'sleep', self.fake_sleep)
     patch(time, 'monotonic', lambda: self.clock)
+
+
+  def test_synthetic_transient_EPERM_quiet_other_errors_immediate(self):
+    for outcome in ('eperm', 'error', 'eacces'):
+      for timed_out in (False, True):
+        with self.subTest(observation=outcome, timeout=timed_out):
+          output = io.StringIO()
+          with mock.patch.object(sys, 'stderr', output):
+            result, state, spawns = self.run_main(fake_handles=True,
+                q_schedule=(outcome, 'absent'), force_timeout=timed_out)
+          self.assertEqual(result, 124 if timed_out else 7)
+          if outcome == 'eperm':
+            self.assertEqual(output.getvalue(), '')
+          else:
+            self.assertIn('cannot verify child group absence',
+                          output.getvalue())
+          self.assertEqual(self.zero_probes, 3)
+          self.assert_finalization_after_Q()
+
+  def test_synthetic_EPERM_live_share_grace_and_retain_admission(self):
+    patterns = (('eperm', 'eperm', 'eperm', 'absent'),
+                ('eperm', 'present', 'eperm', 'absent'),
+                ('present', 'eperm', 'present', 'absent'))
+    for schedule in patterns:
+      for timed_out in (False, True):
+        for broken in (False, True):
+          with self.subTest(schedule=schedule, timeout=timed_out,
+                            broken_diagnostic=broken):
+            owner = self
+            class Output(io.StringIO):
+              def write(self, value):
+                if 'retaining admission' in value:
+                  owner.events.append(('warning', owner.zero_probes,
+                      owner.synthetic_live, list(owner.closed_after_Q)))
+                if broken:
+                  raise BrokenPipeError('synthetic diagnostic sink failure')
+                return super().write(value)
+            with mock.patch.object(sys, 'stderr', Output()):
+              result, state, spawns = self.run_main(fake_handles=True,
+                  q_schedule=schedule, q_clock_step=True,
+                  force_timeout=timed_out)
+            self.assertEqual(result, 124 if timed_out else 7)
+            self.assertEqual([e for e in self.events if e[0] == 'warning'],
+                             [('warning', 2, True, [])])
+            self.assertEqual(self.zero_probes, 5)
+            self.assert_finalization_after_Q()
+            reap = next(i for i, e in enumerate(self.events)
+                        if e[0] == 'reap')
+            self.assertTrue(all(i < reap for i, e in enumerate(self.events)
+                                if e[0] == 'signal' and e[1]))
+            self.assertTrue(all(e[2] is None for e in self.events
+                               if e[0] == 'signal' and e[1]))
+
+  def test_synthetic_terminal_denial_is_quiet_after_reap_and_Q(self):
+    for race in (False, True):
+      with self.subTest(live_observation_race=race):
+        output = io.StringIO()
+        with mock.patch.object(sys, 'stderr', output):
+          result, state, spawns = self.run_main(fake_handles=True,
+              denied_signals=(15, 9) if race else (9,),
+              live_before_denial=race)
+        self.assertEqual(result, 7)
+        self.assertEqual(output.getvalue(), '')
+        self.assert_finalization_after_Q()
+        reaps = [i for i, e in enumerate(self.events) if e[0] == 'reap']
+        self.assertEqual(len(reaps), 1)
+        self.assertEqual(self.events[reaps[0]], ('reap', 5))
+        self.assertTrue(all(i < reaps[0] for i, e in enumerate(self.events)
+                            if e[0] == 'signal' and e[1]))
+        self.assertTrue(all(e[2] is None for e in self.events
+                           if e[0] == 'signal' and e[1]))
+
+  def test_synthetic_live_denial_warns_and_preserves_primary(self):
+    for timed_out in (False, True):
+      for broken in (False, True):
+        with self.subTest(timeout=timed_out, broken_diagnostic=broken):
+          owner = self
+          class Output(io.StringIO):
+            def write(self, value):
+              if 'retaining admission' in value:
+                owner.events.append(('warning', owner.synthetic_live,
+                                     list(owner.closed_after_Q)))
+              if broken:
+                raise BrokenPipeError('synthetic diagnostic sink failure')
+              return super().write(value)
+          with mock.patch.object(sys, 'stderr', Output()):
+            result, state, spawns = self.run_main(fake_handles=True,
+                denied_signals=(15, 9), delayed_reap=True,
+                force_timeout=timed_out)
+          self.assertEqual(result, 124 if timed_out else 7)
+          self.assert_finalization_after_Q()
+          warning = next(i for i, e in enumerate(self.events)
+                         if e[0] == 'warning')
+          wait = next(i for i, e in enumerate(self.events)
+                      if e[0] == 'wait-timeout')
+          reap = next(i for i, e in enumerate(self.events) if e[0] == 'reap')
+          self.assertLess(wait, warning)
+          self.assertLess(warning, reap)
+          self.assertEqual(self.events[warning], ('warning', True, []))
+          self.assertTrue(all(i < wait for i, e in enumerate(self.events)
+                              if e[0] == 'signal' and e[1]))
+
+  def test_synthetic_denied_group_survivor_warns_before_release(self):
+    output = io.StringIO()
+    with mock.patch.object(sys, 'stderr', output):
+      result, state, spawns = self.run_main(fake_handles=True,
+          denied_signals=(9,), q_schedule=('present', 'present', 'absent'),
+          q_clock_step=True)
+    self.assertEqual(result, 7)
+    self.assertIn('child group still exists; retaining admission',
+                  output.getvalue())
+    self.assertNotIn('cannot signal child group', output.getvalue())
+    self.assertEqual(self.zero_probes, 4)
+    self.assert_finalization_after_Q()
+
+  def test_synthetic_denied_unknown_group_never_releases_early(self):
+    for timed_out in (False, True):
+      with self.subTest(timeout=timed_out):
+        output = io.StringIO()
+        with mock.patch.object(sys, 'stderr', output):
+          result, state, spawns = self.run_main(fake_handles=True,
+              denied_signals=(9,), q_schedule=('denied', 'present', 'absent'),
+              force_timeout=timed_out)
+        self.assertEqual(result, 124 if timed_out else 7)
+        self.assertIn('cannot verify child group absence; retaining admission',
+                      output.getvalue())
+        self.assertNotIn('cannot signal child group', output.getvalue())
+        self.assertEqual(self.zero_probes, 4)
+        self.assert_finalization_after_Q()
 
   def test_synthetic_already_reaped_refuses_numeric_signals(self):
     child = FakeProcess(self.events, reaped=True)
@@ -196,7 +333,9 @@ class SyntheticOwnershipTest(unittest.TestCase):
                spawn_interrupt=False, cleanup_failure=False, history_failure=False,
                install_interrupt=None, cleanup_interrupt=False, force_timeout=False,
                q_schedule=(), fake_handles=False, observer_faults=0,
-               observer_unknown=0, cleanup_exception=None):
+               observer_unknown=0, cleanup_exception=None,
+               denied_signals=(), delayed_reap=False, live_before_denial=False,
+               q_clock_step=False):
     with ExitStack() as run_stack:
       def patch(obj, name, value):
         return run_stack.enter_context(mock.patch.object(obj, name, value))
@@ -210,6 +349,31 @@ class SyntheticOwnershipTest(unittest.TestCase):
       self.observer_calls = self.cleanup_calls = 0
       child = FakeProcess(self.events)
       self.install_finite_group(child, run_stack)
+      if denied_signals:
+        send = self.fake_killpg(child)
+        def denied_group(pid, sig):
+          send(pid, sig)  # Same typed PID/signal checks and event ledger.
+          if sig in denied_signals:
+            raise PermissionError('synthetic group signal denial')
+        patch(os, 'killpg', denied_group)
+      if live_before_denial:
+        self.waitid_statuses = [7, None, 7]
+      if delayed_reap:
+        owning_wait = child.wait
+        def delayed_wait(timeout=None):
+          if timeout is not None:
+            self.assertEqual(timeout, 5)
+            child.waits += 1
+            self.events.append(('wait-timeout', timeout, self.synthetic_live))
+            raise subprocess.TimeoutExpired('synthetic owned child', timeout)
+          return owning_wait()
+        child.wait = delayed_wait
+      if q_clock_step:
+        def step_clock():
+          value = self.clock
+          self.clock += 6
+          return value
+        patch(time, 'monotonic', step_clock)
       self.synthetic_live = False
       self.last_injection_fired = False
       state_calls = []
@@ -301,7 +465,7 @@ class SyntheticOwnershipTest(unittest.TestCase):
       result = self.ns['main']()
       self.assertEqual(self.cleanup_calls, 1 if spawns else 0)
       if spawns and not cleanup_failure:
-        self.assertEqual(child.waits, 1)
+        self.assertEqual(child.waits, 2 if delayed_reap else 1)
         self.assertEqual(child.polls, 0)
         self.assertEqual([e[1] for e in self.events if e[0] == 'signal' and e[1]],
                          [15, 9])

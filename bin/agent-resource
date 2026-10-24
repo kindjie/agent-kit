@@ -3,6 +3,7 @@
 import argparse
 from contextlib import ExitStack, contextmanager
 import ctypes
+import errno
 import fcntl
 import json
 import math
@@ -591,13 +592,24 @@ def wait_group_absent(pid):
   deadline = None
   while True:
     try:
-      if not group_alive(pid):
-        return True
+      denied = None
+      try:
+        if not group_alive(pid):
+          return True
+      except PermissionError as exc:
+        if exc.errno != errno.EPERM:
+          raise
+        denied = exc
       now = time.monotonic()
       if deadline is None:
         deadline = now + 5
       if not warned and now >= deadline:
-        diagnostic('child group still exists; retaining admission until exit')
+        if denied is None:
+          diagnostic('child group still exists; retaining admission until exit')
+        else:
+          diagnostic(
+              'cannot verify child group absence; retaining admission: %s',
+              denied)
         warned = True
     except BaseException as exc:
       diagnostic('cannot verify child group absence; retaining admission: %s',
@@ -616,6 +628,7 @@ def stop_group(proc):
   # main already installed its single deferral context before Popen. Do not
   # swap handlers while an owned child or its descendants can still be live.
   proc._resource_cleanup_attempted = True
+  signal_denied = False
   # A zombie leader still reserves its PID/PGID. Never poll/wait before the
   # final group signal, and never wait for that zombie to disappear first.
   for sig, grace in ((signal.SIGTERM, .5), (signal.SIGKILL, 0)):
@@ -625,10 +638,19 @@ def stop_group(proc):
     except ProcessLookupError:
       break
     except PermissionError:
-      diagnostic('cannot signal child group; retaining admission until exit')
+      signal_denied = True
     if grace:
       time.sleep(grace)
-  proc.wait()
+  # Darwin may deny a group signal when only its unreaped zombie remains.
+  # Report a stalled child after the final signal, then retain admission.
+  if signal_denied:
+    try:
+      proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+      diagnostic('cannot signal child group; retaining admission until exit')
+      proc.wait()
+  else:
+    proc.wait()
   if wait_group_absent(proc.pid) is not True:
     raise ChildProcessError('child group absence was not verified')
   proc._resource_group_stopped = True

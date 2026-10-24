@@ -682,13 +682,21 @@ suite; it cannot pass or start another case. Interruption handlers remain
 deferred through cleanup, and a secondary failure preserves the first error.
 Do not import `agent_resource_ownership_cases.py` directly or bypass its runner.
 
-The 26 synthetic cases check signal-before-reap ordering, lost/reaped and
+The 32 synthetic cases check signal-before-reap ordering, lost/reaped and
 invalid child identities, one cleanup attempt, deferred interruption during
 spawn and handler installation, timeout/cancellation results, continued
 admission under repeated or missing cleanup observations, and preservation of
 primary failures when diagnostics, history, or shutdown flushing fail. They
-use semantic assertions rather than a fixed CLI hash. A separate negative
-control swallows a denied call and requires a failing runner exit. These
+use semantic assertions rather than a fixed CLI hash. Group-signal denial
+cases distinguish a reaped child with verified group absence from a child
+still running, surviving group members, and unknown group state. They cover
+the live-observation-to-terminal race, warnings with admission retained,
+signal-before-reap ordering, and primary failures with a broken diagnostic
+sink. Transient group-observation `EPERM` retains admission without a warning
+before the five-second grace expires. Persistent `EPERM` and live-group
+observations share that grace without resetting it; other observer errors
+still warn immediately. A separate negative control swallows a denied call
+and requires a failing runner exit. These
 cases complement real foreground-group tests and native Darwin ABI checks;
 they do not prove that detached sessions are contained or that orphans are
 reaped by the host.

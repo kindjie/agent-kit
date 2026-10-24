@@ -85,7 +85,7 @@ class ResourceOwnershipTest(unittest.TestCase):
   def test_ownership_oracles_with_default_denied_kernel(self):
     result = self.run_guarded()
     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-    self.assertIn('Ran 26 tests', result.stderr)
+    self.assertIn('Ran 32 tests', result.stderr)
     self.assertNotIn('HARNESSFAIL:', result.stderr)
 
   def test_swallowed_kernel_denial_still_fails_runner(self):

@@ -61,6 +61,12 @@ def run_synthetic_only():
 
   # Literal method selection: no discovery and no real-child/fork proof class.
   methods = (
+    'test_synthetic_transient_EPERM_quiet_other_errors_immediate',
+    'test_synthetic_EPERM_live_share_grace_and_retain_admission',
+    'test_synthetic_terminal_denial_is_quiet_after_reap_and_Q',
+    'test_synthetic_live_denial_warns_and_preserves_primary',
+    'test_synthetic_denied_group_survivor_warns_before_release',
+    'test_synthetic_denied_unknown_group_never_releases_early',
     'test_synthetic_already_reaped_refuses_numeric_signals',
     'test_synthetic_final_signal_precedes_only_reap',
     'test_synthetic_second_cleanup_adds_no_signal',
