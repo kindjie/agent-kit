@@ -365,9 +365,26 @@ status shows participating waits and reserved/free credits with unknown ETA;
 one long-wait CPU/GPU reminder suggests compatible VMs, alternative build
 machines and SteamOS devices.
 Private admission history remains bounded. Resource admission on macOS
-requires macOS 10.12+ for its shared clock; Python 3.9+ remains supported. The scheduler is
-an opt-in pilot with
-manual recovery boundaries, not an unattended scheduling service.
+requires macOS 10.12+ for its shared clock; Python 3.9+ remains supported.
+Foreground runs retain child ownership through the last group signal and hold
+credits until group absence is verified. They require default child-signal
+handling, a single-threaded controller, and a supported non-reaping wait
+interface; see the [cleanup contract](docs/coordination.md#cooperative-resource-admission).
+The scheduler is an opt-in pilot with manual recovery boundaries, not an
+unattended scheduling service.
+
+For short interactive viewers and captures, bound the foreground run:
+
+```sh
+agent-resource run --resource gpu:1 --interactive -- ./viewer
+```
+
+This defaults to a 120-second execution timeout. Longer planned interactions
+require an explicit timeout and reason. Use UI operations that only attach to
+that existing process and cannot relaunch it; keep this guarantee for every
+later operation. See
+[interactive resource runs](docs/coordination.md#interactive-runs)
+for overrides, cleanup, and limits. Ordinary builds keep their default timeout.
 
 ## As your work grows
 

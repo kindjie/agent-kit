@@ -1,5 +1,6 @@
 """Real process admission and timeout tests; no machine resources needed."""
 import contextlib
+import ctypes
 import fcntl
 import io
 import json
@@ -11,6 +12,7 @@ import runpy
 import sys
 import tempfile
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -1041,6 +1043,188 @@ sys.exit(runpy.run_path(%r)['main']())
         self.assertEqual(active.returncode, 128 + sig, error)
         self.assertEqual(self.history()[-1]['exit'], 128 + sig)
         self.assertEqual(self.contender().returncode, 0)
+
+  def test_interactive_effective_timeout_and_standard_compatibility(self):
+    cases = (([], 3600), (['--timeout', '7200'], 7200),
+             (['--interactive'], 120),
+             (['--interactive', '--timeout', '.25'], .25),
+             (['--interactive', '--timeout', '120'], 120),
+             (['--interactive', '--timeout', '300', '--interactive-reason',
+               'planned capture'], 300))
+    denied_calls = []
+    def forbidden(*args, **kwargs):
+      denied_calls.append('unexpected kernel/process call')
+      raise AssertionError('synthetic command-routing test reached kernel')
+    with mock.patch.multiple(os, kill=forbidden, killpg=forbidden,
+                             fork=forbidden, waitid=forbidden, create=True), \
+         mock.patch.object(ctypes, 'CDLL', forbidden), \
+         mock.patch.object(subprocess, 'Popen', forbidden):
+      self.assert_command_routing(cases, denied_calls)
+    self.assertEqual(denied_calls, [])
+
+  def assert_command_routing(self, cases, denied_calls):
+    functions = runpy.run_path(str(BIN))
+    namespace = functions['main'].__globals__
+    handlers = {sig: signal.getsignal(sig)
+                for sig in (signal.SIGINT, signal.SIGTERM)}
+    for extra, expected in cases:
+      with self.subTest(extra=extra):
+        child = types.SimpleNamespace(pid=43210, returncode=None, wait=mock.Mock())
+        def fake_Q(pid):
+          self.assertIs(type(pid), int)
+          self.assertEqual(pid, child.pid)
+          return True
+        observed_wait = mock.Mock(return_value=7)
+        try:
+          with mock.patch.dict(os.environ, self.env), \
+               mock.patch.object(sys, 'argv', self.command(*extra, '--',
+                                                          'fictional')[1:]), \
+               mock.patch.object(subprocess, 'Popen', return_value=child), \
+               mock.patch.dict(namespace, stop_group=mock.Mock(),
+                             wait_child=observed_wait,
+                             wait_group_absent=fake_Q):
+            self.assertEqual(functions['main'](), 7)
+        finally:
+          for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+        observed_wait.assert_called_once_with(child, expected, mock.ANY)
+        self.assertIsInstance(observed_wait.call_args.args[2], list)
+        child.wait.assert_not_called()
+
+  def test_interactive_invalid_options_leave_no_state_or_child(self):
+    invalid = [
+      ['--interactive', '--timeout', '121'],
+      ['--interactive', '--timeout', '300', '--interactive-reason', ''],
+      ['--interactive', '--timeout', '300', '--interactive-reason', ' \t '],
+      ['--interactive-reason', 'reason-sentinel'],
+      ['--timeout', '300', '--interactive-reason', 'reason-sentinel'],
+      ['--interactive', '--interactive-reason', 'reason-sentinel'],
+      ['--interactive', '--timeout', '120', '--interactive-reason',
+       'reason-sentinel'],
+      ['--interactive', '--timeout', '.1', '--interactive-reason',
+       'reason-sentinel'],
+    ]
+    invalid.extend(['--interactive', '--timeout', value]
+                   for value in ('0', '-1', 'nan', 'inf', '-inf'))
+    marker = Path(self.tmp.name) / 'unexpected-child'
+    command = ('import pathlib; pathlib.Path(%r).touch()' % str(marker))
+    def snapshot():
+      return {str(path.relative_to(self.tmp.name)):
+              None if path.is_dir() else path.read_bytes()
+              for path in Path(self.tmp.name).rglob('*')}
+    for existing in (False, True):
+      if existing:
+        self.assertEqual(self.configure(1).returncode, 0)
+        self.assertEqual(self.contender().returncode, 0)
+      before = snapshot()
+      for extra in invalid:
+        with self.subTest(existing=existing, extra=extra):
+          result = subprocess.run(self.command(*extra, '--', sys.executable,
+                                  '-c', command), env=self.env,
+                                  capture_output=True, timeout=4)
+          self.assertEqual(result.returncode, 2, result.stderr)
+          self.assertNotIn(b'reason-sentinel', result.stdout + result.stderr)
+          self.assertFalse(marker.exists())
+          self.assertEqual(snapshot(), before)
+      if not existing:
+        self.assertEqual(before, {})
+
+  def test_interactive_request_history_excludes_reason_payload(self):
+    cases = (([], 'standard', 3600, False),
+             (['--timeout', '7200'], 'standard', 7200, False),
+             (['--interactive'], 'interactive', 120, False),
+             (['--interactive', '--timeout', '120'], 'interactive', 120,
+              False),
+             (['--interactive', '--timeout', '300', '--interactive-reason',
+               'private-reason-sentinel'], 'interactive', 300, True))
+    for extra, profile, timeout, extended in cases:
+      with self.subTest(extra=extra):
+        result = subprocess.run(self.command(*extra, '--', sys.executable,
+                                '-c', 'raise SystemExit(7)'), env=self.env,
+                                capture_output=True, timeout=4)
+        self.assertEqual(result.returncode, 7, result.stderr)
+        request = next(row for row in reversed(self.history())
+                       if row['event'] == 'request')
+        self.assertEqual(request['profile'], profile)
+        self.assertEqual(request['timeout_seconds'], timeout)
+        self.assertIs(request['extended_timeout'], extended)
+        self.assertEqual(self.history()[-1]['reason'], 'child_exit')
+        self.assertNotIn(b'private-reason-sentinel',
+                         result.stdout + result.stderr)
+        self.assertNotIn('private-reason-sentinel', json.dumps(self.history()))
+
+  def test_interactive_admission_timeout_does_not_start_command(self):
+    self.holder('active')
+    result = self.contender('--interactive', '--timeout', '.1')
+    self.assertEqual(result.returncode, 75, result.stderr)
+    self.assertEqual(self.history()[-1]['reason'], 'admission_timeout')
+
+  def assert_interactive_group_cleanup(self, leader_exits):
+    root = Path(self.tmp.name)
+    descendant = root / 'descendant'
+    ready = root / 'leader'
+    finish = root / 'finish'
+    checked = root / 'checked'
+    child = ('import os,pathlib,signal,time; '
+             'signal.signal(signal.SIGTERM, signal.SIG_IGN); '
+             'pathlib.Path(%r).write_text(str(os.getpid())); time.sleep(20)'
+             % str(descendant))
+    leader = ('import os,pathlib,subprocess,sys,time\n'
+              'subprocess.Popen([sys.executable,"-c",%r], close_fds=True)\n'
+              'while not pathlib.Path(%r).exists(): time.sleep(.01)\n'
+              'pathlib.Path(%r).write_text(str(os.getpid()))\n'
+              '%s\n' % (child, str(descendant), str(ready),
+              'while not pathlib.Path(%r).exists(): time.sleep(.01)'
+              % str(finish) if leader_exits else 'time.sleep(20)'))
+    timeout = '10' if leader_exits else '2'
+    active = subprocess.Popen(self.command(
+                              '--interactive', '--timeout', timeout, '--',
+                              sys.executable, '-c', leader),
+                              env=self.env, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE)
+    def cleanup():
+      if active.poll() is None:
+        active.terminate()
+      active.communicate(timeout=5)
+    self.addCleanup(cleanup)
+    self.wait_ready('leader', active)
+    pids = [int(path.read_text()) for path in (ready, descendant)]
+    for pid in pids:
+      os.kill(pid, 0)
+    # This separate admitted command is the release oracle. It checks both
+    # processes at its own start, not after the first supervisor returns.
+    check = ('import os,pathlib\n'
+             'for pid in %r:\n'
+             '  try: os.kill(pid, 0)\n'
+             '  except ProcessLookupError: pass\n'
+             '  else: raise SystemExit(9)\n'
+             'pathlib.Path(%r).touch()\n' % (pids, str(checked)))
+    contender = subprocess.Popen(self.command('--wait', '5', '--',
+                                 sys.executable, '-c', check), env=self.env,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    def cleanup_contender():
+      if contender.poll() is None:
+        contender.terminate()
+      contender.communicate(timeout=5)
+    self.addCleanup(cleanup_contender)
+    if leader_exits:
+      self.wait_locked('gpu.priority')
+      finish.touch()
+    # No controller heartbeat, renewal, or signal follows the timeout run.
+    _, error = active.communicate(timeout=7)
+    self.assertEqual(active.returncode, 0 if leader_exits else 124, error)
+    _, error = contender.communicate(timeout=7)
+    self.assertEqual(contender.returncode, 0, error)
+    self.assertTrue(checked.exists())
+    for pid in pids:
+      with self.assertRaises(ProcessLookupError):
+        os.kill(pid, 0)
+
+  def test_interactive_timeout_without_controller_cleans_before_release(self):
+    self.assert_interactive_group_cleanup(leader_exits=False)
+
+  def test_interactive_leader_exit_cleans_surviving_group_before_release(self):
+    self.assert_interactive_group_cleanup(leader_exits=True)
 
   def test_exit_and_timeout(self):
     for code, extra, script in ((7, [], 'raise SystemExit(7)'),

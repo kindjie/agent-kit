@@ -108,6 +108,32 @@ cooperating commands. Resources default to one credit; configure a budget with
 `--resource NAME:N`, or the entire budget for exclusive measurements. Agree
 names, budgets and workload weights once; it neither establishes machine quiet
 nor constrains unwrapped work. Use foreground commands; see its README limits.
+
+For short resource-intensive interactive viewers, captures, and UI checks,
+use `agent-resource run --resource NAME --interactive -- command`. It defaults
+to 120 seconds of execution; `--wait` bounds admission only. Longer planned
+runs require an explicit `--timeout` above 120 and a nonblank
+`--interactive-reason`. Keep reasons free of private data: they are not logged
+but remain visible in process arguments. Ordinary builds and benchmarks retain
+their existing timeout behavior. Build and prepare inputs before admission;
+end successful interactions promptly, without holding credits through review
+or idle time. Keep the actual workload in the foreground process group, not
+behind a detached or desktop-service launcher.
+
+Record the exact owned process identity and inspect UI state. Every UI
+operation, including later calls through an existing handle, must have a
+documented guarantee that it cannot launch or relaunch the application. A
+presence check followed by a launch-capable selector is unsafe if the process
+exits between them. If no guaranteed attach-only operation is available, stop
+that UI step and report the capability gap. Never substitute another instance
+or attach an unrelated application. After exit or timeout discard the handle;
+any needed retry is a new bounded admitted run. The wrapper independently
+initiates timeout cleanup while the agent is stalled, retaining admission
+until its process group is gone. It cannot contain escaped applications or
+enforce UI tool behavior; supervisor-death limits still apply. An unkillable
+member can retain credits past the deadline. See the
+[interactive-run contract](../../docs/coordination.md#interactive-runs).
+
 For repeatable local usage audits, `agent-efficiency --since ISO --until ISO`
 reports deduplicated activity without model calls. Check coverage diagnostics;
 raw token totals and tool counts do not establish cost or avoidable overhead.
