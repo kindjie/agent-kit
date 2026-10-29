@@ -1362,7 +1362,7 @@ class SteamosTest(unittest.TestCase):
         f.write(json.dumps(args) + '\\n')
       remote, out = args[-2:]
       host, path = remote.split(':', 1)
-      if path.startswith('/tmp/'):
+      if path.startswith('/tmp/steamos-capture-'):
         path = os.environ['FAKE_CAPTURE_ROOT'] + path[4:]
       if host.split('@')[-1] in os.environ.get('FAKE_SCP_DOWN', '').split():
         sys.exit(255)
