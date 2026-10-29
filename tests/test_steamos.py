@@ -66,6 +66,29 @@ FAKE_SSH = textwrap.dedent('''\
 ''')
 
 
+TRANSPORT_LOG_SSH = textwrap.dedent('''\
+  #!/usr/bin/env python3
+  import os, subprocess, sys, threading
+  child = subprocess.Popen([sys.executable, os.environ['FAKE_TRANSPORT_SSH'],
+                            *sys.argv[1:]],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+  lock = threading.Lock()
+  def copy(source, target):
+    for chunk in iter(lambda: os.read(source.fileno(), 65536), b''):
+      with lock, open(os.environ['FAKE_TRANSPORT_LOG'], 'ab') as log:
+        log.write(chunk)
+      os.write(target, chunk)
+  threads = [threading.Thread(target=copy, args=(child.stdout, 1)),
+             threading.Thread(target=copy, args=(child.stderr, 2))]
+  for thread in threads:
+    thread.start()
+  code = child.wait()
+  for thread in threads:
+    thread.join()
+  sys.exit(code)
+''')
+
+
 class SteamosTest(unittest.TestCase):
   def setUp(self):
     tmp = tempfile.TemporaryDirectory()
@@ -713,6 +736,99 @@ class SteamosTest(unittest.TestCase):
       self.env['FAKE_SHORTCUT_REPLY'] = reply
       self.register(source, code=3)
 
+  def copy_rsync_fixture(self):
+    self.fixture_tool('rsync', """
+      import json, os, pathlib, shutil, sys
+      source, remote = sys.argv[-2:]
+      host, destination = remote.split(':', 1)
+      host = host.split('@')[-1]
+      root = pathlib.Path(os.environ['FAKE_SSH_ROOT'])
+      with (root / 'copies.log').open('a') as log:
+        log.write(json.dumps({'host': host, 'args': sys.argv[1:]}) + '\\n')
+      # Make refusal deterministic rather than depending on rsync's child
+      # exit/EOF race. A safe implementation never copies to this host.
+      if host in os.environ.get('FAKE_SSH_DOWN', '').split():
+        sys.exit(12)
+      destination = root / 'devices' / host / destination
+      destination.mkdir(parents=True, exist_ok=True)
+      (destination / 'owned-partial').write_text('partial')
+      code = int(os.environ.get('FAKE_COPY_EXIT', '0'))
+      if code:
+        sys.exit(code)
+      shutil.copytree(source, destination, dirs_exist_ok=True)
+    """)
+    source = self.root / 'build'
+    source.mkdir()
+    (source / 'run.sh').write_text('fixture')
+    return runpy.run_path(str(BIN)), source
+
+  def test_copy_selects_mdns_before_single_transfer(self):
+    module, source = self.copy_rsync_fixture()
+    self.env['FAKE_SSH_DOWN'] = '10.0.0.5'
+    entry = {'name': 'unit', 'address': '10.0.0.5', 'user': 'deck'}
+    with mock.patch.dict(os.environ, self.env):
+      module['copy_directory'](entry, source, 'copy/', 'fixture', delete=True)
+    copies = [json.loads(line) for line in
+              (self.root / 'copies.log').read_text().splitlines()]
+    self.assertEqual([copy['host'] for copy in copies], ['unit.local'])
+    self.assertIn('--delete', copies[0]['args'])
+    self.assertEqual((self.device_home('unit.local') /
+                      'copy/run.sh').read_text(), 'fixture')
+    self.assertFalse(self.device_home().exists())
+    hosts = (self.root / 'hosts.log').read_text().splitlines()
+    self.assertEqual(hosts, ['deck@10.0.0.5', 'deck' + '@' + 'unit.local'])
+
+  def test_copy_partial_failures_never_retry_another_host(self):
+    module, source = self.copy_rsync_fixture()
+    entry = {'name': 'unit', 'address': '10.0.0.5', 'user': 'deck'}
+    foreign = self.device_home('unit.local') / 'copy'
+    foreign.mkdir(parents=True)
+    (foreign / 'keep').write_text('foreign title')
+    (foreign / 'foreign.partial').write_text('foreign partial')
+    (foreign / 'foreign.lock').write_text('foreign lock')
+    expected = {p.name: p.read_bytes() for p in foreign.iterdir()}
+    for code in (12, 23, 255):
+      with self.subTest(code=code):
+        self.env['FAKE_COPY_EXIT'] = str(code)
+        with mock.patch.dict(os.environ, self.env):
+          with self.assertRaisesRegex(module['Failure'], 'copying fixture'):
+            module['copy_directory'](entry, source, 'copy/', 'fixture',
+                                     delete=True)
+        copies = [json.loads(line) for line in
+                  (self.root / 'copies.log').read_text().splitlines()]
+        self.assertEqual([copy['host'] for copy in copies], ['10.0.0.5'])
+        self.assertEqual((self.device_home() /
+                          'copy/owned-partial').read_text(), 'partial')
+        self.assertEqual({p.name: p.read_bytes() for p in foreign.iterdir()},
+                         expected)
+        (self.root / 'copies.log').unlink()
+
+  def test_copy_both_addresses_down_starts_no_transfer(self):
+    module, source = self.copy_rsync_fixture()
+    self.env['FAKE_SSH_DOWN'] = '10.0.0.5 unit.local'
+    entry = {'name': 'unit', 'address': '10.0.0.5', 'user': 'deck'}
+    with mock.patch.dict(os.environ, self.env):
+      with self.assertRaisesRegex(module['Failure'], 'cannot reach'):
+        module['copy_directory'](entry, source, 'copy/', 'fixture')
+    self.assertFalse((self.root / 'copies.log').exists())
+
+  def test_copy_probe_nonzero_and_post_start_drop_never_transfer(self):
+    module, source = self.copy_rsync_fixture()
+    entry = {'name': 'unit', 'address': '10.0.0.5', 'user': 'deck'}
+    reply = subprocess.CompletedProcess([], 1, 'connected=1\n', 'refused')
+    with mock.patch.dict(os.environ, self.env), \
+        mock.patch.dict(module['copy_directory'].__globals__,
+                        ssh=mock.Mock(return_value=reply)):
+      with self.assertRaisesRegex(module['Failure'], 'copying fixture'):
+        module['copy_directory'](entry, source, 'copy/', 'fixture')
+    self.env['FAKE_SSH_DROP'] = '10.0.0.5'
+    with mock.patch.dict(os.environ, self.env):
+      with self.assertRaisesRegex(module['Failure'], 'after the command'):
+        module['copy_directory'](entry, source, 'copy/', 'fixture')
+    self.assertFalse((self.root / 'copies.log').exists())
+    self.assertEqual((self.root / 'hosts.log').read_text().splitlines(),
+                     ['deck@10.0.0.5'])
+
   def test_register_uses_mdns_fallback_and_preserves_other_titles(self):
     self.env['FAKE_SSH_DOWN'] = '10.0.0.5'
     source = self.title_helpers('unit.local')
@@ -859,6 +975,223 @@ class SteamosTest(unittest.TestCase):
     self.assertFalse(result['launched'])
     self.assertIsInstance(result['device_time'], int)
     self.assertIn('Steam RPC failed', result['stderr'])
+
+  def token_route_helpers(self):
+    """Stand-ins that follow Valve's token route at the pinned commit:
+    devkit_utils/__init__.py:94-99 logs each Steam IPC command, session
+    token included, at DEBUG, and every helper configures DEBUG logging.
+    The token is a synthetic sentinel; the fake pipe log proves it was sent."""
+    source = self.title_helpers()
+    home = self.device_home()
+    steam = home / '.steam'
+    steam.mkdir()
+    (steam / 'steam.pid').write_text(str(os.getpid()))
+    token = 'synthetic-session-' + uuid.uuid4().hex
+    (steam / 'steam.token').write_text(token)
+    utils = home / 'devkit-utils'
+    (utils / 'devkit_utils').mkdir()
+    scripts = {
+      'devkit_utils/__init__.py': '''
+        import logging, os
+        logger = logging.getLogger(__name__)
+        def token():
+          return open(os.path.expanduser('~/.steam/steam.token')).read()
+        def execute_steam_client_command(cmd):
+          pipe_cmd = 'devkit-1 steam://devkit-1/{0}/{1}'.format(token(), cmd)
+          logger.debug('Sending command line:')
+          logger.debug(pipe_cmd)
+          with open(os.path.expanduser('~/steam.pipe.log'), 'a') as pipe:
+            print(pipe_cmd, file=pipe)
+      ''',
+      'steam-devkit-rpc': '''
+        import logging, os, sys
+        import devkit_utils
+        logging.basicConfig(format='%(message)s', level=logging.DEBUG)
+        logger = logging.getLogger()
+        assert sys.argv[1:] == ['run-game', 'gameid=Demo1']
+        devkit_utils.execute_steam_client_command('run-game/?gameid=Demo1')
+        if os.environ.get('FAKE_TOKEN_ROUTES'):
+          print('stdout ' + devkit_utils.token())
+          raise RuntimeError('failed near ' + devkit_utils.token())
+        if os.environ.get('FAKE_LAUNCH_FAIL'):
+          logger.error('failed')
+          print('Steam RPC failed', file=sys.stderr)
+          sys.exit(255)
+        logger.info('success')
+      ''',
+      'steamos-delete': '''
+        import argparse, logging, os, pathlib, shutil, sys
+        import devkit_utils
+        logging.basicConfig(format='%(message)s', level=logging.DEBUG)
+        logger = logging.getLogger(__name__)
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--verbose', action='store_true')
+        parser.add_argument('--delete-title')
+        extra = ['--verbose'] if os.environ.get('FAKE_HELPER_VERBOSE') else []
+        conf = parser.parse_args(sys.argv[1:] + extra)
+        logger.setLevel(logging.DEBUG if conf.verbose else logging.INFO)
+        shutil.rmtree(pathlib.Path.home() / 'devkit-game' / conf.delete_title)
+        try:
+          devkit_utils.execute_steam_client_command('list-shortcuts?response=r')
+          if os.environ.get('FAKE_SYNC_FAIL'):
+            raise RuntimeError('timeout')
+          if os.environ.get('FAKE_SYNC_ECHO'):
+            raise RuntimeError('rejected devkit-1 steam://devkit-1/'
+                               + devkit_utils.token() + '/list-shortcuts')
+          logger.info('Steam Client has 0 registered devkit game(s)')
+        except Exception as e:
+          logger.warning(f'Steam client sync of devkit games failed: {e}')
+      ''',
+      'steam-client-create-shortcut': '''
+        import argparse, json, logging, os, sys
+        import devkit_utils
+        logging.basicConfig(format='%(message)s', level=logging.DEBUG)
+        logger = logging.getLogger()
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--verbose', action='store_true')
+        parser.add_argument('--parms', required=True)
+        extra = ['--verbose'] if os.environ.get('FAKE_HELPER_VERBOSE') else []
+        conf = parser.parse_args(sys.argv[1:] + extra)
+        logger.setLevel(logging.DEBUG if conf.verbose else logging.INFO)
+        gameid = json.loads(conf.parms)['gameid']
+        logger.info(f'Registering Devkit Game {gameid} with Steam Client')
+        cmd = f'create-shortcut?gameid={gameid}'
+        devkit_utils.execute_steam_client_command(cmd)
+        if os.environ.get('FAKE_SHORTCUT_EXIT'):
+          sys.exit(int(os.environ['FAKE_SHORTCUT_EXIT']))
+        print(json.dumps({'success': ''}))
+      ''',
+    }
+    for name, script in scripts.items():
+      (utils / name).write_text(textwrap.dedent(script))
+    transport = self.root / 'transport'
+    transport.mkdir()
+    (transport / 'ssh').write_text(TRANSPORT_LOG_SSH)
+    (transport / 'ssh').chmod(0o755)
+    self.env.update(
+      PATH=f'{transport}{os.pathsep}{self.env["PATH"]}',
+      FAKE_TRANSPORT_SSH=str(self.root / 'bin' / 'ssh'),
+      FAKE_TRANSPORT_LOG=str(self.root / 'transport.log'))
+    return source, token
+
+  def assert_token_contained(self, token, sends):
+    sent = (self.device_home() / 'steam.pipe.log').read_text().splitlines()
+    self.assertEqual(len(sent), sends)
+    self.assertTrue(all(token in line for line in sent))
+    self.assertNotIn(token.encode(),
+                     (self.root / 'transport.log').read_bytes())
+
+  def test_launch_never_returns_session_token_and_keeps_rpc_status(self):
+    _, token = self.token_route_helpers()
+    self.run_cli('lease', 'take', 'launch')
+    proc = self.run_cli('title', 'launch', 'Demo1', '--json')
+    result = json.loads(proc.stdout)
+    self.assertTrue(result['launched'])
+    self.assertIn('Sending command line:', result['stderr'])
+    self.assertIn('<redacted Steam IPC command>', result['stderr'])
+    self.assertIn('success', result['stderr'])
+    self.assertNotIn(token, proc.stdout + proc.stderr)
+    self.env['FAKE_LAUNCH_FAIL'] = '1'
+    proc = self.run_cli('title', 'launch', 'Demo1', '--json', code=1)
+    result = json.loads(proc.stdout)
+    self.assertFalse(result['launched'])
+    self.assertIn('Steam RPC failed', result['stderr'])
+    self.assertNotIn(token, proc.stdout + proc.stderr)
+    proc = self.run_cli('title', 'launch', 'Demo1', code=1)
+    self.assertIn('launch failed', proc.stdout)
+    self.assertNotIn(token, proc.stdout + proc.stderr)
+    self.assert_token_contained(token, 3)
+
+  def test_token_redacted_on_unlogged_routes_and_errors_stay_visible(self):
+    _, token = self.token_route_helpers()
+    self.run_cli('lease', 'take', 'launch')
+    self.env['FAKE_TOKEN_ROUTES'] = '1'
+    proc = self.run_cli('title', 'launch', 'Demo1', '--json', code=1)
+    result = json.loads(proc.stdout)
+    self.assertFalse(result['launched'])
+    self.assertIn('stdout <redacted>', result['output'])
+    self.assertIn('Traceback', result['stderr'])
+    self.assertIn('RuntimeError: failed near <redacted>', result['stderr'])
+    self.assertNotIn(token, proc.stdout + proc.stderr)
+    self.assert_token_contained(token, 1)
+
+  def test_remove_never_returns_session_token_with_or_without_verbose(self):
+    _, token = self.token_route_helpers()
+    title = self.device_home() / 'devkit-game' / 'Demo1'
+    self.run_cli('lease', 'take', 'titles')
+    for verbose in ('', '1'):
+      title.mkdir(parents=True)
+      self.env['FAKE_HELPER_VERBOSE'] = verbose
+      proc = self.run_cli('title', 'remove', 'Demo1', '--json')
+      result = json.loads(proc.stdout)
+      self.assertTrue(result['steam_sync'])
+      self.assertIn('registered devkit game', result['stderr'])
+      self.assertIn('<redacted Steam IPC command>', result['stderr'])
+      self.assertNotIn(token, proc.stdout + proc.stderr)
+    title.mkdir()
+    self.env['FAKE_SYNC_FAIL'] = '1'
+    proc = self.run_cli('title', 'remove', 'Demo1', '--json', code=1)
+    result = json.loads(proc.stdout)
+    self.assertFalse(result['steam_sync'])
+    self.assertIn('sync of devkit games failed: timeout', result['stderr'])
+    self.assertNotIn(token, proc.stdout + proc.stderr)
+    self.assert_token_contained(token, 3)
+
+  def test_register_never_returns_session_token_even_when_verbose(self):
+    source, token = self.token_route_helpers()
+    self.run_cli('lease', 'take', 'titles')
+    self.env['FAKE_HELPER_VERBOSE'] = '1'
+    proc = self.register(source, '--json')
+    self.assertEqual(json.loads(proc.stdout)['reply'], {'success': ''})
+    self.env['FAKE_SHORTCUT_EXIT'] = '1'
+    proc = self.register(source, code=1)
+    self.assertIn('title register failed', proc.stderr)
+    self.assertIn('Registering Devkit Game Demo1', proc.stderr)
+    self.assertIn('<redacted Steam IPC command>', proc.stderr)
+    self.assertNotIn(token, proc.stdout + proc.stderr)
+    self.assert_token_contained(token, 2)
+
+  def test_short_session_token_withholds_streams_containing_it(self):
+    self.token_route_helpers()
+    token = 'q7Zx'
+    (self.device_home() / '.steam' / 'steam.token').write_text(token)
+    self.run_cli('lease', 'take', 'launch')
+    proc = self.run_cli('title', 'launch', 'Demo1', '--json', code=1)
+    result = json.loads(proc.stdout)
+    self.assertFalse(result['launched'])
+    self.assertEqual(result['stderr'], 'steamos: helper output withheld: '
+                     'the Steam session token is too short to redact')
+    self.assertNotIn(token, proc.stdout + proc.stderr)
+    self.assert_token_contained(token, 1)
+
+  def test_short_token_cannot_mask_remove_sync_failure(self):
+    self.token_route_helpers()
+    token = 'q7Zx'
+    (self.device_home() / '.steam' / 'steam.token').write_text(token)
+    title = self.device_home() / 'devkit-game' / 'Demo1'
+    title.mkdir(parents=True)
+    self.run_cli('lease', 'take', 'titles')
+    self.env['FAKE_SYNC_FAIL'] = '1'
+    proc = self.run_cli('title', 'remove', 'Demo1', '--json', code=1)
+    result = json.loads(proc.stdout)
+    self.assertTrue(result['removed'])
+    self.assertFalse(result['steam_sync'])
+    self.assertIn('helper output withheld', result['stderr'])
+    self.assertNotIn(token, proc.stdout + proc.stderr)
+    self.assert_token_contained(token, 1)
+
+  def test_redacted_ipc_echo_cannot_mask_remove_sync_failure(self):
+    _, token = self.token_route_helpers()
+    (self.device_home() / 'devkit-game' / 'Demo1').mkdir(parents=True)
+    self.run_cli('lease', 'take', 'titles')
+    self.env['FAKE_SYNC_ECHO'] = '1'
+    proc = self.run_cli('title', 'remove', 'Demo1', '--json', code=1)
+    result = json.loads(proc.stdout)
+    self.assertFalse(result['steam_sync'])
+    self.assertIn('sync of devkit games failed: rejected devkit-1 '
+                  '<redacted Steam IPC command>', result['stderr'])
+    self.assertNotIn(token, proc.stdout + proc.stderr)
+    self.assert_token_contained(token, 1)
 
   def fixture_tool(self, name, script):
     path = self.root / 'bin' / name
@@ -1029,7 +1362,7 @@ class SteamosTest(unittest.TestCase):
         f.write(json.dumps(args) + '\\n')
       remote, out = args[-2:]
       host, path = remote.split(':', 1)
-      if path.startswith('/tmp/'):
+      if path.startswith('/tmp/steamos-capture-'):
         path = os.environ['FAKE_CAPTURE_ROOT'] + path[4:]
       if host.split('@')[-1] in os.environ.get('FAKE_SCP_DOWN', '').split():
         sys.exit(255)

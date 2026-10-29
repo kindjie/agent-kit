@@ -44,6 +44,12 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_steamos_deploy
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_steamos_build_doctor
 ```
 
+The `SteamOS Linux` GitHub Actions check runs all four suites plus
+`tests.test_agent_records_privacy` on Ubuntu 24.04. It uses the hosted
+image's Python, git and rsync; the first step records the tested revision
+and tool versions. These are Linux fixture checks, not live-device or
+macOS qualification.
+
 Fake ssh runs remote commands locally with a separate HOME per host.
 Lease inhibition tests fake the systemd user manager and record unit
 arguments, expiry and stop/start order across separate ssh invocations.
@@ -60,7 +66,14 @@ Valve helpers are small fixture scripts; title tests cover lease/pin/name
 refusals, exact shortcut arguments, exit-0 JSON errors, invalid leftovers,
 exact re-registration mirrors, unsafe remote-path refusal, scoped removal
 after non-zero helper exits and Steam sync failures, and device-clock
-launch timestamps.
+launch timestamps. Synthetic token fixtures and a recording ssh check that
+session bytes never cross the transport on success, verbose logging,
+tracebacks or failures. Short-token withholding and IPC-URL redaction must
+preserve failure status, including zero-exit sync warnings.
+Deterministic copy tests select mDNS before one rsync, reject probe failures
+and post-start SSH drops, and start no copy if both addresses are down.
+Partial-write statuses 12/23/255 never retry another host or alter its title,
+partial or lock fixtures. These cases use fake tools, not live devices.
 Logs tests cover recorded launch windows, exact journal arguments, console
 timestamp/continuation filtering, line limits, missing records and malformed
 epochs. Capture tests fake gamescope/xprop and scp, checking the numeric

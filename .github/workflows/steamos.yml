@@ -1,0 +1,42 @@
+name: SteamOS Linux
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: steamos-linux-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: SteamOS Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Record revision and check tools
+        run: |
+          git rev-parse HEAD
+          command -v python3 git rsync sh
+          python3 --version
+          git --version
+          rsync --version
+      - name: Run SteamOS and public privacy tests
+        run: |
+          python3 -m unittest -v \
+            tests.test_steamos \
+            tests.test_steamos_deploy \
+            tests.test_steamos_bench \
+            tests.test_steamos_build_doctor \
+            tests.test_agent_records_privacy

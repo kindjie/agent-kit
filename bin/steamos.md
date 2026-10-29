@@ -401,6 +401,24 @@ Valve's GitLab. To use another commit or a mirror:
 {"devkit": {"commit": "<40-character commit>", "source": "<git URL>"}}
 ```
 
+Helper and title copies select a reachable SSH address before starting
+rsync. A failed transfer stops without trying another address: it may
+already have changed files at the selected destination.
+
+Valve's `devkit_utils` logs each command it sends to Steam, including the
+Steam session token, at DEBUG, and its helpers enable DEBUG. `steamos`
+runs the helpers that can reach Steam (registration, `title list`,
+`title launch` and `title remove`) through a device-side guard. The guard
+buffers their output and, before ssh returns anything, replaces the exact
+`~/.steam/steam.token` value (read before and after the helper) and the
+rest of any line from `steam://devkit-1/`. Other output, including Steam errors, is
+unchanged; a failure exits 1. If a token shorter than 8 bytes appears in a
+stream, that stream is withheld with a notice and the helper result fails
+closed, because a hidden diagnostic could indicate a Steam sync failure.
+The Steam action may still have happened. The guard does not cover helpers
+run by hand, Valve's Devkit Client, or Steam's own logs read by
+`steamos logs`.
+
 Facts found while proving this path, which these helpers do not check:
 
 - A title's game ID must not contain `-`; Steam rejects it with only

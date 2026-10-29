@@ -193,6 +193,11 @@ def ssh_options(entry):
 
 
 def ssh(entry, script, args, timeout=None, remote=None, stdin=None):
+  """Run with address fallback; return the selected steamos_address.
+
+  This internal result attribute identifies the address used by this call,
+  not a guarantee that a later connection to it will succeed.
+  """
   options = ssh_options(entry)
   if remote is None:
     remote = 'sh -s -- ' + ' '.join(shlex.quote(str(a)) for a in args)
@@ -211,6 +216,7 @@ def ssh(entry, script, args, timeout=None, remote=None, stdin=None):
       continue
     if proc.returncode != 255:
       proc.stderr = error_text(proc.stderr)
+      proc.steamos_address = address
       return proc
     if 'connected=1' in proc.stdout.splitlines():
       raise Failure(UNREACHABLE, f'the connection to {address} dropped '
@@ -398,28 +404,27 @@ def require_lease(config, name, entry, purpose):
 
 
 def copy_directory(entry, directory, destination, label, delete=False):
-  """Share ssh options and address fallback for helper and title copies."""
+  """Select an SSH address before copying; never retry a failed transfer."""
   if not re.fullmatch(r'[A-Za-z0-9._/-]+', destination):
     raise Failure(REFUSED, 'unsafe remote path for rsync')
   if not shutil.which('rsync'):
     raise Failure(USAGE, f'rsync is needed to copy {label}')
+  # rsync may expose SSH refusal as 12 or 255, and neither status proves
+  # that a transfer made no changes. Only the harmless probe may fall back.
+  probe = ssh(entry, ':\n', [])
+  if probe.returncode != 0:
+    raise Failure(UNREACHABLE, f'copying {label} failed: '
+                  f'device probe failed: {probe.stderr.strip()}')
+  address = probe.steamos_address
   remote_shell = ' '.join(shlex.quote(o) for o in ['ssh', *ssh_options(entry)])
-  errors = []
-  for address in targets(entry):
-    proc = subprocess.run(
-      ['rsync', '-a', *(['--delete'] if delete else []), '-e', remote_shell,
-       '--', f'{directory}/',
-       f'{entry["user"]}@{address}:{destination}'],
-      capture_output=True, text=True)
-    if proc.returncode == 0:
-      break
-    errors.append(f'{address}: {proc.stderr.strip()}')
-    if proc.returncode != 255:
-      raise Failure(UNREACHABLE, f'copying {label} failed:\n  ' +
-                    '\n  '.join(errors))
-  else:
-    raise Failure(UNREACHABLE, 'cannot reach the device over ssh:\n  ' +
-                  '\n  '.join(errors))
+  proc = subprocess.run(
+    ['rsync', '-a', *(['--delete'] if delete else []), '-e', remote_shell,
+     '--', f'{directory}/',
+     f'{entry["user"]}@{address}:{destination}'],
+    capture_output=True, text=True)
+  if proc.returncode != 0:
+    raise Failure(UNREACHABLE, f'copying {label} failed:\n  '
+                  f'{address}: {proc.stderr.strip()}')
 
 
 def last_json(proc, label, kind=dict):
@@ -439,11 +444,63 @@ def last_json(proc, label, kind=dict):
   return reply
 
 
+# Valve's devkit_utils logs each command it sends to Steam, session token
+# included, at DEBUG, and its helpers enable DEBUG (devkit_utils/__init__.py
+# lines 94-99 at the pinned commit). steamos-delete sets INFO only on its own
+# logger, so even its default output carries the token. Helpers that can
+# reach Steam therefore run through devkit_run, which replaces the token's
+# exact value and any IPC command line in both streams before ssh returns
+# them, whichever route printed them. Other output is unchanged; any
+# failure exits 1, so ssh never mistakes a Steam error for a lost connection.
+DEVKIT_RUN = r'''
+devkit_run() {
+python3 - "$@" <<'PY'
+import os, subprocess, sys
+home = os.path.expanduser('~')
+def token():
+  try:
+    with open(os.path.join(home, '.steam', 'steam.token'), 'rb') as stream:
+      return stream.read()
+  except OSError:
+    return b''
+# Read before and after: Steam may replace the token while the helper runs.
+before = token()
+proc = subprocess.run(
+  ['python3', os.path.join(home, 'devkit-utils', sys.argv[1]),
+   *sys.argv[2:]], stdin=subprocess.DEVNULL, capture_output=True)
+tokens = sorted({value for raw in (before, token())
+                 for value in (raw, raw.strip()) if value.strip()},
+                key=len, reverse=True)
+def clean(data):
+  if any(len(value) < 8 and value in data for value in tokens):
+    return (b'steamos: helper output withheld: the Steam session token is '
+            b'too short to redact\n'), True
+  for value in tokens:
+    data = data.replace(value, b'<redacted>')
+  marker = b'steam://devkit-1/'
+  return b''.join(line[:line.index(marker)] +
+                  b'<redacted Steam IPC command>\n'
+                  if marker in line else line
+                  for line in data.splitlines(True)), False
+output, output_withheld = clean(proc.stdout)
+errors, errors_withheld = clean(proc.stderr)
+sys.stdout.buffer.write(output)
+sys.stdout.flush()
+sys.stderr.buffer.write(errors)
+# Withheld diagnostics may contain a failure warning from a helper that
+# exits zero. Report an unverified result rather than a successful sync.
+sys.exit(0 if proc.returncode == 0 and not (output_withheld or errors_withheld)
+         else 1)
+PY
+}
+'''
+
+
 def helper(entry, script, args):
   # Valve's RPC exits -1 (255) for Steam errors; normalize that so ssh
   # does not mistake an application refusal for a dropped connection.
-  return ssh(entry, 'tool=$1; shift\n'
-             'if python3 "$HOME/devkit-utils/$tool" "$@"; then exit 0\n'
+  return ssh(entry, DEVKIT_RUN + 'tool=$1; shift\n'
+             'if devkit_run "$tool" "$@"; then exit 0\n'
              'else exit 1; fi\n', [script, *args])
 
 
@@ -472,7 +529,7 @@ if python3 "$HOME/devkit-utils/steamos-prepare-upload" --gameid "$1"; then
 else exit 1; fi
 '''
 
-TITLE_LAUNCH = r'''
+TITLE_LAUNCH = DEVKIT_RUN + r'''
 pid=$(cat "$HOME/.steam/steam.pid" 2>/dev/null)
 case $pid in
   ''|*[!0-9]*|0) echo 'Steam must be running in Game Mode' >&2; exit 1 ;;
@@ -487,17 +544,17 @@ if [ -L "$HOME/.agent-kit-steamos-launches" ] ||
      >>"$HOME/.agent-kit-steamos-launches"; then
   echo 'cannot record the launch window' >&2; exit 1
 fi
-if python3 "$HOME/devkit-utils/steam-devkit-rpc" run-game "gameid=$1"; then
+if devkit_run steam-devkit-rpc run-game "gameid=$1"; then
   exit 0
 else exit 1; fi
 '''
 
-TITLE_REMOVE = r'''
+TITLE_REMOVE = DEVKIT_RUN + r'''
 if [ -L "$HOME/devkit-game" ] || [ -L "$HOME/devkit-game/$1" ]; then
   echo 'title destination is a symlink' >&2; exit 1
 fi
 status=0
-python3 "$HOME/devkit-utils/steamos-delete" --delete-title "$1" || status=$?
+devkit_run steamos-delete --delete-title "$1" || status=$?
 rm -f -- "$HOME/devkit-game/$1-argv.json" "$HOME/devkit-game/$1-env.json" \
   "$HOME/devkit-game/$1-settings.json" || exit 1
 echo configs_removed=1
