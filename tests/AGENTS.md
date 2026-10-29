@@ -44,6 +44,12 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_steamos_deploy
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_steamos_build_doctor
 ```
 
+The `SteamOS Linux` GitHub Actions check runs all four suites plus
+`tests.test_agent_records_privacy` on Ubuntu 24.04. It uses the hosted
+image's Python, git and rsync; the first step records the tested revision
+and tool versions. These are Linux fixture checks, not live-device or
+macOS qualification.
+
 Fake ssh runs remote commands locally with a separate HOME per host.
 Lease inhibition tests fake the systemd user manager and record unit
 arguments, expiry and stop/start order across separate ssh invocations.
