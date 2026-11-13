@@ -276,6 +276,88 @@ for (const [fault, prefix, apiValue, version, hooks] of [
 if (previousConfig === undefined) delete process.env.XDG_CONFIG_HOME;
 else process.env.XDG_CONFIG_HOME = previousConfig;
 
+// Editor pages: one synthetic owner bundle per API, trusted only in the
+// temporary configuration above and never in the user's own.
+function runEditor(args, status = 0) {
+  const result = spawnSync(tool, args, {encoding: 'utf8',
+    env: {...process.env, XDG_CONFIG_HOME: config}});
+  assert.equal(result.status, status, result.stderr + result.stdout);
+  return result;
+}
+const editorInitial = ' {"kept":[false,0,""],"note":"initial \\u0061"}\n';
+function editorFixture(api) {
+  const name = 'editor-api' + api;
+  const folder = path.join(temp, name);
+  fs.mkdirSync(folder);
+  fs.writeFileSync(path.join(folder, 'editor.json'), JSON.stringify({
+    kind: 'fixture-editor', version: '1.0.0', api, role: 'editor',
+    scripts: ['editor.js'], ...(api === 2 ? {styles: ['editor.css']} : {})}));
+  if (api === 2) fs.writeFileSync(path.join(folder, 'editor.css'),
+    '.fixture-owner textarea { outline: 3px solid rgb(1, 2, 3); }\n' +
+    '.fixture-card { color: rgb(4, 5, 6); }\n');
+  fs.writeFileSync(path.join(folder, 'editor.js'), `
+ReviewSheet.registerEditor({kind: 'fixture-editor', version: '1.0.0',
+  api: ${api},
+  create(config, callbacks) {
+    const seen = window.fixtureEditor = {config, edits: 0, refused: 0};
+    let raw = config.initial_state;
+    const session = {snapshot: () => raw, prepare(next) {
+      const old = raw;
+      return {snapshot: () => next, commit() { raw = next; },
+        rollback() { raw = old; }};
+    }};
+    if (${api} === 2) session.mount = ({root, items, signal}) => {
+      const box = document.createElement('section');
+      box.className = 'fixture-owner';
+      const field = document.createElement('textarea');
+      field.setAttribute('aria-label', 'Fixture state');
+      field.value = raw;
+      field.addEventListener('input', () => {
+        if (!callbacks.beforeChange()) {
+          seen.refused++; field.value = raw; return;
+        }
+        raw = field.value; seen.edits++;
+        seen.saved = callbacks.changed();
+      }, {signal});
+      box.append(field); root.append(box);
+      for (const item of items) {
+        const card = document.createElement('p');
+        card.className = 'fixture-card';
+        card.textContent = 'Owner card ' + item.id;
+        item.root.append(card);
+      }
+      return {refresh() { field.value = raw; }, focus() {},
+        key() { return false; }, dispose() { box.remove(); }};
+    };
+    return session;
+  }});`);
+  runEditor(['editor', 'trust', folder, '--yes']);
+  write(name + '.json', JSON.stringify({review: name,
+    title: 'Editor fixture', privacy: 'private',
+    editor: {kind: 'fixture-editor', path: name,
+      source_identity: 'fixture:browser', parameters: {revision: 1},
+      initial_state: editorInitial},
+    items: [{id: 'first', title: 'First',
+      media: [{kind: 'image', src: 'one.png'}]},
+      {id: 'second', title: 'Second', media: []}]}));
+  runEditor(['build', path.join(temp, name + '.json'), '--output',
+    path.join(temp, name + '.html')]);
+  const resolved = path.join(temp, name + '.resolved.json');
+  return {name, url: 'file://' + path.join(temp, name + '.html'),
+    page: path.join(temp, name + '.html'), resolved,
+    resolvedSha256: crypto.createHash('sha256')
+      .update(fs.readFileSync(resolved)).digest('hex'),
+    editorSha256: JSON.parse(fs.readFileSync(resolved, 'utf8')).editor.sha256,
+    key: 'review-sheet:' + name};
+}
+const editorPages = {2: editorFixture(2), 1: editorFixture(1)};
+// The same page with one statement its CSP hash does not cover.
+const tampered = fs.readFileSync(editorPages[2].page, 'utf8');
+assert.equal(tampered.split('\nReviewSheet.start();\n').length, 2);
+write('editor-tampered.html', tampered.replace('\nReviewSheet.start();\n',
+  '\nwindow.tamperedRan = true;\nReviewSheet.start();\n'));
+write('undeclared.js', 'window.undeclaredFileRan = true;\n');
+
 async function check(browserType, name, launchOptions = {}) {
   const options = {headless: true, timeout: 10000, ...launchOptions};
   let browser;
@@ -292,6 +374,10 @@ async function check(browserType, name, launchOptions = {}) {
     await checkComparison(browser, name);
     await checkCustom(browser, name);
     await checkRegistrationFailures(browser);
+    await checkEditor(browser, name);
+    await checkEditorCsp(browser, name);
+    await checkStateOnlyEditor(browser, name);
+    console.log('PASS: ' + name + ' editor pages, API 2 and API 1');
     if (browserType === playwright.chromium)
       await checkSyntheticSize(browser, name);
   } finally {
@@ -299,6 +385,339 @@ async function check(browserType, name, launchOptions = {}) {
   }
   console.log('PASS: ' + name + ' ' + browser.version() +
     ' file:// page and components');
+}
+
+function watchEditorPage(page, problems) {
+  page.on('pageerror', error => problems.push('pageerror: ' + error.message));
+  page.on('console', message => {
+    if (message.type() === 'error') problems.push('console: ' + message.text());
+  });
+  page.on('request', request => {
+    if (!/^(file|blob|data):/.test(request.url()))
+      problems.push('request: ' + request.url());
+  });
+  return page;
+}
+async function editorContext(browser) {
+  const context = await browser.newContext({acceptDownloads: true});
+  await context.addInitScript(() => {
+    window.cspViolations = [];
+    document.addEventListener('securitypolicyviolation', event =>
+      window.cspViolations.push(event.effectiveDirective));
+  });
+  return context;
+}
+async function downloadText(page, label) {
+  const pending = page.waitForEvent('download');
+  await page.getByRole('button', {name: label, exact: true}).click();
+  return fs.readFileSync(await (await pending).path(), 'utf8');
+}
+function notes(page, text) {
+  return page.locator('#messages .banner').filter({hasText: text});
+}
+async function waitNotes(page, text, count) {
+  await page.waitForFunction(([wanted, total]) =>
+    [...document.querySelectorAll('#messages .banner')].filter(node =>
+      node.textContent.includes(wanted)).length === total, [text, count]);
+}
+const draft = (page, key) => page.evaluate(name =>
+  localStorage.getItem(name), key);
+const clean = async (page, problems, name, step) => {
+  assert.deepEqual(problems, [], name + ': ' + step);
+  assert.deepEqual(await page.evaluate(() => window.cspViolations), [],
+    name + ': CSP violation, ' + step);
+};
+function editorPacket(fixture, data, extra = {}) {
+  return {schema_version: 2, review: fixture.name,
+    resolved_sha256: fixture.resolvedSha256, context: {}, reviewer: '',
+    answers: {}, project_state: {schema_version: 1,
+      editor_sha256: fixture.editorSha256, data}, ...extra};
+}
+function importFile(page, text) {
+  return page.locator('#import-file').setInputFiles({name: 'state.json',
+    mimeType: 'application/json', buffer: Buffer.from(text)});
+}
+
+async function checkEditor(browser, name) {
+  const fixture = editorPages[2];
+  const context = await editorContext(browser);
+  const problems = [];
+  const page = watchEditorPage(await context.newPage(), problems);
+  const field = page.getByLabel('Fixture state');
+  await page.goto(fixture.url);
+  await field.waitFor();
+  // The owner view runs in the page itself, inside the host's dedicated
+  // roots, with the trusted stylesheet applied under the hash CSP.
+  assert.equal(page.frames().length, 1);
+  assert.equal(await page.locator('iframe').count(), 0);
+  assert.equal(await field.inputValue(), editorInitial);
+  assert.equal(await page.locator('.editor-global .fixture-owner').count(), 1);
+  assert.deepEqual(await page.locator('.item .editor-item .fixture-card')
+    .allTextContents(), ['Owner card first', 'Owner card second']);
+  await page.locator('.item .editor-media img').evaluate(image =>
+    image.decode());
+  assert.equal(await field.evaluate(node =>
+    getComputedStyle(node).outlineColor), 'rgb(1, 2, 3)');
+  assert.equal(await page.locator('.fixture-card').first().evaluate(node =>
+    getComputedStyle(node).color), 'rgb(4, 5, 6)');
+  const labels = await page.getByRole('button').allTextContents();
+  for (const label of ['Save editor state', 'Import editor state',
+    'Discard recovery input', 'Export competing draft',
+    'Export recovery input'])
+    assert.ok(labels.includes(label), name + ': missing ' + label);
+  for (const label of ['Export results', 'Import results',
+    'Discard stale draft entries'])
+    assert.ok(!labels.includes(label), name + ': unexpected ' + label);
+  const config = await page.evaluate(() => window.fixtureEditor.config);
+  assert.deepEqual(Object.keys(config.bundle).sort(),
+    ['api', 'kind', 'sha256', 'version']);
+  for (const local of [temp, fs.realpathSync(temp), os.homedir()])
+    assert.ok(!JSON.stringify(config).includes(local),
+      name + ': owner configuration carries a local path');
+  assert.equal(config.sha256, fixture.editorSha256);
+  await clean(page, problems, name, 'editor page load');
+
+  // An edit reaches the draft, the download and the CLI unchanged.
+  // A textarea reports LF line ends, so the fixture types none but LF.
+  const edited = ' {"kept":[false,0,""],"note":"edited \\u0061 α"}\n';
+  await field.fill(edited);
+  await page.waitForFunction(() => window.fixtureEditor.saved === true);
+  await page.locator('#reviewer').fill('Reviewer α');
+  const saved = await downloadText(page, 'Save editor state');
+  const packet = JSON.parse(saved);
+  assert.deepEqual(packet, editorPacket(fixture, edited,
+    {reviewer: 'Reviewer α'}));
+  assert.equal(await draft(page, fixture.key), saved);
+  assert.equal(await notes(page, 'Project state exported; canonical ' +
+    'validation has not run.').count(), 1);
+  write('editor-download.json', saved);
+  const imported = JSON.parse(runEditor(['import',
+    path.join(temp, 'editor-download.json'), '--resolved', fixture.resolved,
+    '--check-current']).stdout);
+  assert.deepEqual(imported, {...packet, project_validation: 'not-run'});
+  assert.equal(imported.project_state.data, edited);
+
+  // Reload restores the draft before the owner view mounts.
+  await page.reload();
+  await field.waitFor();
+  assert.equal(await field.inputValue(), edited);
+  assert.equal(await page.locator('#reviewer').inputValue(), 'Reviewer α');
+  assert.equal(await draft(page, fixture.key), saved);
+  await clean(page, problems, name, 'editor page reload');
+
+  // A refused import is retained as the recovery input. It blocks edits and
+  // further imports until it is discarded through the labelled control.
+  const refusal = 'Import refused. The recovery input and prior draft are ' +
+    'retained.';
+  const pending = 'Resolve or export the pending recovery input before ' +
+    'another import.';
+  const foreign = ' ' + JSON.stringify(editorPacket(fixture, 'foreign',
+    {resolved_sha256: '0'.repeat(64)})) + '\n';
+  await importFile(page, foreign);
+  await waitNotes(page, refusal, 1);
+  assert.equal(await field.inputValue(), edited);
+  assert.equal(await draft(page, fixture.key), saved);
+  await field.fill('typed while recovery is pending');
+  assert.equal(await field.inputValue(), edited);
+  assert.equal(await page.evaluate(() => window.fixtureEditor.refused), 1);
+  await importFile(page, JSON.stringify(editorPacket(fixture, 'second')));
+  await waitNotes(page, pending, 1);
+  assert.equal(await field.inputValue(), edited);
+  assert.equal(await downloadText(page, 'Export recovery input'), foreign);
+  const dialogs = [];
+  page.once('dialog', dialog => {
+    dialogs.push(dialog.message()); dialog.dismiss();
+  });
+  await page.getByRole('button', {name: 'Discard recovery input'}).click();
+  await importFile(page, JSON.stringify(editorPacket(fixture, 'second')));
+  await waitNotes(page, pending, 2);
+  page.once('dialog', dialog => {
+    dialogs.push(dialog.message()); dialog.accept();
+  });
+  await page.getByRole('button', {name: 'Discard recovery input'}).click();
+  assert.deepEqual(dialogs, Array(2).fill(
+    'Discard the retained recovery input? Export it first.'));
+  // Restoring the saved draft at load already reported one import.
+  const accepted = 'Project state imported; canonical validation has not ' +
+    'run.';
+  assert.equal(await notes(page, accepted).count(), 1);
+  await importFile(page, JSON.stringify(editorPacket(fixture, 'imported')));
+  await waitNotes(page, accepted, 2);
+  assert.equal(await field.inputValue(), 'imported');
+  assert.equal(JSON.parse(await draft(page, fixture.key)).project_state.data,
+    'imported');
+  await clean(page, problems, name, 'editor recovery');
+
+  // A stored draft from another build is refused at load and kept as the
+  // recovery input; nothing overwrites it until that input is discarded.
+  const stale = JSON.stringify(editorPacket(fixture, 'stale build',
+    {resolved_sha256: '1'.repeat(64)}));
+  await page.evaluate(([key, raw]) => localStorage.setItem(key, raw),
+    [fixture.key, stale]);
+  await page.reload();
+  await field.waitFor();
+  await waitNotes(page, refusal, 1);
+  assert.equal(await field.inputValue(), editorInitial);
+  await field.fill('typed over a stale draft');
+  assert.equal(await field.inputValue(), editorInitial);
+  assert.equal(await draft(page, fixture.key), stale);
+  assert.equal(await downloadText(page, 'Export recovery input'), stale);
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', {name: 'Discard recovery input'}).click();
+  await field.fill('after discard');
+  await page.waitForFunction(key => JSON.parse(localStorage.getItem(key))
+    .project_state.data === 'after discard', fixture.key);
+  await clean(page, problems, name, 'stale editor draft');
+
+  // Two tabs: the second writer is refused, is told why, can export the
+  // other tab's draft, and picks that draft up on reload.
+  await page.evaluate(key => localStorage.removeItem(key), fixture.key);
+  await page.reload();
+  await field.waitFor();
+  const otherProblems = [];
+  const other = watchEditorPage(await context.newPage(), otherProblems);
+  const otherField = other.getByLabel('Fixture state');
+  await other.goto(fixture.url);
+  await otherField.waitFor();
+  await field.fill('from the first tab');
+  await page.waitForFunction(() => window.fixtureEditor.saved === true);
+  const first = await draft(page, fixture.key);
+  assert.equal(JSON.parse(first).project_state.data, 'from the first tab');
+  await otherField.fill('from the second tab');
+  assert.equal(await otherField.inputValue(), editorInitial);
+  assert.equal(await other.evaluate(() => window.fixtureEditor.refused), 1);
+  const changed = 'Draft changed in another tab or became unreadable.';
+  assert.ok(await notes(other, changed).count() >= 1);
+  assert.equal(await draft(other, fixture.key), first);
+  assert.equal(await downloadText(other, 'Export competing draft'), first);
+  await importFile(other, JSON.stringify(editorPacket(fixture, 'second')));
+  await waitNotes(other, pending, 1);
+  assert.equal(await draft(other, fixture.key), first);
+  assert.equal(JSON.parse(await downloadText(other, 'Save editor state'))
+    .project_state.data, editorInitial);
+  await other.reload();
+  await otherField.waitFor();
+  assert.equal(await otherField.inputValue(), 'from the first tab');
+  await otherField.fill('second tab after reload');
+  await other.waitForFunction(key => JSON.parse(localStorage.getItem(key))
+    .project_state.data === 'second tab after reload', fixture.key);
+  await field.fill('first tab is now behind');
+  assert.equal(await field.inputValue(), 'from the first tab');
+  assert.ok(await notes(page, changed).count() >= 1);
+  await clean(page, problems, name, 'first editor tab');
+  await clean(other, otherProblems, name, 'second editor tab');
+  await context.close();
+}
+
+async function checkEditorCsp(browser, name) {
+  const fixture = editorPages[2];
+  const context = await editorContext(browser);
+  const remote = [];
+  const page = await context.newPage();
+  page.on('request', request => {
+    if (!/^(file|blob|data):/.test(request.url())) remote.push(request.url());
+  });
+  await page.goto(fixture.url);
+  const field = page.getByLabel('Fixture state');
+  await field.waitFor();
+  assert.deepEqual(await page.evaluate(() => window.cspViolations), []);
+  const violations = count => page.waitForFunction(total =>
+    window.cspViolations.length === total, count);
+  // Scripts and styles the trusted bundle did not declare do not run.
+  await page.evaluate(() => {
+    const script = document.createElement('script');
+    script.textContent = 'window.undeclaredInlineRan = true;';
+    document.head.append(script);
+  });
+  await violations(1);
+  assert.equal(await page.evaluate(source => new Promise(resolve => {
+    const script = document.createElement('script');
+    script.onload = () => resolve('load');
+    script.onerror = () => resolve('error');
+    script.src = source; document.head.append(script);
+  }), 'file://' + path.join(temp, 'undeclared.js')), 'error');
+  await violations(2);
+  await page.evaluate(() => {
+    const style = document.createElement('style');
+    style.textContent = '.fixture-owner textarea { outline-color: red; }';
+    document.head.append(style);
+  });
+  await violations(3);
+  // Evaluate from a page task: the automation call itself is exempt.
+  assert.equal(await page.evaluate(() => new Promise(resolve =>
+    setTimeout(() => {
+      try { resolve(String(window.eval('1 + 1'))); }
+      catch (error) { resolve(error.name); }
+    }, 0))), 'EvalError');
+  assert.equal(await page.evaluate(() => fetch('https://example.invalid/')
+    .then(() => 'fetched', () => 'blocked')), 'blocked');
+  assert.deepEqual(await page.evaluate(() => [window.undeclaredInlineRan,
+    window.undeclaredFileRan].map(value => typeof value)),
+  ['undefined', 'undefined'], name + ': CSP ran an undeclared script');
+  assert.equal(await field.evaluate(node =>
+    getComputedStyle(node).outlineColor), 'rgb(1, 2, 3)');
+  const directives = await page.evaluate(() => window.cspViolations);
+  assert.match(directives[0], /^script-src/);
+  assert.match(directives[1], /^script-src/);
+  assert.match(directives[2], /^style-src/);
+  assert.ok(directives.slice(3).every(value =>
+    /^(script-src|connect-src)/.test(value)), directives.join());
+  assert.deepEqual(remote, [], name + ': attempted remote request');
+  // One statement outside the hashed text blocks the whole page script.
+  const tamperedPage = await context.newPage();
+  await tamperedPage.goto('file://' + path.join(temp,
+    'editor-tampered.html'));
+  await tamperedPage.waitForFunction(() => window.cspViolations.length === 1);
+  assert.deepEqual(await tamperedPage.evaluate(() => [typeof window.tamperedRan,
+    typeof window.ReviewSheet, typeof window.REVIEW_SHEET_DATA,
+    document.getElementById('app').children.length]),
+  ['undefined', 'undefined', 'undefined', 0]);
+  await context.close();
+}
+
+async function checkStateOnlyEditor(browser, name) {
+  const fixture = editorPages[1];
+  const context = await editorContext(browser);
+  const problems = [];
+  const page = watchEditorPage(await context.newPage(), problems);
+  await page.goto(fixture.url);
+  await page.locator('.item').first().waitFor();
+  assert.equal(await page.locator('.editor-global').count(), 0);
+  assert.equal(await page.locator('.item').count(), 2);
+  const initial = await downloadText(page, 'Save editor state');
+  assert.deepEqual(JSON.parse(initial), editorPacket(fixture, editorInitial));
+  await importFile(page, JSON.stringify(editorPacket(fixture,
+    'state-only import α')));
+  await waitNotes(page, 'Project state imported; canonical validation has ' +
+    'not run.', 1);
+  await page.reload();
+  await page.locator('.item').first().waitFor();
+  const restored = await downloadText(page, 'Save editor state');
+  assert.equal(JSON.parse(restored).project_state.data,
+    'state-only import α');
+  write('editor-state-only.json', restored);
+  assert.equal(JSON.parse(runEditor(['import',
+    path.join(temp, 'editor-state-only.json'), '--resolved',
+    fixture.resolved]).stdout).project_state.data, 'state-only import α');
+  // A state-only page has no cross-tab draft check: the last accepted
+  // import replaces the stored draft and neither tab is warned.
+  const otherProblems = [];
+  const other = watchEditorPage(await context.newPage(), otherProblems);
+  await other.goto(fixture.url);
+  await other.locator('.item').first().waitFor();
+  await importFile(other, JSON.stringify(editorPacket(fixture, 'tab two')));
+  await other.waitForFunction(key => JSON.parse(localStorage.getItem(key))
+    .project_state.data === 'tab two', fixture.key);
+  await importFile(page, JSON.stringify(editorPacket(fixture, 'tab one')));
+  await page.waitForFunction(key => JSON.parse(localStorage.getItem(key))
+    .project_state.data === 'tab one', fixture.key);
+  for (const tab of [page, other])
+    assert.equal(await notes(tab, 'Draft changed in another tab').count(), 0);
+  assert.equal(JSON.parse(await downloadText(other, 'Save editor state'))
+    .project_state.data, 'tab two');
+  await clean(page, problems, name, 'state-only editor page');
+  await clean(other, otherProblems, name, 'second state-only tab');
+  await context.close();
 }
 
 async function checkCustom(browser, name) {

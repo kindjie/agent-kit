@@ -63,6 +63,33 @@ remote media or services.
 Launch fixtures also check Chrome failure without fallback, missing-Chrome
 fallback, the no-browser skip, and browser cleanup when a check fails.
 
+The same harness builds an API 2 and an API 1 editor page from one synthetic
+bundle, trusted only in its temporary configuration directory, and prints a
+separate `editor pages` PASS line per browser. On the API 2 page it checks
+that the owner view mounts in the page's dedicated roots (there is no frame),
+that the declared stylesheet applies, that the owner configuration carries no
+local path, and that load, reload, recovery and both tabs produce no page
+error, console error, CSP violation or request beyond `file:`, `blob:` and
+`data:`. An edit must reach the stored draft and the downloaded file
+unchanged, and that download must pass `import --check-current`. Reload must
+restore the draft and reviewer. A refused import must be kept as the recovery
+input, block edits and further imports, download unchanged through "Export
+recovery input", survive a dismissed confirmation and clear through "Discard
+recovery input". A stored draft from another build must be refused at load and
+left in storage until that input is discarded. With two tabs, the second
+writer must be refused and told, must be able to download the first tab's
+draft, and must pick it up on reload. The CSP case requires a violation
+event, and no effect, for an injected inline script, a script file and an
+injected style. It also requires an `EvalError` from `eval`, a blocked remote
+fetch with no request sent, and that a copy of the page with one statement
+outside its hash runs no script at all. The
+API 1 page has no owner view: it checks export, import, reload and the CLI
+import, and records that a state-only page has no cross-tab draft check, so
+the last accepted import replaces the stored draft without a warning. The
+fixture types into a textarea, which reports LF line ends, so CR in typed
+state is not exercised in a browser. One synthetic bundle on one machine is
+not usability evidence for a real project editor.
+
 ## SteamOS
 
 ```sh
@@ -814,11 +841,12 @@ publication; this launcher suite does not prove those operations.
 The editor view regression harness also covers owner visibility during group
 navigation/search, exact-limit compact downloads, owner-key undo (no undeclared
 session undo hook), and explicit editor-state labels. The CLI byte-limit case
-runs without Node. No committed test imports a page download through the CLI:
+runs without Node. The Node harnesses import no page download through the CLI:
 the view harness accepts an optional binding argument (`export-limit-review`)
 and the editor harness an optional page-path argument (its host cases), but
-committed tests pass neither, so this suite gives no download-to-CLI
-composition evidence. Both API1 and API2 preserve opaque multibyte/escaped text.
+committed tests pass neither. Only the browser suite sends a real page
+download through `import`. Both API1 and API2 preserve opaque
+multibyte/escaped text.
 Neither Node VM coverage nor CLI success is a real-browser/media fidelity claim.
 
 Local-path regressions build API1 and API2 editor pages with the CLI and
