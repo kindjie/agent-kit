@@ -230,6 +230,11 @@ async function hostContract(mode, override) {
       }});
     host.ReviewSheet.start();
     const message = () => find('messages').children.at(-1).textContent;
+    const labels = nodes.map(node => node.textContent);
+    assert.equal(labels.includes('Discard recovery input'), !variant.ordinary,
+      'only an editor page offers to discard its recovery input');
+    assert.equal(labels.includes('Discard stale draft entries'),
+      !!variant.ordinary, 'only an ordinary page discards stale entries');
     if (variant.unrecovered) {
       assert.match(message(), /unrecovered/i,
         'page must expose unrecovered editor state');
@@ -237,7 +242,7 @@ async function hostContract(mode, override) {
       assert.equal(find('export-results').disabled, true);
       await find('export-results').events.click();
       assert.match(message(), /export refused.*unrecovered/i);
-      nodes.find(node => node.textContent === 'Discard stale draft entries')
+      nodes.find(node => node.textContent === 'Discard recovery input')
         .events.click();
       assert.match(message(), /unrecovered/i);
       assert.equal(stored, draft, 'normal export/discard cannot hide failed rollback');

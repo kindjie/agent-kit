@@ -100,8 +100,11 @@ commit. Quota failure retains accepted state in memory and the old draft on
 disk, with an explicit unsaved status and recovery input. A refused import
 retains its original text and prior draft; another import is not consumed while
 recovery is pending. Export that recovery input before explicitly discarding
-it. The factory receives one isolated configuration snapshot. Its digest is captured
-before the factory runs, so caller or factory mutation cannot retag state.
+it. On an editor page the toolbar control for that is **Discard recovery
+input**; it replaces **Discard stale draft entries**, which pages without an
+editor keep unchanged. The factory receives one isolated configuration
+snapshot. Its digest is captured before the factory runs, so caller or factory
+mutation cannot retag state.
 
 ### API2 owner view
 

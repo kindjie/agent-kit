@@ -839,6 +839,9 @@ top-level type, version or list, rows that are not objects, missing or
 non-text fields, invalid JSON and invalid UTF-8) must each be refused by
 `editor list`, `editor trust`, `editor untrust`, `build` and `import` with one
 message naming the file, exit status 2, no traceback and the file unchanged.
+The Node page cases require the discard control to read "Discard recovery
+input" on editor pages and "Discard stale draft entries" on a page without an
+editor.
 
 Component trust/build contracts also cover decoded one-character JavaScript
 key literals, escaped aliases, malformed keys and duplicate refusal.

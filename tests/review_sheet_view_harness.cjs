@@ -441,6 +441,10 @@ async function main() {
     assert.match(f.find('export-results').textContent,/save editor state/i,
       'generic envelope action must be distinct from canonical feedback download');
     assert.ok(f.nodes.some(node => /import editor state/i.test(node.textContent)));
+    const labels = f.nodes.map(node => node.textContent);
+    assert.ok(labels.includes('Discard recovery input'),
+      'the discard control must say what it discards on an editor page');
+    assert.ok(!labels.includes('Discard stale draft entries'));
   } else if (name === 'mount') {
     const f = fixture({moveMedia: true}), context = f.context();
     assert.ok(context, 'API2 must mount exactly one explicit owner view');

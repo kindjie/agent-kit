@@ -1203,7 +1203,8 @@
       exportButton,
       button(data.editor ? 'Import editor state' : 'Import results', () =>
         document.getElementById('import-file').click()),
-      button('Discard stale draft entries', discardDraft),
+      button(data.editor ? 'Discard recovery input' :
+        'Discard stale draft entries', discardDraft),
       button('Keys (?)', showLegend));
     const file = el('input'); file.id = 'import-file'; file.type = 'file';
     file.accept = 'application/json,.json'; file.className = 'hidden';
