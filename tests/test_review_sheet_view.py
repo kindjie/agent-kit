@@ -17,7 +17,7 @@ class EditorViewTests(unittest.TestCase):
       capture_output=True, text=True)
     self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
 
-  def test_media_status_skips_empty_primitive_scopes_without_skipping_readiness(self):
+  def test_media_status_skips_empty_scopes_without_skipping_readiness(self):
     self.check_case('media-status')
 
   def test_all_alerts_live_in_flow_after_sticky_controls(self):
@@ -32,7 +32,7 @@ class EditorViewTests(unittest.TestCase):
   def test_focus_and_visibility_validate_bound_item_identity(self):
     self.check_case('focus')
 
-  def test_visual_failure_preserves_valid_state_export_and_reports_warning(self):
+  def test_visual_failure_keeps_valid_state_export_and_reports_warning(self):
     self.check_case('failure')
 
   def test_abort_precedes_exactly_once_view_disposal(self):
@@ -56,5 +56,5 @@ class EditorViewTests(unittest.TestCase):
   def test_editor_state_controls_are_distinct_from_canonical_export(self):
     self.check_case('labels-review')
 
-  def test_reviewer_survives_restore_import_refusal_and_full_envelope_bounds(self):
+  def test_reviewer_survives_restore_import_refusal_and_envelope_bounds(self):
     self.check_case('reviewer-review')

@@ -15,16 +15,18 @@ commit/rollback failure, synchronous lifecycle refusal, binding immutability,
 in-flight storage suppression, quota recovery and refusing a second pending
 input. They also check one full factory snapshot with caller/factory mutation
 isolation. CLI projection coverage preserves the complete frozen description,
-authoritative editor/state/IDs and resolved-file hash while omitting the redundant
-raw editor block from the browser payload. These are CPU contract tests, not browser/media or adoption evidence.
+authoritative editor/state/IDs and resolved-file hash while omitting the
+redundant raw editor block from the browser payload. These are CPU contract
+tests, not browser/media or adoption evidence.
 Ordinary `test_review_sheet` and `test_review_sheet_stage2` remain required
 regressions. Project adapters also need their independent canonical oracle.
 
 `tests.test_review_sheet_view` covers API2 shipped-page contracts with a
 fictional DOM: restored-state mount and explicit roots, single keyboard
 dispatch with editable Escape, bound focus/visibility, visual-failure export,
-abort-before-dispose, live raw import/export and refresh after owner transitions,
-plus cooperative draft checks before owner changes and again before writes.
+abort-before-dispose, live raw import/export and refresh after owner
+transitions, plus cooperative draft checks before owner changes and again
+before writes.
 Media callbacks also preserve readiness/failure and disposal while skipping
 primitive status notifications when no primitive scopes exist; scoped media
 transitions and the initial empty header remain covered.

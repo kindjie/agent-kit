@@ -68,7 +68,8 @@
     }
     editorViewRoot?.remove();
     if (error) note('Editor view failed: ' + error +
-      '. Valid state may still be exported as unverified recovery state.', true);
+      '. Valid state may still be exported as unverified recovery state.',
+      true);
   }
   function viewCall(name, ...args) {
     if (!editorView || editorViewStopped) return;
@@ -83,7 +84,8 @@
     if (!hasEditorView()) return !editorStorageUnreadable;
     try {
       const current = localStorage.getItem(storageKey);
-      if (!editorStorageUnreadable && current === editorObservedDraft) return true;
+      if (!editorStorageUnreadable && current === editorObservedDraft)
+        return true;
       if (current !== editorObservedDraft && editorCompetingDraft === undefined)
         editorCompetingDraft = current;
       note('Draft changed in another tab or became unreadable. Export current '
@@ -105,7 +107,8 @@
     const host = Object.freeze({
       currentId: () => allItems[focused]?.id ?? null,
       select(id, scroll = true) {
-        if (editorViewStopped || pageDisposed) throw Error('Editor view disposed');
+        if (editorViewStopped || pageDisposed)
+          throw Error('Editor view disposed');
         const item = editorItems.get(id);
         if (!item || item.wrapper.hidden ||
             item.wrapper.classList.contains('hidden'))
@@ -113,7 +116,8 @@
         focusItem(allItems.findIndex(value => value.id === id), scroll);
       },
       setVisible(ids) {
-        if (editorViewStopped || pageDisposed) throw Error('Editor view disposed');
+        if (editorViewStopped || pageDisposed)
+          throw Error('Editor view disposed');
         if (!Array.isArray(ids) || new Set(ids).size !== ids.length ||
             ids.some(id => !editorItems.has(id)))
           throw Error('Unknown or duplicate bound item');
@@ -127,7 +131,8 @@
       note, beforeChange: beforeEditorChange,
       projectState: () => editorTransport.envelope().data,
       get canImport() {
-        return !pageDisposed && !editorViewStopped && !!editorTransport?.canImport;
+        return !pageDisposed && !editorViewStopped &&
+          !!editorTransport?.canImport;
       },
       importProject(raw) {
         if (!beforeEditorChange()) return {ok: false, consumed: false};
@@ -137,13 +142,16 @@
     });
     try {
       const session = editorTransport.session;
-      if (typeof session.mount !== 'function') throw Error('Missing editor mount');
-      editorView = synchronous(session.mount(Object.freeze({root: editorViewRoot,
+      if (typeof session.mount !== 'function')
+        throw Error('Missing editor mount');
+      editorView = synchronous(session.mount(Object.freeze({
+        root: editorViewRoot,
         items: Object.freeze([...editorItems].map(([id, item]) =>
           Object.freeze({id, root: item.root, media: item.media}))),
         host, signal: editorViewAbort.signal})));
       if (!editorView || ['refresh', 'focus', 'key', 'dispose'].some(name =>
-          typeof editorView[name] !== 'function')) throw Error('Invalid editor view');
+          typeof editorView[name] !== 'function'))
+        throw Error('Invalid editor view');
       viewCall('refresh');
       viewCall('focus', host.currentId());
     } catch (error) { stopEditorView(error); }
@@ -204,7 +212,8 @@
   function startEditor() {
     if (!editorFactory) throw Error('Missing trusted editor registration');
     editorTransport = ReviewSheetEditorTransport.create({binding: data.editor,
-      limit: data.limits.results, create: hasEditorView() ? (binding, callbacks) =>
+      limit: data.limits.results,
+      create: hasEditorView() ? (binding, callbacks) =>
         editorFactory(binding, {beforeChange: beforeEditorChange, changed() {
           const saved = callbacks.changed();
           if (editorTransport?.canImport) viewCall('refresh');
@@ -212,7 +221,8 @@
         }}) : editorFactory, wrap: editorPacket,
       persist: p => {
         try {
-          if (editorStorageUnreadable) throw Error('Original draft is unreadable');
+          if (editorStorageUnreadable)
+            throw Error('Original draft is unreadable');
           if (hasEditorView() && !draftCurrent())
             throw Error('Draft changed; reconciliation required');
           const raw = JSON.stringify(p);
@@ -401,7 +411,8 @@
   function discardDraft() {
     if (data.editor) {
       if (editorTransport?.status.unrecovered) {
-        note('Unrecovered state: keep the recovery input and original draft.', true);
+        note('Unrecovered state: keep the recovery input and original draft.',
+          true);
         return;
       }
       if (confirm('Discard the retained recovery input? Export it first.'))
@@ -1197,7 +1208,8 @@
     const toolbar = el('div', 'toolbar');
     const bar = el('progress'); bar.id = 'progress';
     const progressText = el('span'); progressText.id = 'progress-text';
-    const exportButton = button(data.editor ? 'Save editor state' : 'Export results', exportResults);
+    const exportButton = button(data.editor ? 'Save editor state' :
+      'Export results', exportResults);
     exportButton.id = 'export-results';
     toolbar.append(bar, progressText,
       exportButton,
@@ -1211,17 +1223,21 @@
     file.addEventListener('change', importResults);
     toolbar.append(file);
     if (hasEditorView()) toolbar.append(button('Export competing draft', () => {
-      if (editorCompetingDraft === undefined || editorCompetingDraft === null) return;
+      if (editorCompetingDraft === undefined || editorCompetingDraft === null)
+        return;
       const url = URL.createObjectURL(new Blob([editorCompetingDraft],
         {type: 'application/json'}));
-      const link = el('a'); link.href = url; link.download = 'competing-draft.json';
+      const link = el('a'); link.href = url;
+      link.download = 'competing-draft.json';
       link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     }));
     if (data.editor) toolbar.append(button('Export recovery input', () => {
       const raw = editorTransport?.recovery?.raw;
       if (raw === undefined) return;
-      const url = URL.createObjectURL(new Blob([raw], {type: 'application/json'}));
-      const link = el('a'); link.href = url; link.download = 'recovery-input.json';
+      const url = URL.createObjectURL(new Blob([raw],
+        {type: 'application/json'}));
+      const link = el('a'); link.href = url;
+      link.download = 'recovery-input.json';
       link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     }));
     header.append(toolbar);
@@ -1312,7 +1328,8 @@
       'Project state exported; canonical validation has not run.') :
       incomplete.length ? incomplete.length + ' required answers remain.' :
       'All required answers recorded.');
-    const output = data.editor ? JSON.stringify(result) : JSON.stringify(result, null, 2);
+    const output = data.editor ? JSON.stringify(result) :
+      JSON.stringify(result, null, 2);
     if (new TextEncoder().encode(output).length > data.limits.results) {
       note('Results exceed the export size limit.', true); return;
     }
@@ -1327,7 +1344,8 @@
     if (!file) return;
     if (data.editor && (!editorTransport || !editorTransport.canImport ||
         (hasEditorView() && !beforeEditorChange()))) {
-      note('Resolve or export the pending recovery input before another import.', true);
+      note('Resolve or export the pending recovery input before another ' +
+        'import.', true);
       return;
     }
     if (file.size > data.limits.results) {
@@ -1342,7 +1360,8 @@
     try { packet = JSON.parse(await file.text()); }
     catch (_) { note('Results file is not valid JSON.', true); return; }
     if (packet && Object.hasOwn(packet, 'project_state')) {
-      note('Project state requires a matching editor v2 binding.', true); return;
+      note('Project state requires a matching editor v2 binding.', true);
+      return;
     }
     await Promise.allSettled(mediaPending);
     await Promise.race([Promise.allSettled([...mediaHandles.values()].map(
@@ -1481,7 +1500,8 @@
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     if (document.getElementById('dialog').open) return;
     const active = document.activeElement;
-    const editing = active.matches('input,textarea,select') || active.isContentEditable;
+    const editing = active.matches('input,textarea,select') ||
+      active.isContentEditable;
     if (hasEditorView()) {
       if (editorViewStopped) return;
       if (!editing || event.key === 'Escape') {
@@ -1513,7 +1533,8 @@
           if (item) { focusItem(allItems.indexOf(item)); break; }
         }
       } else {
-        const target = groups[(groupIndex + direction + groups.length) % groups.length];
+        const target = groups[(groupIndex + direction + groups.length) %
+          groups.length];
         if (target) focusItem(allItems.indexOf(target.items[0]));
       }
     } else if (key === 'n') {

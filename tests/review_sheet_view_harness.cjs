@@ -37,7 +37,8 @@ function fixture(options = {}) {
         if (!this.events.has(type)) this.events.set(type, []);
         this.events.get(type).push(callback);
         settings.signal?.addEventListener('abort', () => {
-          this.events.set(type, this.events.get(type).filter(v => v !== callback));
+          this.events.set(type,
+            this.events.get(type).filter(v => v !== callback));
         }, {once: true});
       },
       setAttribute(name, value) { this[name] = value; },
@@ -47,11 +48,14 @@ function fixture(options = {}) {
           ...(matches(child, selector) ? [child] : []),
           ...child.querySelectorAll(selector)]);
       },
-      querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
+      querySelector(selector) {
+        return this.querySelectorAll(selector)[0] || null;
+      },
       focus() { active = this; }, blur() { active = null; },
       scrollIntoView() {}, pause() { log.push('media-pause'); },
       click() { return this.events.get('click')?.[0](); }};
-    node.classList = {contains: name => node.className.split(/\s+/).includes(name),
+    node.classList = {
+      contains: name => node.className.split(/\s+/).includes(name),
       add(name) { if (!this.contains(name)) node.className += ' '+name; },
       remove(name) { node.className = node.className.split(/\s+/)
         .filter(value => value !== name).join(' '); },
@@ -99,14 +103,16 @@ function fixture(options = {}) {
       Buffer.byteLength(JSON.stringify(base), 'utf8'));
   }
   const savedPacket = packet('restored');
-  if (options.savedReviewer !== undefined) savedPacket.reviewer = options.savedReviewer;
+  if (options.savedReviewer !== undefined)
+    savedPacket.reviewer = options.savedReviewer;
   let stored = options.saved === false ? null : JSON.stringify(savedPacket);
   let raw, context, factoryHost, disposed = 0, undoCalls = 0;
   let mutations = 0, prepares = 0;
   const invoke = (hook, value) => {
     log.push([hook, value]);
     if (options.fail === hook) throw Error('fixture '+hook+' failed');
-    if (options.async === hook) return Promise.reject(Error('fixture '+hook+' pending'));
+    if (options.async === hook)
+      return Promise.reject(Error('fixture '+hook+' pending'));
   };
   const host = {TextEncoder, TextDecoder, structuredClone, AbortController,
     Blob, console, REVIEW_SHEET_DATA: data,
@@ -135,7 +141,8 @@ function fixture(options = {}) {
   vm.runInNewContext(fs.readFileSync(path.join(path.dirname(process.argv[2]),
     'review_sheet_editor.js'), 'utf8'), host);
   vm.runInNewContext(fs.readFileSync(process.argv[2], 'utf8'), host);
-  assert.doesNotThrow(() => host.ReviewSheet.registerEditor({kind: data.editor.kind,
+  assert.doesNotThrow(() => host.ReviewSheet.registerEditor({
+    kind: data.editor.kind,
     version: '1.0.0', api: data.editor.api, create(binding, callbacks) {
       raw = binding.initial_state; factoryHost = callbacks;
       return {snapshot: () => raw, prepare(next) {
@@ -153,14 +160,16 @@ function fixture(options = {}) {
       }, undo() {
         undoCalls++;
         if (options.undoFail) throw Error('fixture undo failed');
-        if (options.undoAsync) return Promise.reject(Error('fixture undo pending'));
+        if (options.undoAsync)
+          return Promise.reject(Error('fixture undo pending'));
         raw = 'undone'; callbacks.changed();
       },
       mount(value) {
         context = value;
         const mounting = invoke('mount', raw);
         if (mounting !== undefined) return mounting;
-        value.signal.addEventListener('abort', () => log.push('abort'), {once: true});
+        value.signal.addEventListener('abort', () => log.push('abort'),
+          {once: true});
         if (options.moveMedia) for (const item of value.items)
           item.root.append(item.media);
         return {refresh() { return invoke('refresh', raw); },
@@ -172,7 +181,8 @@ function fixture(options = {}) {
               if (callbacks.beforeChange() === false) return true;
               undoCalls++;
               if (options.undoFail) throw Error('fixture owner key failed');
-              if (options.undoAsync) return Promise.reject(Error('fixture owner key pending'));
+              if (options.undoAsync)
+                return Promise.reject(Error('fixture owner key pending'));
               raw = 'undone'; callbacks.changed(); return true;
             }
             if (options.invalidKey) return {};
@@ -194,7 +204,8 @@ function fixture(options = {}) {
     edit(next, competingAfterPreflight) {
       if (factoryHost.beforeChange?.() === false) return false;
       mutations++; raw = next;
-      if (competingAfterPreflight !== undefined) stored = competingAfterPreflight;
+      if (competingAfterPreflight !== undefined)
+        stored = competingAfterPreflight;
       factoryHost.changed(); return true;
     },
     setReviewer(value) {
@@ -211,13 +222,16 @@ function fixture(options = {}) {
         size: text.length, async text() { return text; }}]}});
     },
     importFile(file) {
-      return find('import-file').events.get('change')[0]({target: {files: [file]}});
+      return find('import-file').events.get('change')[0](
+        {target: {files: [file]}});
     },
     async recoveryRaw() {
       nodes.find(node => node.textContent === 'Export recovery input').click();
       return [...exports.values()].at(-1).text();
     },
-    pagehide() { for (const callback of windowEvents.get('pagehide') || []) callback(); },
+    pagehide() {
+      for (const callback of windowEvents.get('pagehide') || []) callback();
+    },
     async exportedText() {
       await find('export-results').click();
       return exports.size ? [...exports.values()].at(-1).text() : null;
@@ -235,7 +249,8 @@ function checkMediaStatus() {
   const api = source.indexOf('    const api = {', fail);
   const tail = source.indexOf('      if ((readyCalled && (!display ||', api);
   const finish = source.indexOf('    } catch (error) {', tail);
-  assert(ready > 0 && fail > ready && api > fail && tail > api && finish > tail);
+  assert(ready > 0 && fail > ready && api > fail && tail > api &&
+    finish > tail);
   // Execute the shipped media callbacks, without simulating a browser decoder.
   function mediaFixture(scoped) {
     const calls = {status: [], resolved: [], rejected: [], errors: [],
@@ -268,7 +283,8 @@ function checkMediaStatus() {
     f.env.callbacks.settleReady();
     assert.equal(f.calls.status.length, expected,
       'Zero-scope media readiness must not scan primitive status');
-    assert.equal(f.state().ready, true); assert.equal(f.calls.resolved.length, 1);
+    assert.equal(f.state().ready, true);
+    assert.equal(f.calls.resolved.length, 1);
     assert(Object.isFrozen(f.calls.resolved[0]));
     assert.equal(f.calls.resolved[0].url, 'owned.mp4');
     assert.equal(f.calls.resolved[0].play(), 'playing');
@@ -318,17 +334,20 @@ async function main() {
     assert.equal(f.app.children[1], messages);
     assert.equal(f.app.children[0].querySelector('#messages'), null);
     const initial = f.warnings();
-    assert.equal(initial.filter(text => /Opaque project state carries/.test(text)).length, 1,
+    assert.equal(initial.filter(text =>
+      /Opaque project state carries/.test(text)).length, 1,
       'Startup queued warning must be flushed exactly once');
     const notes = Array.from({length: 9}, (_, index) =>
       'Retained alert '+index+' α <b>plain text</b>');
-    notes.forEach((text, index) => f.context().host.note(text, index % 2 === 0));
+    notes.forEach((text, index) =>
+      f.context().host.note(text, index % 2 === 0));
     assert.deepEqual(f.warnings(), [...initial, ...notes],
       'Every alert remains complete and ordered without caps or dismissal');
     assert.deepEqual(messages.children.slice(-9).map(node => node.className),
       notes.map((_, index) => 'banner'+(index % 2 === 0 ? ' error' : '')));
     assert.equal((await f.exported()).project_state.data, 'restored');
-    assert.deepEqual(f.warnings().slice(0, initial.length+notes.length), [...initial, ...notes]);
+    assert.deepEqual(f.warnings().slice(0, initial.length+notes.length),
+      [...initial, ...notes]);
     assert.equal(messages.parentNode, f.app);
     assert.equal(f.app.children[1], messages);
   } else if (name === 'reviewer-review') {
@@ -339,23 +358,27 @@ async function main() {
       assert.equal(JSON.parse(restored.stored()).reviewer,'Saved reviewer α');
       assert.equal((await restored.exported()).reviewer,'Saved reviewer α');
       const imported = fixture({api,saved:false});
-      await imported.import({...imported.packet('accepted'),reviewer:'Incoming reviewer'});
+      await imported.import({...imported.packet('accepted'),
+        reviewer:'Incoming reviewer'});
       assert.equal(imported.find('reviewer').value,'Incoming reviewer');
       assert.equal(JSON.parse(imported.stored()).reviewer,'Incoming reviewer');
       imported.setReviewer('Local reviewer');
-      await imported.import({...imported.packet('second'),reviewer:'Do not replace local'});
+      await imported.import({...imported.packet('second'),
+        reviewer:'Do not replace local'});
       assert.equal((await imported.exported()).reviewer,'Local reviewer');
       await imported.import(imported.packet('third'));
       assert.equal((await imported.exported()).reviewer,'Local reviewer');
       const refused = fixture({api,saved:false,reject:'foreign'});
-      await refused.import({...refused.packet('foreign state'),reviewer:'Refused reviewer'});
+      await refused.import({...refused.packet('foreign state'),
+        reviewer:'Refused reviewer'});
       assert.equal(refused.raw(),'baseline');
       assert.equal(refused.find('reviewer').value,'');
       assert.equal((await refused.exported()).reviewer,'');
       const growing = {api,saved:false,limit:1024};
       const bounded = fixture(growing), before = bounded.raw();
-      growing.candidateSuffix = 'x'.repeat(1023-Buffer.byteLength(JSON.stringify({
-        ...bounded.packet('n'),context:{},reviewer:''}),'utf8'));
+      growing.candidateSuffix = 'x'.repeat(1023-Buffer.byteLength(
+        JSON.stringify({...bounded.packet('n'),context:{},reviewer:''}),
+        'utf8'));
       const incoming = {...bounded.packet('n'),reviewer:'R'.repeat(200)};
       assert.ok(Buffer.byteLength(JSON.stringify(incoming),'utf8') < 1024);
       await bounded.import(incoming);
@@ -373,7 +396,8 @@ async function main() {
       'group navigation must select a visible group member');
     f.key('K'); assert.equal(api.currentId(),'first');
     api.setVisible(['first']); f.key('J');
-    assert.equal(api.currentId(),'first','all-hidden groups must not gain focus');
+    assert.equal(api.currentId(),'first',
+      'all-hidden groups must not gain focus');
     api.setVisible([]); f.key('J'); f.key('K');
     assert.equal(api.currentId(),null,'empty visible set keeps null focus');
     const filtered = fixture({query:'Second'}), host = filtered.context().host;
@@ -389,11 +413,13 @@ async function main() {
       for (const rawPrefix of ['', 'α🦉 \\u0061 "\r\n']) {
       const f = fixture({api,limit:1024,saved:false,rawPrefix,binding});
       if (binding) {
-        const overhead = Buffer.byteLength(JSON.stringify({...f.packet(rawPrefix),
+        const overhead = Buffer.byteLength(JSON.stringify({
+          ...f.packet(rawPrefix),
           context:f.data.description.context || {},reviewer:''}),'utf8');
         const candidate = rawPrefix+'x'.repeat(1024-overhead);
         await f.import(f.packet(candidate));
-        assert.equal(f.raw(),candidate,'actual transport admits full-bound candidate');
+        assert.equal(f.raw(),candidate,
+          'actual transport admits full-bound candidate');
       }
       const accepted = f.raw();
       assert.equal(Buffer.byteLength(JSON.stringify({...f.packet(accepted),
@@ -422,7 +448,8 @@ async function main() {
     assert.equal(owned.raw(),'undone');
     const competing = fixture({ownerUndo:true}); competing.compete('other tab');
     competing.key('u'); assert.equal(competing.undoCalls(),0);
-    assert.equal(competing.raw(),'restored','owner undo checks beforeChange first');
+    assert.equal(competing.raw(),'restored',
+      'owner undo checks beforeChange first');
     const unhandled = [], observe = reason => unhandled.push(String(reason));
     process.on('unhandledRejection',observe);
     try {
@@ -431,7 +458,8 @@ async function main() {
         assert.doesNotThrow(() => f.key('u'));
         await new Promise(resolve => setImmediate(resolve));
         assert.equal(f.context().signal.aborted,true);
-        assert.ok(f.warnings().some(text => /view.*failed|view.*unavailable/i.test(text)));
+        assert.ok(f.warnings().some(text =>
+          /view.*failed|view.*unavailable/i.test(text)));
         assert.equal((await f.exported()).project_state.data,'restored');
       }
       assert.deepEqual(unhandled,[],'owner key rejection must be handled');
@@ -439,8 +467,10 @@ async function main() {
   } else if (name === 'labels-review') {
     const f = fixture();
     assert.match(f.find('export-results').textContent,/save editor state/i,
-      'generic envelope action must be distinct from canonical feedback download');
-    assert.ok(f.nodes.some(node => /import editor state/i.test(node.textContent)));
+      'generic envelope action must be distinct from canonical feedback ' +
+      'download');
+    assert.ok(f.nodes.some(node =>
+      /import editor state/i.test(node.textContent)));
     const labels = f.nodes.map(node => node.textContent);
     assert.ok(labels.includes('Discard recovery input'),
       'the discard control must say what it discards on an editor page');
@@ -472,7 +502,8 @@ async function main() {
     assert.equal(f.key('n').prevented, 1);
     assert.equal(f.context().host.currentId(), 'first');
     assert.equal(f.key('u').prevented, 1);
-    assert.equal(f.undoCalls(), 0, 'consumed owner key must not reach host undo');
+    assert.equal(f.undoCalls(), 0,
+      'consumed owner key must not reach host undo');
     const input = f.host.document.createElement('textarea'); input.focus();
     const before = count(); f.key('n', input);
     assert.equal(count(), before, 'typing must not reach owner shortcuts');
@@ -485,9 +516,11 @@ async function main() {
       assert.equal(count(), after, modifier+' must suppress owner shortcuts');
     }
     f.key('?', f.body, {shiftKey: true});
-    assert.equal(count(), after + 1, 'Shift punctuation retains legacy dispatch');
+    assert.equal(count(), after + 1,
+      'Shift punctuation retains legacy dispatch');
     f.key('j', f.body);
-    assert.equal(f.context().host.currentId(), 'second', 'unhandled key falls back');
+    assert.equal(f.context().host.currentId(), 'second',
+      'unhandled key falls back');
     assert.equal(f.log.filter(v => v[0] === 'key' && v[1] === 'j').length, 1);
   } else if (name === 'focus') {
     const f = fixture(), host = f.context().host;
@@ -498,13 +531,16 @@ async function main() {
     assert.equal(host.currentId(), 'second');
     for (const ids of [['second', 'second'], ['hidden-history']]) {
       assert.throws(() => host.setVisible(ids), /item|bound|duplicate/i);
-      assert.equal(host.currentId(), 'second', 'invalid subset cannot move focus');
+      assert.equal(host.currentId(), 'second',
+        'invalid subset cannot move focus');
       for (const id of ['first', 'second']) {
         const wrapper = f.nodes.find(node => node.dataset.itemId === id);
-        assert.equal(wrapper.hidden || wrapper.classList.contains('hidden'), false,
+        assert.equal(
+          wrapper.hidden || wrapper.classList.contains('hidden'), false,
           'invalid subset cannot partially hide a previously visible item');
         host.select(id, false);
-        assert.equal(host.currentId(), id, 'previously visible item remains selectable');
+        assert.equal(host.currentId(), id,
+          'previously visible item remains selectable');
       }
     }
     host.setVisible(['second']);
@@ -524,7 +560,8 @@ async function main() {
           if (hook === 'key') f.key('n');
           await new Promise(resolve => setImmediate(resolve));
           assert.equal(f.context().signal.aborted, true, hook);
-          assert.ok(f.warnings().some(text => /view.*failed|view.*unavailable/i.test(text)),
+          assert.ok(f.warnings().some(text =>
+            /view.*failed|view.*unavailable/i.test(text)),
             'visual failure must remain visible');
           assert.notEqual(f.find('export-results').disabled, true,
             'valid bound state remains exportable despite visual failure');
@@ -532,11 +569,13 @@ async function main() {
           assert.equal(packet.project_state.data, 'restored');
           assert.equal(f.context().host.projectState(), 'restored',
             'visual failure does not corrupt validated canonical export');
-          assert.equal(f.raw(), 'restored', 'visual failure cannot invent state rollback');
+          assert.equal(f.raw(), 'restored',
+            'visual failure cannot invent state rollback');
           assert.ok(f.warnings().some(text => /unverified|recover/i.test(text)),
             'visual failure export must be explicitly unverified/recovery');
           const before = f.log.length; f.key('n');
-          assert.equal(f.log.length, before, 'failed view receives no further keys');
+          assert.equal(f.log.length, before,
+            'failed view receives no further keys');
         }
       const invalid = fixture({invalidKey: true});
       invalid.key('n');
@@ -554,8 +593,10 @@ async function main() {
       f.pagehide(); f.pagehide();
       assert.equal(f.disposed(), 1);
       assert.equal(f.context().signal.aborted, true);
-      assert.equal(f.context().host.canImport, false, 'disposed view cannot import');
-      assert.ok(f.log.indexOf('abort') < f.log.findIndex(v => v[0] === 'dispose'));
+      assert.equal(f.context().host.canImport, false,
+        'disposed view cannot import');
+      assert.ok(f.log.indexOf('abort') <
+        f.log.findIndex(v => v[0] === 'dispose'));
       const before = f.log.length; f.key('n');
       assert.equal(f.log.length, before, 'disposed view is inactive');
       await new Promise(resolve => setImmediate(resolve));
@@ -584,25 +625,31 @@ async function main() {
     const exact = ' {"kept":"\\u0061","value":false}\r\n';
     const accepted = fixture(), api = accepted.context().host;
     assert.equal(api.canImport, true);
-    assert.equal(typeof Object.getOwnPropertyDescriptor(api, 'canImport').get, 'function');
+    assert.equal(typeof Object.getOwnPropertyDescriptor(api, 'canImport').get,
+      'function');
     assert.equal(Reflect.set(api, 'canImport', false), false,
       'view cannot override the recovery barrier');
     assert.equal(api.importProject(exact).ok, true);
-    assert.equal(api.projectState(), exact, 'canonical packet text is never normalized');
+    assert.equal(api.projectState(), exact,
+      'canonical packet text is never normalized');
     assert.deepEqual(accepted.log.at(-1), ['refresh', exact]);
     assert.equal(JSON.parse(accepted.stored()).project_state.data, exact);
     for (const value of [' foreign canonical \\u0061\r\n', 'x'.repeat(16385)]) {
-      const refused = fixture({reject: 'foreign'}), api = refused.context().host;
+      const refused = fixture({reject: 'foreign'});
+      const api = refused.context().host;
       const before = refused.raw(), stored = refused.stored();
       assert.equal(api.importProject(value).ok, false);
-      assert.equal(refused.raw(), before, 'invalid canonical input cannot swap owner');
+      assert.equal(refused.raw(), before,
+        'invalid canonical input cannot swap owner');
       assert.equal(refused.stored(), stored);
       assert.equal(await refused.recoveryRaw(), value,
         'recovery retains original canonical raw, not a synthetic wrapper');
       assert.equal(api.canImport, false);
       let reads = 0;
-      await refused.importFile({size: 3, async text() { reads++; return '{}'; }});
-      assert.equal(reads, 0, 'pending recovery refuses before reading another file');
+      await refused.importFile({size: 3,
+        async text() { reads++; return '{}'; }});
+      assert.equal(reads, 0,
+        'pending recovery refuses before reading another file');
       assert.equal(api.importProject('second canonical input').consumed, false);
       assert.equal(await refused.recoveryRaw(), value);
     }
@@ -620,14 +667,16 @@ async function main() {
     assert.equal(await concurrent.recoveryRaw(), firstRaw,
       'awaited file completion cannot replace a now-pending recovery');
     const broken = fixture({saved: false, unrecovered: true});
-    const brokenApi = broken.context().host, brokenRaw = 'raw failed after swap';
+    const brokenApi = broken.context().host;
+    const brokenRaw = 'raw failed after swap';
     assert.equal(brokenApi.importProject(brokenRaw).unrecovered, true);
     assert.throws(() => brokenApi.projectState(), /unrecovered/i,
       'direct canonical download must refuse actual transport corruption');
     assert.equal(brokenApi.canImport, false);
     assert.equal(broken.find('export-results').disabled, true);
     assert.equal(await broken.recoveryRaw(), brokenRaw);
-    assert.equal(broken.raw(), brokenRaw, 'rollback failure cannot claim restoration');
+    assert.equal(broken.raw(), brokenRaw,
+      'rollback failure cannot claim restoration');
   } else if (name === 'concurrency') {
     for (const cause of ['changed', 'unreadable']) {
       const f = fixture(), api = f.context().host;
@@ -642,21 +691,28 @@ async function main() {
       assert.equal(api.projectState(), 'restored');
       const prepared = f.prepares();
       assert.equal(api.importProject('must not prepare').consumed, false);
-      assert.equal(f.prepares(), prepared, 'draft guard runs before owner prepare');
+      assert.equal(f.prepares(), prepared,
+        'draft guard runs before owner prepare');
       f.key('u');
-      assert.equal(f.undoCalls(), 0, 'default undo also checks before owner mutation');
-      assert.ok(f.warnings().some(text => /draft.*changed|reconcil|unreadable|unavailable/i.test(text)));
+      assert.equal(f.undoCalls(), 0,
+        'default undo also checks before owner mutation');
+      assert.ok(f.warnings().some(text =>
+        /draft.*changed|reconcil|unreadable|unavailable/i.test(text)));
       assert.equal((await f.exported()).project_state.data, 'restored');
     }
-    const race = fixture(), competing = JSON.stringify(race.packet('other tab wins'));
+    const race = fixture();
+    const competing = JSON.stringify(race.packet('other tab wins'));
     assert.equal(race.edit('valid local event', competing), true,
       'the precheck cannot claim atomic WebStorage compare-and-swap');
     assert.equal(race.mutations(), 1);
     assert.equal(race.raw(), 'valid local event', 'no invented owner rollback');
-    assert.equal(race.stored(), competing, 'postcheck refuses to overwrite newer raw');
+    assert.equal(race.stored(), competing,
+      'postcheck refuses to overwrite newer raw');
     assert.equal(race.context().host.projectState(), 'valid local event');
-    assert.equal((await race.exported()).project_state.data, 'valid local event');
-    assert.ok(race.warnings().some(text => /reconcil|draft.*changed/i.test(text)));
+    assert.equal((await race.exported()).project_state.data,
+      'valid local event');
+    assert.ok(race.warnings().some(text =>
+      /reconcil|draft.*changed/i.test(text)));
     assert.equal(race.edit('blocked subsequent event'), false);
     assert.equal(race.mutations(), 1);
   } else throw Error('Unknown permanent view contract: '+name);

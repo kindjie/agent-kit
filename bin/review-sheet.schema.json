@@ -16,7 +16,7 @@
       "properties": {
         "kind": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"},
         "path": {"type": "string", "minLength": 1,
-          "description": "Trusted editor bundle directory; API2 manifests may declare ordered CSS styles included in the host CSP hash."},
+          "description": "Trusted editor bundle directory."},
         "source_identity": {"type": "string", "minLength": 1},
         "parameters": {"type": "object"},
         "initial_state": {"type": "string"}

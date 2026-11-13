@@ -26,7 +26,8 @@ function fixture(mode) {
         const old = current;
         const next = {...current, raw, undo: [...current.undo, 'new-event']};
         if (mode === 'prepare-throw') throw Error('fixture prepare failure');
-        const txn = {snapshot: () => mode === 'oversize' ? 'x'.repeat(4097) : raw,
+        const txn = {
+          snapshot: () => mode === 'oversize' ? 'x'.repeat(4097) : raw,
           commit() {
           if (mode === 'stale') throw Error('fixture stale transaction');
           committed++;
@@ -62,7 +63,8 @@ function notifyContract() {
   const result = f.transport.import(envelope('next'), 'original raw notify');
   assert.equal(result.ok, false);
   assert.deepEqual(f.state(), before);
-  assert.equal(f.stored(), original, 'changed callback must not persist in-flight');
+  assert.equal(f.stored(), original,
+    'changed callback must not persist in-flight');
 }
 function bindingContract() {
   const f = fixture('valid');
@@ -103,7 +105,8 @@ function bindingSnapshotContract() {
     for(const api of [1,2]) {
       const binding={sha256:digest,api,initial_state:'before',
         source_identity:'fixture:source',visible_item_ids:['visible'],
-        parameters:{ui:{cards:{visible:'complete owner card '+ 'x'.repeat(8192)}},
+        parameters:{ui:{cards:{
+          visible:'complete owner card '+ 'x'.repeat(8192)}},
           provenance:{kept:[false,0,'']}},bundle:{sha256:'b'.repeat(64)}};
       let snapshots=0,config,current;
       context.structuredClone=value=>{
@@ -126,7 +129,8 @@ function bindingSnapshotContract() {
       assert.notEqual(config,binding);
       assert.notEqual(config.parameters,binding.parameters);
       assert.notEqual(config.parameters.ui,binding.parameters.ui);
-      assert.equal(binding.sha256,digest,'factory mutation cannot change caller');
+      assert.equal(binding.sha256,digest,
+        'factory mutation cannot change caller');
       assert.match(binding.parameters.ui.cards.visible,/^complete owner card/);
       assert.deepEqual(binding.parameters.provenance.kept,[false,0,'']);
       assert.equal(transport.envelope().editor_sha256,digest,
@@ -138,7 +142,8 @@ function bindingSnapshotContract() {
       assert.deepEqual(config.visible_item_ids,['visible']);
       assert.equal(transport.envelope().editor_sha256,digest,
         'caller mutation must not retag exported state');
-      assert.equal(transport.import(envelope('after'),'original raw input').ok,true);
+      assert.equal(
+        transport.import(envelope('after'),'original raw input').ok,true);
       assert.equal(transport.envelope().data,'after');
       assert.equal(transport.envelope().editor_sha256,digest);
       assert.equal(snapshots,1,
@@ -156,7 +161,8 @@ async function asyncContract() {
       const result = f.transport.import(envelope('next'), 'raw '+mode);
       await new Promise(resolve => setImmediate(resolve));
       assert.equal(result.ok, false, 'thenable lifecycle cannot succeed');
-      assert.equal(result.unrecovered, true, 'pending work cannot assure rollback');
+      assert.equal(result.unrecovered, true,
+        'pending work cannot assure rollback');
       assert.equal(f.stored(), original);
       assert.equal(f.transport.recovery.raw, 'raw '+mode);
       assert.throws(() => f.transport.envelope(), /unrecovered/i);
@@ -211,11 +217,11 @@ async function hostContract(mode, override) {
         querySelectorAll: () => [], addEventListener() {}},
       addEventListener() {}};
     host.window = host;
-    const page = override || require('node:path').join(require('node:path').dirname(
-      process.argv[2]), 'review_sheet_page.js');
+    const page = override || require('node:path').join(
+      require('node:path').dirname(process.argv[2]), 'review_sheet_page.js');
     vm.runInNewContext(fs.readFileSync(page, 'utf8'), host);
-    if (!variant.ordinary) host.ReviewSheet.registerEditor({kind: 'fixture-editor',
-      version: '1.0.0', api: 1, create(config) {
+    if (!variant.ordinary) host.ReviewSheet.registerEditor({
+      kind: 'fixture-editor', version: '1.0.0', api: 1, create(config) {
         ownerRaw = config.initial_state;
         return {snapshot: () => ownerRaw, prepare(next) {
           const old = ownerRaw;
@@ -238,18 +244,21 @@ async function hostContract(mode, override) {
     if (variant.unrecovered) {
       assert.match(message(), /unrecovered/i,
         'page must expose unrecovered editor state');
-      assert.equal(ownerRaw, 'restored', 'failed rollback left changed owner state');
+      assert.equal(ownerRaw, 'restored',
+        'failed rollback left changed owner state');
       assert.equal(find('export-results').disabled, true);
       await find('export-results').events.click();
       assert.match(message(), /export refused.*unrecovered/i);
       nodes.find(node => node.textContent === 'Discard recovery input')
         .events.click();
       assert.match(message(), /unrecovered/i);
-      assert.equal(stored, draft, 'normal export/discard cannot hide failed rollback');
+      assert.equal(stored, draft,
+        'normal export/discard cannot hide failed rollback');
       continue;
     }
-    if (mode === 'startup') assert.match(message(), /refused|failed|unavailable/i,
-      'startup must leave the actionable failure notice last');
+    if (mode === 'startup')
+      assert.match(message(), /refused|failed|unavailable/i,
+        'startup must leave the actionable failure notice last');
     if (mode === 'headers') {
       assert.equal(ownerRaw, 'before',
         'browser rejects malformed editor header before owner mutation');
@@ -258,8 +267,8 @@ async function hostContract(mode, override) {
     }
     if (variant.ordinary) {
       const raw = JSON.stringify({...packet, schema_version: 1});
-      await find('import-file').events.change({target: {files: [{size: raw.length,
-        async text() { return raw; }}]}});
+      await find('import-file').events.change({target: {files: [{
+        size: raw.length, async text() { return raw; }}]}});
       assert.match(message(), /project state.*v2/i,
         'ordinary v1 must refuse project state');
       assert.equal(stored, draft);
@@ -268,16 +277,19 @@ async function hostContract(mode, override) {
     find('reviewer').value = 'fixture reviewer';
     find('reviewer').events.input();
     if (variant.stale || variant.readFail || variant.quota) {
-      assert.equal(stored, draft, 'page retains original failed/unreadable draft');
+      assert.equal(stored, draft,
+        'page retains original failed/unreadable draft');
       if (variant.stale || variant.quota) {
         let reads = 0;
         await find('import-file').events.change({target: {files: [{size: 1,
           async text() { reads++; return 'second raw input'; }}]}});
-        assert.equal(reads, 0, 'page must not consume another pending recovery input');
+        assert.equal(reads, 0,
+          'page must not consume another pending recovery input');
       }
     } else {
       const saved = JSON.parse(stored);
-      assert.equal(saved.schema_version, 2, 'page never writes a v1 editor draft');
+      assert.equal(saved.schema_version, 2,
+        'page never writes a v1 editor draft');
       assert.deepEqual(saved.answers, {});
       assert.equal(saved.project_state.data, 'restored');
     }
@@ -299,7 +311,8 @@ async function main() {
     const raw = ' {"original":"raw \\u0061"} \n';
     const result = f.transport.import(envelope('next'), raw);
     assert.equal(result.ok, false);
-    assert.deepEqual(f.state(), before, 'full state, undo and held text restored');
+    assert.deepEqual(f.state(), before,
+      'full state, undo and held text restored');
     assert.equal(f.stored(), store, 'original draft bytes never overwritten');
     assert.equal(f.transport.recovery.raw, raw);
     assert.equal(f.writes(), 1, 'failure occurred after the actual state swap');
@@ -308,21 +321,24 @@ async function main() {
     const second = f.transport.import(envelope('later'), 'second raw input');
     assert.equal(second.ok, false, 'pending recovery prevents another import');
     assert.equal(second.consumed, false);
-    assert.equal(f.transport.recovery.raw, raw, 'first recovery is not overwritten');
+    assert.equal(f.transport.recovery.raw, raw,
+      'first recovery is not overwritten');
     assert.deepEqual(f.state(), before);
   } else if (name === 'rollback') {
     const f = fixture('rollback'), raw = '{"keep":"rejected source"}';
     const result = f.transport.import(envelope('next'), raw);
     assert.equal(result.ok, false);
     assert.equal(result.unrecovered, true);
-    assert.equal(f.state().raw, 'next', 'failed rollback must not claim restoration');
+    assert.equal(f.state().raw, 'next',
+      'failed rollback must not claim restoration');
     assert.equal(f.transport.status.unrecovered, true);
     assert.equal(f.transport.recovery.raw, raw);
     assert.throws(() => f.transport.envelope(), /unrecovered/i);
   } else if (name === 'lifecycle') {
     bindingContract();
     await asyncContract();
-    for (const mode of ['missing-rollback', 'promise', 'prepare-throw', 'stale', 'oversize']) {
+    for (const mode of ['missing-rollback', 'promise', 'prepare-throw',
+      'stale', 'oversize']) {
       const f = fixture(mode), before = f.state(), stored = f.stored();
       const result = f.transport.import(envelope('next'), 'raw-'+mode);
       assert.equal(result.ok, false, mode);
@@ -334,7 +350,8 @@ async function main() {
     const f = fixture('valid'), before = f.state();
     for (const changed of [
       {schema_version: 9}, {editor_sha256: '0'.repeat(64)},
-      {data: 'x'.repeat(4097)}, {data: '\ud800'}, {data: []}, {unknown: true}]) {
+      {data: 'x'.repeat(4097)}, {data: '\ud800'}, {data: []},
+      {unknown: true}]) {
       const next = {...envelope('next'), ...changed};
       const one = fixture('valid');
       const result = one.transport.import(next, 'raw invalid envelope');
@@ -348,13 +365,16 @@ async function main() {
     const raw = ' {"exact":"accepted source \\u0061"} ';
     const result = f.transport.import(envelope('accepted'), raw);
     assert.equal(result.ok, true, 'owner transition succeeded in memory');
-    assert.equal(result.persisted, false, 'storage failure must remain explicit');
+    assert.equal(result.persisted, false,
+      'storage failure must remain explicit');
     assert.equal(f.transport.envelope().data, 'accepted');
-    assert.equal(f.stored(), stored, 'quota failure keeps original draft bytes');
+    assert.equal(f.stored(), stored,
+      'quota failure keeps original draft bytes');
     assert.equal(f.transport.recovery.raw, raw);
     assert.equal(f.transport.status.storageSafe, false);
     // Shipped page glue in a tiny DOM fixture, not browser/media evidence.
-    for (const mode of ['normal', 'startup', 'headers', 'ordinary', 'unrecovered'])
+    for (const mode of ['normal', 'startup', 'headers', 'ordinary',
+      'unrecovered'])
       await hostContract(mode);
   } else throw Error('Unknown permanent contract case: '+name);
   console.log('PASS '+name);

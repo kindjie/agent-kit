@@ -132,8 +132,9 @@ The frozen host interface provides `currentId()`, `select(id, scroll=true)`,
 `setVisible(ids)`, `note(text,error)`, `beforeChange()`, `projectState()`,
 `importProject(raw)` and read-only `canImport`. Selection accepts currently
 visible bound IDs; visibility accepts only bound IDs. These operations never
-create answers or hidden-history pseudoitems. `projectState()` returns validated current opaque text and
-refuses transport-unrecovered state. `importProject` uses the same bounded
+create answers or hidden-history pseudoitems. `projectState()` returns
+validated current opaque text and refuses transport-unrecovered state.
+`importProject` uses the same bounded
 prepare/commit/rollback path and retains the original input text in recovery,
 not a synthetic wrapper. File controls check `canImport` before reading,
 again after an awaited read, and honor a refused import without consuming

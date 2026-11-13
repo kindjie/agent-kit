@@ -6,29 +6,38 @@
     Promise.resolve(value).catch(() => {});
     return true;
   };
+  // A surrogate code unit without its pair is not well-formed text.
+  const lone =
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u;
   const bytes = text => {
-    if (pendingWork(text) || typeof text !== 'string' || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(text))
+    if (pendingWork(text) || typeof text !== 'string' || lone.test(text))
       throw Error('State must be well-formed UTF-8 text');
     return new TextEncoder().encode(text).length;
   };
-  function create({binding: input, limit, create: factory, persist, wrap = v => v}) {
+  function create({binding: input, limit, create: factory, persist,
+    wrap = v => v}) {
     const factoryConfig = structuredClone(input);
     const bindingSha256 = factoryConfig.sha256;
     let recovery = null;
     let inFlight = true;
     const status = {unrecovered: false, storageSafe: true};
     const session = factory(factoryConfig, {changed() { return save(); }});
-    if (pendingWork(session) || !session || typeof session.snapshot !== 'function' ||
-        typeof session.prepare !== 'function') throw Error('Invalid editor session');
+    if (pendingWork(session) || !session ||
+        typeof session.snapshot !== 'function' ||
+        typeof session.prepare !== 'function')
+      throw Error('Invalid editor session');
     function envelope(raw = session.snapshot()) {
       if (status.unrecovered) throw Error('Editor state is unrecovered');
-      if (bytes(raw) > limit) throw Error('Project state exceeds results limit');
-      const value = {schema_version: 1, editor_sha256: bindingSha256, data: raw};
+      if (bytes(raw) > limit)
+        throw Error('Project state exceeds results limit');
+      const value = {schema_version: 1, editor_sha256: bindingSha256,
+        data: raw};
       if (bytes(JSON.stringify(wrap(value))) > limit)
         throw Error('Complete results exceed size limit');
       return value;
     }
-    envelope(); // Refuse a malformed/oversize baseline before accepting imports.
+    // Refuse a malformed or oversize baseline before accepting imports.
+    envelope();
     inFlight = false;
     function save() {
       if (inFlight || recovery || status.unrecovered) return false;
@@ -61,7 +70,8 @@
         try {
           if (bytes(raw) > limit) throw Error('Import exceeds size limit');
           if (!value || Object.keys(value).sort().join(',') !==
-              'data,editor_sha256,schema_version' || value.schema_version !== 1 ||
+              'data,editor_sha256,schema_version' ||
+              value.schema_version !== 1 ||
               value.editor_sha256 !== bindingSha256)
             throw Error('Wrong editor binding or malformed envelope');
           envelope(value.data);
@@ -71,7 +81,8 @@
           synchronous(txn);
           if (!txn ||
               ['snapshot', 'commit', 'rollback'].some(k =>
-                typeof txn[k] !== 'function')) throw Error('Invalid transaction');
+                typeof txn[k] !== 'function'))
+            throw Error('Invalid transaction');
           const candidate = txn.snapshot();
           synchronous(candidate);
           envelope(candidate); // Bound the full export before owner writes.
@@ -98,7 +109,8 @@
           }
           try {
             const restored = session.snapshot();
-            if (pendingWork(restored) || before !== undefined && restored !== before)
+            if (pendingWork(restored) ||
+                before !== undefined && restored !== before)
               unrecovered = true;
           }
           catch (_) { unrecovered = true; }

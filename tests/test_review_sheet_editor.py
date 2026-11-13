@@ -22,20 +22,23 @@ HARNESS = ROOT / 'tests' / 'review_sheet_editor_harness.cjs'
 
 
 def bounded_loader_contract(tool):
-  loader = importlib.machinery.SourceFileLoader('bounded_editor_loader', str(tool))
+  loader = importlib.machinery.SourceFileLoader('bounded_editor_loader',
+                                               str(tool))
   spec = importlib.util.spec_from_loader(loader.name, loader)
   module = importlib.util.module_from_spec(spec)
   loader.exec_module(module)
   with tempfile.TemporaryDirectory() as temporary:
     folder = Path(temporary)
     manifest = json.dumps({'role': 'editor', 'kind': 'bounded',
-      'version': '1.0.0', 'api': 1, 'scripts': ['first.js', 'late.js']}).encode()
+      'version': '1.0.0', 'api': 1,
+      'scripts': ['first.js', 'late.js']}).encode()
     (folder / 'editor.json').write_bytes(manifest)
     for body, total in [(b'x' * 600, 4096), (b'x' * 100, len(manifest) + 99)]:
       reads = []
       class Stream(io.BytesIO):
         def read(self, size=-1):
-          assert 0 < size <= 257, 'editor loader must bound each materialized read'
+          assert 0 < size <= 257, \
+            'editor loader must bound each materialized read'
           reads.append(size)
           return super().read(size)
       class File:
@@ -43,15 +46,18 @@ def bounded_loader_contract(tool):
           assert mode == 'rb'
           return Stream(body)
         def read_bytes(self):
-          raise AssertionError('editor loader must bound each materialized read')
+          raise AssertionError(
+            'editor loader must bound each materialized read')
       def lookup(_folder, name):
         if name == 'editor.json':
           return folder / name
-        assert name == 'first.js', 'editor loader must stop before later scripts'
+        assert name == 'first.js', \
+          'editor loader must stop before later scripts'
         return File()
       with mock.patch.object(module, 'safe_file', side_effect=lookup):
         try:
-          module.editor_bundle(folder, {'component_file': 256, 'component': total})
+          module.editor_bundle(folder, {'component_file': 256,
+                                        'component': total})
         except module.ReviewError:
           pass
         else:
@@ -352,7 +358,7 @@ ReviewSheet.registerEditor({kind:'fixture-editor',version:'1.0.0',api:1,
         elif field == 'parameters':
           editor['parameters']['revision'] = 2
         elif field == 'baseline':
-          # Even semantically equal JSON with different raw bytes is new evidence.
+          # Even semantically equal JSON with other raw bytes is new evidence.
           editor['initial_state'] += ' '
         elif field == 'visible':
           self.description['items'].append({'id': 'another', 'media': []})
@@ -379,7 +385,8 @@ ReviewSheet.registerEditor({kind:'fixture-editor',version:'1.0.0',api:1,
     self.assertEqual(view['editor']['api'], 2)
     self.assertEqual(view['editor']['bundle']['api'], 2)
     self.assertEqual(view['editor']['bundle']['sha256'], trusted['sha256'])
-    self.assertNotEqual(view['editor']['sha256'], state_only['editor']['sha256'])
+    self.assertNotEqual(view['editor']['sha256'],
+                        state_only['editor']['sha256'])
     self.write_packet(view)
     result = json.loads(self.cli('import', self.packet,
                                 '--resolved', self.resolved).stdout)
@@ -400,23 +407,27 @@ ReviewSheet.registerEditor({kind:'fixture-editor',version:'1.0.0',api:1,
         with self.subTest(api=api,newline=newline):
           manifest['api'] = api
           manifest_path.write_text(json.dumps(manifest),encoding='utf8')
-          raw = original.replace(b'api:1',f'api:{api}'.encode()).replace(b'\n',newline)
+          raw = original.replace(b'api:1',f'api:{api}'.encode()).replace(
+            b'\n',newline)
           script.write_bytes(raw)
           trusted, frozen = self.trust_and_build()
           self.assertEqual(script.read_bytes(),raw)
-          self.assertEqual(trusted['files']['editor.js'],hashlib.sha256(raw).hexdigest())
-          self.assertEqual(frozen['editor']['bundle']['sha256'],trusted['sha256'])
+          self.assertEqual(trusted['files']['editor.js'],
+                           hashlib.sha256(raw).hexdigest())
+          self.assertEqual(frozen['editor']['bundle']['sha256'],
+                           trusted['sha256'])
           markup = self.page.read_bytes().decode('utf8')
           scripts = re.findall(r'<script>(.*?)</script>',markup,re.S)
           self.assertEqual(len(scripts),1)
           emitted = scripts[0].replace('\r\n','\n').replace('\r','\n')
-          expected = base64.b64encode(hashlib.sha256(emitted.encode()).digest()).decode()
+          expected = base64.b64encode(
+            hashlib.sha256(emitted.encode()).digest()).decode()
           self.assertTrue("script-src 'sha256-"+expected+"'" in markup,
             'script-src must bind HTML-normalized trusted script text')
           self.assertNotIn('\r',scripts[0])
           self.assertNotIn("'unsafe-inline'",markup)
 
-  def test_api2_styles_are_trusted_bounded_and_use_the_exact_host_CSP_hash(self):
+  def test_api2_styles_are_trusted_bounded_and_use_the_host_CSP_hash(self):
     manifest_path = self.bundle/'editor.json'
     manifest = json.loads(manifest_path.read_text('utf8'))
     manifest.update(api=2, styles=['first.css','second.css'])
@@ -433,7 +444,8 @@ ReviewSheet.registerEditor({kind:'fixture-editor',version:'1.0.0',api:1,
     combined = (ROOT/'bin/review_sheet_page.css').read_text('utf8') + '\n' + \
       first.read_text('utf8') + '\n' + second.read_text('utf8')
     self.assertEqual(styles, [combined])
-    hash_ = base64.b64encode(hashlib.sha256(combined.encode()).digest()).decode()
+    hash_ = base64.b64encode(
+      hashlib.sha256(combined.encode()).digest()).decode()
     self.assertIn("style-src 'sha256-"+hash_+"'", markup)
     self.assertNotIn("'unsafe-inline'", markup)
     for file in (first, second):
@@ -551,7 +563,8 @@ ReviewSheet.registerEditor({kind:'fixture-editor',version:'1.0.0',api:1,
     del self.description['decisions']
     self.write_description()
     self.cli('editor', 'untrust', trusted['sha256'])
-    self.cli('build', self.desc, '--output', self.root / 'untrusted.html', code=2)
+    self.cli('build', self.desc, '--output', self.root / 'untrusted.html',
+             code=2)
     self.assertFalse((self.root / 'untrusted.html').exists())
     self.cli('editor', 'trust', self.bundle, '--yes')
     with (self.bundle / 'editor.js').open('a', encoding='utf8') as stream:
@@ -564,7 +577,8 @@ class EditorTransportTests(unittest.TestCase):
   def node_case(self, name):
     self.assertTrue(TRANSPORT.is_file(), 'Missing owning-editor transport API')
     node = shutil.which('node')
-    self.assertIsNotNone(node, 'Node is required for editor transport contracts')
+    self.assertIsNotNone(node,
+                         'Node is required for editor transport contracts')
     proc = subprocess.run([node, str(HARNESS), str(TRANSPORT), name],
                           capture_output=True, text=True)
     self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)

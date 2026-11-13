@@ -409,7 +409,8 @@ def editor_bundle(folder, limits):
             'editor manifest')
   component_kind(manifest.get('kind'))
   if (manifest.get('role') != 'editor' or type(manifest.get('api')) is not int
-      or manifest['api'] not in (1, 2) or not isinstance(manifest.get('version'), str)
+      or manifest['api'] not in (1, 2)
+      or not isinstance(manifest.get('version'), str)
       or not re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?',
                           manifest['version'])):
     raise ReviewError('invalid editor manifest')
@@ -434,7 +435,8 @@ def editor_bundle(folder, limits):
     total += len(raw)
     text = raw.decode('utf-8')
     if name in styles and ('\0' in text or re.search(r'</style', text, re.I)):
-      raise ReviewError('editor stylesheet contains NUL or closing style markup')
+      raise ReviewError(
+        'editor stylesheet contains NUL or closing style markup')
     if name in scripts and ('\0' in text or
                             re.search(r'</script', text, re.I)):
       raise ReviewError('editor script contains NUL or closing script markup')
@@ -521,8 +523,9 @@ def resolve_editor(description, path, items, limits):
     raise ReviewError('editor cannot mix primitive decisions or comparisons')
   frozen = {key: value[key] for key in
             ('source_identity', 'parameters', 'initial_state')}
-  frozen.update(kind=bundle['kind'], version=bundle['version'], api=bundle['api'],
-                bundle=bundle, visible_item_ids=[i['id'] for i in items])
+  frozen.update(kind=bundle['kind'], version=bundle['version'],
+                api=bundle['api'], bundle=bundle,
+                visible_item_ids=[i['id'] for i in items])
   frozen['sha256'] = digest(frozen)
   return frozen, contents
 
@@ -533,7 +536,8 @@ def editor_result_import(args, frozen, frozen_hash, limits):
   editor = frozen.get('editor')
   if (not isinstance(frozen.get('description'), dict) or
       not isinstance(frozen['description'].get('review'), str) or
-      frozen.get('scopes') != {} or not isinstance(frozen.get('source'), dict) or
+      frozen.get('scopes') != {} or
+      not isinstance(frozen.get('source'), dict) or
       not isinstance(frozen.get('files'), dict) or not isinstance(editor, dict)
       or not isinstance(editor.get('bundle'), dict) or
       not isinstance(editor.get('sha256'), str)):
