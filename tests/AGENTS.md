@@ -8,6 +8,34 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
   tests.test_review_sheet_browser
 ```
 
+The local opaque-editor prototype adds `tests.test_review_sheet_editor`.
+Its CLI cases run on POSIX with task-local trust/configuration. Its five Node
+cases exercise the shipped transport and page draft glue without a browser:
+commit/rollback failure, synchronous lifecycle refusal, binding immutability,
+in-flight storage suppression, quota recovery and refusing a second pending
+input. They also check one full factory snapshot with caller/factory mutation
+isolation. CLI projection coverage preserves the complete frozen description,
+authoritative editor/state/IDs and resolved-file hash while omitting the redundant
+raw editor block from the browser payload. These are CPU contract tests, not browser/media or adoption evidence.
+Ordinary `test_review_sheet` and `test_review_sheet_stage2` remain required
+regressions. Project adapters also need their independent canonical oracle.
+
+`tests.test_review_sheet_view` covers API2 shipped-page contracts with a
+fictional DOM: restored-state mount and explicit roots, single keyboard
+dispatch with editable Escape, bound focus/visibility, visual-failure export,
+abort-before-dispose, live raw import/export and refresh after owner transitions,
+plus cooperative draft checks before owner changes and again before writes.
+Media callbacks also preserve readiness/failure and disposal while skipping
+primitive status notifications when no primitive scopes exist; scoped media
+transitions and the initial empty header remain covered.
+These checks refuse observed competing/unreadable drafts; they do not provide
+atomic WebStorage compare-and-swap. They preserve API1
+coverage above and do not establish real browser or media fidelity.
+The alert-flow contract retains startup and later warnings in normal document
+flow immediately after the sticky controls, without truncation or dismissal.
+It checks actual parent/order, queued-note delivery, error styling and export
+in the existing fictional DOM; browser geometry remains a separate gate.
+
 The Python cases use fictional files and temporary Git repositories to check
 build, frozen import/current-input separation, trust refusal and shadowing,
 preset merge/deletion, frame mapping, reveal conflicts, bounds, and output
@@ -782,3 +810,24 @@ Covers literal argument forwarding, full commit identities, unsafe/missing
 configuration, help without configuration and backend exit propagation.
 The owning backend separately qualifies network trust, verified fetches and
 publication; this launcher suite does not prove those operations.
+
+The editor view regression harness also covers owner visibility during group
+navigation/search, exact-limit compact downloads, owner-key undo (no undeclared
+session undo hook), and explicit editor-state labels. The CLI byte-limit case
+runs without Node; shipped-page Node VM download-to-CLI composition is separate
+integration evidence. Both API1 and API2 preserve opaque multibyte/escaped text.
+Neither Node VM coverage nor CLI success is a real-browser/media fidelity claim.
+
+Component trust/build contracts also cover decoded one-character JavaScript
+key literals, escaped aliases, malformed keys and duplicate refusal.
+
+API2 stylesheet contracts verify actual CLI trust/build, exact combined CSS/CSP
+hash, mutation invalidation, deterministic order, safe paths, byte limits and
+closing-style refusal. Applied styling and CSP violations still need an actual
+browser check; Node VM does not enforce browser CSP.
+
+Trusted editor script regressions build API1/API2 bundles with CRLF and lone CR.
+They compare the CSP hash with HTML-normalized emitted script text while raw
+source inventory and trust hashes remain unchanged. Reviewer regressions cover
+saved-draft restoration, import precedence/refusal, and full prepared-envelope
+bounds. These CPU checks do not replace actual browser CSP or reload checks.
