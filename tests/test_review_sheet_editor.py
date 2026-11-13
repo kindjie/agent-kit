@@ -117,13 +117,83 @@ ReviewSheet.registerEditor({kind:'fixture-editor',version:'1.0.0',api:1,
     self.packet.write_text(json.dumps(packet), encoding='utf8')
     return packet
 
+  def payload(self):
+    emitted = self.page.read_text('utf8').split(
+      'window.REVIEW_SHEET_DATA=', 1)[1]
+    value, end = json.JSONDecoder().raw_decode(emitted)
+    self.assertTrue(emitted[end:].startswith(';\n'))
+    return value
+
+  def set_api(self, api):
+    manifest_path = self.bundle / 'editor.json'
+    manifest = json.loads(manifest_path.read_text('utf8'))
+    manifest['api'] = api
+    manifest_path.write_text(json.dumps(manifest), encoding='utf8')
+    script = self.bundle / 'editor.js'
+    script.write_text(re.sub(r'api:\d', f'api:{api}',
+                             script.read_text('utf8')), encoding='utf8')
+
+  @staticmethod
+  def browser_editor(editor):
+    """The binding a page may carry: bundle identity, no local record."""
+    return {**editor, 'bundle': {key: editor['bundle'][key] for key in
+                                 ('kind', 'version', 'api', 'sha256')}}
+
+  def test_page_and_factory_config_carry_no_local_filesystem_path(self):
+    node = shutil.which('node')
+    self.assertIsNotNone(node, 'Node is required for the cli-binding case')
+    local = sorted({str(self.bundle), str(self.bundle.resolve()),
+                    str(self.root), str(self.root.resolve()),
+                    tempfile.gettempdir(),
+                    os.path.realpath(tempfile.gettempdir())})
+    for api in (1, 2):
+      with self.subTest(api=api):
+        self.set_api(api)
+        trusted, frozen = self.trust_and_build()
+        # The resolving side keeps the full local bundle record.
+        bundle = frozen['editor']['bundle']
+        self.assertEqual(bundle['path'], str(self.bundle.resolve()))
+        self.assertEqual(bundle['files'], trusted['files'])
+        self.assertIn('manifest', bundle)
+        markup = self.page.read_text('utf8')
+        for path in local:
+          self.assertNotIn(path, markup,
+                           'a generated page must not embed a local path')
+        emitted = self.payload()['editor']
+        self.assertEqual(set(emitted['bundle']),
+                         {'kind', 'version', 'api', 'sha256'})
+        self.assertEqual(emitted['bundle']['sha256'], trusted['sha256'])
+        self.assertEqual(emitted['sha256'], frozen['editor']['sha256'],
+                         'the editor digest still binds the full record')
+        # The shipped transport hands the owner factory this emitted binding.
+        proc = subprocess.run(
+          [node, str(HARNESS), str(TRANSPORT), 'cli-binding',
+           json.dumps(emitted), json.dumps(local)],
+          capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        result = self.write_packet(frozen)
+        imported = json.loads(self.cli(
+          'import', self.packet, '--resolved', self.resolved).stdout)
+        self.assertEqual(imported['project_state'], result['project_state'])
+
+  def test_editor_scripts_refuse_nul_and_closing_script_markup(self):
+    script = self.bundle / 'editor.js'
+    original = script.read_bytes()
+    for extra in (b'\n// </script>\n', b"\nconst s = '</ScRiPt';\n",
+                  b"\nconst s = '\0';\n"):
+      with self.subTest(extra=extra):
+        script.write_bytes(original + extra)
+        refused = self.cli('editor', 'trust', self.bundle, '--yes', code=2)
+        self.assertIn('editor script contains NUL or closing script markup',
+                      refused.stderr)
+        self.assertEqual(json.loads(self.cli('editor', 'list').stdout), [])
+    script.write_bytes(original + b"\nconst s = '<script>';\n")
+    self.trust_and_build()
+    self.assertEqual(self.page.read_text('utf8').count('</script>'), 1)
+
   def test_browser_editor_projection_keeps_frozen_binding_and_domain(self):
-    def payload():
-      emitted = self.page.read_text('utf8').split(
-        'window.REVIEW_SHEET_DATA=', 1)[1]
-      value, end = json.JSONDecoder().raw_decode(emitted)
-      self.assertTrue(emitted[end:].startswith(';\n'))
-      return value
+    payload = self.payload
+    browser_editor = self.browser_editor
 
     marker = 'one-authoritative-editor-card-α🦉'
     self.description['editor']['parameters']['ui'] = {
@@ -148,7 +218,7 @@ ReviewSheet.registerEditor({kind:'fixture-editor',version:'1.0.0',api:1,
           'browser payload must not duplicate the full raw editor subtree')
         self.assertEqual(emitted['description'], {key: value for key, value
           in frozen['description'].items() if key != 'editor'})
-        self.assertEqual(emitted['editor'], frozen['editor'])
+        self.assertEqual(emitted['editor'], browser_editor(frozen['editor']))
         self.assertEqual(frozen['description']['editor'],
                          self.description['editor'])
         self.assertEqual(emitted['editor']['parameters'],
@@ -165,7 +235,8 @@ ReviewSheet.registerEditor({kind:'fixture-editor',version:'1.0.0',api:1,
         # Re-emitting a page does not project/mutate the persisted description.
         self.cli('build', self.desc, '--output', self.page)
         self.assertEqual(self.resolved.read_bytes(), resolved_bytes)
-        self.assertEqual(payload()['editor'], frozen['editor'])
+        self.assertEqual(payload()['editor'],
+                         browser_editor(frozen['editor']))
 
     del self.description['editor']
     self.write_description()

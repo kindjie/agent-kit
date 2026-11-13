@@ -814,9 +814,21 @@ publication; this launcher suite does not prove those operations.
 The editor view regression harness also covers owner visibility during group
 navigation/search, exact-limit compact downloads, owner-key undo (no undeclared
 session undo hook), and explicit editor-state labels. The CLI byte-limit case
-runs without Node; shipped-page Node VM download-to-CLI composition is separate
-integration evidence. Both API1 and API2 preserve opaque multibyte/escaped text.
+runs without Node. No committed test imports a page download through the CLI:
+the view harness accepts an optional binding argument (`export-limit-review`)
+and the editor harness an optional page-path argument (its host cases), but
+committed tests pass neither, so this suite gives no download-to-CLI
+composition evidence. Both API1 and API2 preserve opaque multibyte/escaped text.
 Neither Node VM coverage nor CLI success is a real-browser/media fidelity claim.
+
+Local-path regressions build API1 and API2 editor pages with the CLI and
+require that no temporary-directory or bundle path appears anywhere in the
+page, that the emitted editor carries only the bundle kind, version, API and
+digest, and that the frozen resolved file keeps the full bundle record. A
+sixth Node case, `cli-binding`, passes that emitted binding through the
+shipped transport and checks the configuration handed to the owner factory.
+It does not run the generated page itself. Editor script regressions refuse
+NUL and closing-script markup in any letter case at trust time.
 
 Component trust/build contracts also cover decoded one-character JavaScript
 key literals, escaped aliases, malformed keys and duplicate refusal.

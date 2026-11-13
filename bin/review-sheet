@@ -435,6 +435,9 @@ def editor_bundle(folder, limits):
     text = raw.decode('utf-8')
     if name in styles and ('\0' in text or re.search(r'</style', text, re.I)):
       raise ReviewError('editor stylesheet contains NUL or closing style markup')
+    if name in scripts and ('\0' in text or
+                            re.search(r'</script', text, re.I)):
+      raise ReviewError('editor script contains NUL or closing script markup')
     contents[name] = raw
   inventory = {name: hashlib.sha256(raw).hexdigest()
                for name, raw in contents.items()}
@@ -1389,7 +1392,12 @@ def make_page(description, scopes, resolved_hash, scripts, limits, output,
           'resolved_sha256': resolved_hash, 'limits': limits,
           'components': component_specs}
   if editor:
-    data['editor'] = editor
+    # The page and owner code get the binding and the bundle identity only.
+    # The bundle's local path, manifest and file inventory stay in the
+    # frozen resolved file; the editor digest still covers that full record.
+    data['editor'] = {**editor, 'bundle': {
+      key: editor['bundle'][key]
+      for key in ('kind', 'version', 'api', 'sha256')}}
   payload = json.dumps(data, ensure_ascii=False).replace('<', '\\u003c')
   script = 'window.REVIEW_SHEET_DATA=' + payload + ';\n' + core + '\n'
   script += '\n'.join(contents['component.js'].decode('utf-8') for _,

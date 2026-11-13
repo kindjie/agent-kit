@@ -37,6 +37,10 @@ decisions, picks or synchronized comparisons. Hidden historical records may
 remain in the initial text independently of visible items. The frozen resolved
 file keeps the complete source description. The browser embeds one authoritative
 resolved editor configuration; owner code receives it through `create(config)`.
+Its `bundle` holds only `kind`, `version`, `api` and the bundle digest. The
+bundle's local path, manifest and file inventory stay in the frozen resolved
+file and never reach the page or owner code; the editor digest still covers
+that full record.
 
 The folder contains `editor.json` with `role: "editor"`, a simple `kind`,
 SemVer `version`, `api: 1` (state only) or `api: 2` (one owner view),
@@ -45,7 +49,9 @@ are ordinary trusted code under the page CSP, with no additional network,
 worker, wasm or media authority. Review their complete inventory before
 `review-sheet editor trust PATH --yes`. Editor trust lives separately from
 component trust; `editor list` and `editor untrust SHA256` inspect/revoke it.
-Existing component file/total limits also bound editor bundles.
+Existing component file/total limits also bound editor bundles. A script
+containing NUL or closing-script markup (`</script`, in any letter case) is
+refused, because the page inlines trusted scripts in one script element.
 
 API2 may also declare an ordered `styles` array of relative `.css` files.
 Styles share those exact file/total bounds, safe-path checks and trusted bundle
@@ -276,7 +282,11 @@ the description, nearest repository `.review-sheet/components/`, user config,
 then built-ins. A found untrusted or invalid override fails the build. The
 frozen file records selected manifests, file hashes, and bundle digests.
 The page uses a hash CSP, enables wasm evaluation only for a selected
-component declaring wasm, and blocks network connections.
+component declaring wasm, and blocks network connections. On every page,
+with or without an editor, CRLF and lone CR in the emitted stylesheet and
+script text are normalized to LF before the CSP hashes are computed, matching
+the text the HTML parser exposes. A trusted script saved with CRLF line
+endings therefore passes its hash; trust still binds the original file bytes.
 
 ## Presets
 

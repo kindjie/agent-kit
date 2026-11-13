@@ -70,6 +70,31 @@ function bindingContract() {
   assert.equal(f.transport.envelope().editor_sha256, digest,
     'caller mutation must not retag frozen state');
 }
+function cliBindingContract() {
+  // A binding emitted by the CLI into a page: the owner factory receives it
+  // unchanged, and nothing in it locates files on the resolving machine.
+  const binding = JSON.parse(process.argv[4]);
+  const local = JSON.parse(process.argv[5]);
+  assert.ok(Array.isArray(local) && local.length > 0);
+  let config;
+  Transport.create({binding, limit: 1 << 20, create(value) {
+    config = value;
+    let raw = value.initial_state;
+    return {snapshot: () => raw, prepare(next) {
+      const old = raw;
+      return {snapshot: () => next, commit() { raw = next; },
+        rollback() { raw = old; }};
+    }};
+  }});
+  const text = JSON.stringify(config);
+  assert.equal(text, JSON.stringify(binding),
+    'factory config must be the emitted binding');
+  assert.deepEqual(Object.keys(config.bundle).sort(),
+    ['api', 'kind', 'sha256', 'version']);
+  for (const path of local)
+    assert.equal(text.includes(path), false,
+      'factory config must not carry a local filesystem path');
+}
 function bindingSnapshotContract() {
   // Count real full-config snapshots, not RSS or engine string backing stores.
   // The ordinary fixture/domain below is unchanged by this structural budget.
@@ -258,6 +283,7 @@ async function main() {
   if (name === 'notify') { notifyContract(); return; }
   if (name === 'binding') { bindingContract(); return; }
   if (name === 'binding-snapshot') { bindingSnapshotContract(); return; }
+  if (name === 'cli-binding') { cliBindingContract(); return; }
   if (name === 'async') { await asyncContract(); return; }
   if (['startup', 'headers', 'ordinary', 'unrecovered'].includes(name)) {
     await hostContract(name, process.argv[4]); return;
