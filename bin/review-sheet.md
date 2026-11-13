@@ -49,6 +49,16 @@ are ordinary trusted code under the page CSP, with no additional network,
 worker, wasm or media authority. Review their complete inventory before
 `review-sheet editor trust PATH --yes`. Editor trust lives separately from
 component trust; `editor list` and `editor untrust SHA256` inspect/revoke it.
+A trust row is the bundle's kind, version, digest, resolved path and role.
+Trusting an unchanged bundle again leaves its single row as it is. A bundle
+whose files changed has a new digest, so trusting it adds a row; the earlier
+row is not updated in place and stays until `editor untrust` removes it, so
+results bound to the earlier bundle still import. `editor list` adds
+`current` to each row: true only while the files at its path still produce
+that row. A `trusted-editors.json` that is not the expected object, or holds
+a row that is not an object with those five text fields, is refused by every
+command that reads it, with one message and exit status 2; the file is left
+as it is.
 Existing component file/total limits also bound editor bundles. A script
 containing NUL or closing-script markup (`</script`, in any letter case) is
 refused, because the page inlines trusted scripts in one script element.

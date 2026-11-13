@@ -446,39 +446,55 @@ def editor_bundle(folder, limits):
           'files': inventory, 'sha256': digest(inventory)}, contents
 
 
+EDITOR_TRUST_KEYS = ('kind', 'version', 'sha256', 'path', 'role')
+
+
 def editor_trust():
   path = owner_root() / 'trusted-editors.json'
   trust = read_json(path, LIMITS['component']) if path.exists() else \
     {'schema_version': 1, 'editors': []}
   if (not isinstance(trust, dict) or trust.get('schema_version') != 1 or
-      not isinstance(trust.get('editors'), list)):
-    raise ReviewError('invalid trusted-editors.json')
+      not isinstance(trust.get('editors'), list) or
+      any(not isinstance(row, dict) or
+          any(not isinstance(row.get(key), str) for key in EDITOR_TRUST_KEYS)
+          for row in trust['editors'])):
+    raise ReviewError(f'invalid trusted-editors.json: {path}')
   return trust
 
 
 def editor_trusted(bundle):
-  return any(all(row.get(k) == bundle.get(k) for k in
-    ('kind', 'version', 'sha256', 'path', 'role'))
-    for row in editor_trust()['editors'])
+  return any(all(row[key] == bundle.get(key) for key in EDITOR_TRUST_KEYS)
+             for row in editor_trust()['editors'])
 
 
 def editor_command(args):
   trust = editor_trust()
   if args.operation == 'list':
-    print(json.dumps(trust['editors'], indent=2))
+    rows = []
+    for entry in trust['editors']:
+      try:
+        current, _ = editor_bundle(Path(entry['path']), LIMITS)
+        matches = all(current[key] == entry[key]
+                      for key in EDITOR_TRUST_KEYS)
+      except (ReviewError, OSError, ValueError, TypeError):
+        matches = False
+      rows.append({**entry, 'current': matches})
+    print(json.dumps(rows, indent=2))
     return
   if args.operation == 'trust':
     bundle, _ = editor_bundle(args.value.resolve(), LIMITS)
     if not args.yes:
       raise ReviewError('editor trust requires --yes after reviewing code')
-    trust['editors'].append({k: bundle[k] for k in
-      ('kind', 'version', 'sha256', 'path', 'role')})
     print(json.dumps(bundle, indent=2))
+    # The same identity is one row: trusting it again changes nothing.
+    if editor_trusted(bundle):
+      return
+    trust['editors'].append({key: bundle[key] for key in EDITOR_TRUST_KEYS})
   else:
-    if not any(row.get('sha256') == args.value for row in trust['editors']):
+    if not any(row['sha256'] == args.value for row in trust['editors']):
       raise ReviewError('untrusted editor digest absent')
     trust['editors'] = [row for row in trust['editors']
-                        if row.get('sha256') != args.value]
+                        if row['sha256'] != args.value]
   atomic_json(owner_root() / 'trusted-editors.json', trust, mode=0o600)
 
 

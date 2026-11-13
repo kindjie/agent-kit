@@ -191,6 +191,91 @@ ReviewSheet.registerEditor({kind:'fixture-editor',version:'1.0.0',api:1,
     self.trust_and_build()
     self.assertEqual(self.page.read_text('utf8').count('</script>'), 1)
 
+  def trust_file(self):
+    return self.config / 'review-sheet' / 'trusted-editors.json'
+
+  def listed(self):
+    return json.loads(self.cli('editor', 'list').stdout)
+
+  def test_trusting_again_keeps_one_row_and_list_reports_current_files(self):
+    trusted, frozen = self.trust_and_build()
+    first = trusted['sha256']
+    self.write_packet(frozen)
+    stored = self.trust_file().read_bytes()
+    self.cli('editor', 'trust', self.bundle, '--yes')
+    self.assertEqual(self.trust_file().read_bytes(), stored,
+                     'trusting an unchanged bundle again must change nothing')
+    self.assertEqual(self.trust_file().stat().st_mode & 0o777, 0o600)
+    rows = self.listed()
+    self.assertEqual([(row['sha256'], row['current']) for row in rows],
+                     [(first, True)])
+    self.assertEqual(rows[0]['path'], str(self.bundle.resolve()))
+    # Changed files are a new identity. The earlier row stays until it is
+    # untrusted, and the listing says it no longer matches the files.
+    with (self.bundle / 'editor.js').open('a', encoding='utf8') as stream:
+      stream.write('\n// reviewed fixture change\n')
+    self.assertEqual([(row['sha256'], row['current']) for row in
+                      self.listed()], [(first, False)])
+    second = json.loads(self.cli('editor', 'trust', self.bundle,
+                                 '--yes').stdout)['sha256']
+    self.assertNotEqual(second, first)
+    self.cli('editor', 'trust', self.bundle, '--yes')
+    self.assertEqual([(row['sha256'], row['current']) for row in
+                      self.listed()], [(first, False), (second, True)])
+    saved = json.loads(self.trust_file().read_text('utf8'))['editors']
+    self.assertTrue(all('current' not in row for row in saved),
+                    'the listing must not write its derived field')
+    # Results bound to the earlier bundle import while its row remains.
+    self.cli('import', self.packet, '--resolved', self.resolved)
+    self.cli('editor', 'untrust', first)
+    self.assertEqual([(row['sha256'], row['current']) for row in
+                      self.listed()], [(second, True)])
+    revoked = self.cli('import', self.packet, '--resolved', self.resolved,
+                       code=2)
+    self.assertIn('editor trust revoked or changed', revoked.stderr)
+    shutil.rmtree(self.bundle)
+    self.assertEqual([(row['sha256'], row['current']) for row in
+                      self.listed()], [(second, False)])
+
+  def test_malformed_trust_file_is_refused_without_a_traceback(self):
+    _, frozen = self.trust_and_build()
+    self.write_packet(frozen)
+    path = self.trust_file()
+    good = json.loads(path.read_text('utf8'))
+    row = good['editors'][0]
+    def rows(*values):
+      return json.dumps({'schema_version': 1, 'editors': list(values)})
+    shapes = ['[]', '"text"', 'null', '7', '{"schema_version": 1}',
+              '{"schema_version": 2, "editors": []}',
+              '{"schema_version": 1, "editors": {}}',
+              '{"schema_version": 1, "editors": "rows"}',
+              rows('row'), rows(None), rows([]), rows(7), rows(row, 'row'),
+              rows({**row, 'path': 5}), rows({**row, 'sha256': None}),
+              rows({**row, 'kind': ['fixture-editor']}),
+              rows({**row, 'version': 1}), rows({**row, 'role': True}),
+              rows({key: value for key, value in row.items()
+                    if key != 'role'}),
+              '{broken', b'\xff\xfe{}']
+    commands = [('editor', 'list'),
+                ('editor', 'trust', self.bundle, '--yes'),
+                ('editor', 'untrust', row['sha256']),
+                ('build', self.desc, '--output', self.root / 'again.html'),
+                ('import', self.packet, '--resolved', self.resolved)]
+    for shape in shapes:
+      before = shape if isinstance(shape, bytes) else shape.encode()
+      path.write_bytes(before)
+      for command in commands:
+        with self.subTest(shape=shape, command=command[:2]):
+          refused = self.cli(*command, code=2)
+          self.assertIn('trusted-editors.json', refused.stderr)
+          self.assertNotIn('Traceback', refused.stderr)
+          self.assertEqual(len(refused.stderr.strip().splitlines()), 1)
+          self.assertEqual(path.read_bytes(), before)
+    self.assertFalse((self.root / 'again.html').exists())
+    path.write_text(json.dumps(good), encoding='utf8')
+    self.assertEqual([entry['current'] for entry in self.listed()], [True])
+    self.cli('import', self.packet, '--resolved', self.resolved)
+
   def test_browser_editor_projection_keeps_frozen_binding_and_domain(self):
     payload = self.payload
     browser_editor = self.browser_editor

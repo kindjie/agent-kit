@@ -830,6 +830,16 @@ shipped transport and checks the configuration handed to the owner factory.
 It does not run the generated page itself. Editor script regressions refuse
 NUL and closing-script markup in any letter case at trust time.
 
+Editor trust regressions run the CLI against a temporary configuration
+directory. Trusting an unchanged bundle twice must leave one byte-identical
+trust file; changed files add a row while `editor list` reports the earlier
+row as not current; results bound to the earlier bundle import until that row
+is untrusted. Twenty-one malformed `trusted-editors.json` shapes (wrong
+top-level type, version or list, rows that are not objects, missing or
+non-text fields, invalid JSON and invalid UTF-8) must each be refused by
+`editor list`, `editor trust`, `editor untrust`, `build` and `import` with one
+message naming the file, exit status 2, no traceback and the file unchanged.
+
 Component trust/build contracts also cover decoded one-character JavaScript
 key literals, escaped aliases, malformed keys and duplicate refusal.
 
