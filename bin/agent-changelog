@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(os.path.realpath(__file__)).parent))
 from agent_records_core import (
   push_policy,
   EXIT_TEXT, FORCE_TEXT, RecordsError, config, directory, doctor, init_repo,
+  refuse_pinned_init,
   duration, one_line, record_locks, require_agent, sync, unexpected_error,
 )
 from agent_records_changelog import (
@@ -228,6 +229,7 @@ def main():
       raise RecordsError("--force requires an owner instruction reason", 2)
   cfg = config()
   if args.command == "init":
+    refuse_pinned_init(cfg)
     init_repo(args.path, "changelog", args.adopt, args.allow)
     return 0
   root = directory("changelog", args.dir, cfg)

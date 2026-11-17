@@ -219,6 +219,33 @@ class SetupTest(RecordsFixture):
     self.run_cmd("agent-task", "list", env=no_env, code=2)
     self.run_cmd("agent-task", "--dir", self.tasks, "list", env=no_env)
 
+  def test_pinned_roots_refuse_other_directories(self):
+    self.init()
+    cfg = self.base / "agent-kit" / "records.json"
+    cfg.parent.mkdir(exist_ok=True)
+    cfg.write_text(json.dumps({"pin_roots": True,
+                               "tasks_dir": str(self.tasks),
+                               "changelog_dir": str(self.changes)}))
+    env = dict(self.env)
+    env.pop("AGENT_TASKS_DIR")
+    env.pop("AGENT_CHANGELOG_DIR")
+    self.run_cmd("agent-task", "--dir", self.tasks, "list", env=env)
+    self.run_cmd("agent-changelog", "list", env=env)
+    cfg.write_text(json.dumps({"pin_roots": True, "tasks_dir": "tasks"}))
+    self.run_cmd("agent-task", "list", env=env, code=2)
+    cfg.write_text(json.dumps({"pin_roots": True}))
+    other = self.base / "other"
+    other.mkdir()
+    self.run_cmd("agent-task", "--dir", other, "list", code=2)
+    self.run_cmd("agent-changelog", "--dir", other, "list", code=2)
+    self.run_cmd("agent-task", "--dir=" + str(other), "list", code=2)
+    fresh = self.base / "fresh"
+    self.run_cmd("agent-task", "init", fresh, code=2)
+    self.run_cmd("agent-changelog", "init", fresh, code=2)
+    self.assertFalse(fresh.exists())
+    cfg.write_text(json.dumps({"pin_roots": "yes"}))
+    self.run_cmd("agent-task", "list", code=2)
+
   def test_unconfigured_directory_is_usage_error(self):
     env = dict(self.env)
     env.pop("AGENT_TASKS_DIR", None)
