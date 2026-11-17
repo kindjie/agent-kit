@@ -83,9 +83,9 @@ messages. Use `agent-changelog new` for state that outlives the session and
 record serious mistakes. Task and change logs are reminders and handoff aids
 for cleanup, especially after an interruption or when another agent takes over;
 they are not approval gates or obstacles to cleaning up your own finished work.
-Consult relevant records with `agent-changelog list --open --machine`; an entry
-never establishes deletion authority. The skill covers handoffs, verification,
-and cleanup details.
+Consult this machine's open entries with `agent-changelog list --open
+--machine`; an entry never establishes deletion authority. The skill covers
+handoffs, verification, and cleanup details.
 
 After cleanup, close or update the relevant records with what was verified. An open task
 or entry alone is not a retention requirement and need not be closed before

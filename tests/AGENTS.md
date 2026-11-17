@@ -525,6 +525,9 @@ initialization, task claims, permissions, help, checklist corrections
 added-check marker text, invalid value markers, legacy ambiguous values,
 exact and ambiguous text lookup, non-empty correction reasons,
 closing and watch cursors.
+`test_agent_records_arguments.py` covers accepted flag variants (`--last`,
+`events --json`), unchanged abbreviations, and the corrective errors for
+unknown flags, misplaced main options and unknown commands.
 `test_agent_records_changelog_locations.py` checks accepted paths and brace
 lists, rejected prose and separators, writer stderr warnings, and advisory
 lint diagnostics for unparseable locations and repository fields.

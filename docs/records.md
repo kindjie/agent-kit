@@ -59,6 +59,14 @@ put a `records.json` in `${XDG_CONFIG_HOME:-~/.config}/agent-kit/`:
 }
 ```
 
+An unknown flag is refused with the flags that subcommand accepts and, where
+it has one, the flag probably meant: `--json` for `--machine` or `--format
+json`, `--tail` for `--limit`. A main option such as `--unlocked` given after
+the subcommand is refused with a reminder to put it first; only `agent-task`
+also accepts `--agent` there. An unknown command suggests the closest one.
+`show --last N` is accepted as `--tail N`, and `events --json` is accepted
+because its output is always JSON.
+
 `--dir` overrides each directory's configured path, unless `"pin_roots":
 true` is set. Then the configured directories must be absolute, `--dir`
 must name one of them, and `init` is refused, because each would otherwise

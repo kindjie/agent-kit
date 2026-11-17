@@ -17,6 +17,7 @@ from agent_records_core import (
   refuse_pinned_init,
   duration, one_line, record_locks, require_agent, sync, unexpected_error,
 )
+from agent_records_cli import Parser, parse
 from agent_records_changelog import (
   lint_records, lint_warnings, list_records, migrate, new_entry, show_record,
   update_record,
@@ -38,7 +39,7 @@ def parser():
       "Cursor: h:HASH identifies the current file bytes. watch --until "
       "accepts closed or change; --after resumes from a cursor.")
   )
-  p = argparse.ArgumentParser(
+  p = Parser(
     description=textwrap.fill("Manage changelog files and git commits. " +
                               EXIT_TEXT),
     epilog=details + "\nExample: agent-changelog list",
@@ -219,7 +220,7 @@ def parser():
 
 
 def main():
-  args = parser().parse_args()
+  args = parse(parser())
   if not shutil.which("git"):
     raise RecordsError("git is required", 2)
   duration(args.wait, "wait")

@@ -202,9 +202,9 @@ clean up".
 To combine kinds, pass one quoted value with spaces around `+`, for example
 `--kind 'backup + scratch'`. The compact form `backup+scratch` is invalid.
 
-Consult relevant cleanup records with `agent-changelog list --open --machine`
-(add `--here` for this repository), especially when taking over another agent's
-state. An entry explains why state exists; it never authorizes deleting it. An
+Consult this machine's open cleanup records with `agent-changelog list --open
+--machine` (`--machine` filters by host; add `--here` for this repository),
+especially when taking over another agent's state. An entry explains why state exists; it never authorizes deleting it. An
 open task or entry alone does not require retention or prior closure. Missing
 or stale records do not prohibit cleanup when current evidence establishes
 safety; reconcile records after the cleanup.
