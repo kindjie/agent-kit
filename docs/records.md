@@ -59,7 +59,14 @@ put a `records.json` in `${XDG_CONFIG_HOME:-~/.config}/agent-kit/`:
 }
 ```
 
-`--dir` overrides each directory's configured path. `AGENT_MACHINE` overrides
+`--dir` overrides each directory's configured path, unless `"pin_roots":
+true` is set. Then the configured directories must be absolute, `--dir`
+must name one of them, and `init` is refused, because each would otherwise
+let a caller run git in a repository whose config can start programs. Set
+it before letting an agent run records commands without review, for example
+through Codex allow rules. Repository detection still runs `git rev-parse`
+in the working directory, with fsmonitor disabled and output to a pipe so
+no pager starts. `AGENT_MACHINE` overrides
 the machine setting. Without either, the commands use `hostname -s`, which
 can change with network configuration; pin a stable machine name. There is no
 implicit records directory selection. For custom or shared stores, initialize

@@ -124,6 +124,8 @@ def config():
   for key in ("tasks_dir", "changelog_dir", "machine"):
     if key in data and not isinstance(data[key], str):
       raise RecordsError(key + " must be text", 2)
+  if not isinstance(data.get("pin_roots", False), bool):
+    raise RecordsError("pin_roots must be true or false", 2)
   if "push" in data:
     value = data["push"]
     if isinstance(value, dict):
@@ -149,8 +151,26 @@ def directory(kind, explicit=None, cfg=None):
   cfg = cfg if cfg is not None else config()
   env = "AGENT_TASKS_DIR" if kind == "tasks" else "AGENT_CHANGELOG_DIR"
   key = "tasks_dir" if kind == "tasks" else "changelog_dir"
-  value = explicit or os.environ.get(env) or cfg.get(key)
+  configured = os.environ.get(env) or cfg.get(key)
+  if cfg.get("pin_roots") and configured:
+    if not Path(configured).expanduser().is_absolute():
+      raise RecordsError("pin_roots needs an absolute " + kind +
+                         " directory, not one relative to the working "
+                         "directory", 2)
+  if explicit and cfg.get("pin_roots"):
+    pinned = Path(configured).expanduser().resolve() if configured else None
+    if Path(explicit).expanduser().resolve() != pinned:
+      raise RecordsError("--dir must be the configured " + kind +
+                         " directory while pin_roots is set", 2)
+  value = explicit or configured
   return Path(value).expanduser().resolve() if value else None
+
+
+def refuse_pinned_init(cfg):
+  """init runs git in any directory, so pinned roots forbid it."""
+  if cfg.get("pin_roots"):
+    raise RecordsError("init is refused while pin_roots is set; unset it "
+                       "in records.json to add a records root", 2)
 
 
 def machine(cfg=None):
