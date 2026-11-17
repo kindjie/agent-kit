@@ -71,9 +71,22 @@ answers for manual resolution.
 Clicking or tabbing into an answer keeps keyboard focus in that control.
 Cmd+Enter or Ctrl+Enter saves a text or number answer; Escape returns focus
 to its card. Authority answers still need their explicit confirmation.
-The introduction and banners scroll away; a slim pinned bar keeps progress,
+The introduction scrolls away; a slim pinned bar keeps progress,
 export, import, keys and the focused item's group available. Tall cards
 align below the bar; cards that fit scroll fully into view.
+Messages appear directly below the bar in a live region, including while
+scrolled. Errors carry an "Error:" prefix and alert role. The next pointer,
+keyboard or input action clears the message; it also expires after eight
+seconds. Messages overlay the page without increasing the bar's height.
+
+Image Compare shows the next image in the same item, skipping other media
+kinds, and cycles through the remaining images. Both images use the same
+pixel scale and retain their aspect ratios; captions use `alt` text or the
+image's position (for example, "2 of 6"). Click either image or press `z`
+to toggle full size; **Close comparison** returns to one image. For an item
+with one image, Compare uses another image-bearing item in its group. An
+explicit group `comparison` keeps that cross-item behavior even when an
+item has several images. No available alternative means no Compare button.
 
 Backtick-delimited text renders as inline code in item fields, titles,
 instructions, caveats and decision questions. Other text, including HTML,
@@ -158,11 +171,17 @@ and media index.
 The read-only per-media API has `url` (verified blob URL or sibling file URL),
 `bytes`
 (a copy of embedded bytes, else `null`), `settings`, and `group` (ordered
-public members and focused ID). `api.media(itemId, index)` awaits a sibling
-handle in the same group and rejects missing, failed, or disposed entries.
+public members and focused ID). `item` supplies the rendering item's `id`,
+current media `index`, and ordered `media` metadata (`index`, `kind`, and
+`label`, the optional `alt` text). Group members also expose that media
+metadata; `group.comparison`, when present, supplies `reference` and
+`candidates` IDs. These objects and arrays are frozen. `api.media(itemId,
+index)` awaits a handle in the same item or group and rejects missing,
+failed, or disposed entries.
 It exposes bytes, URL, play and pause, never answers. Avoid awaiting mutually
 dependent siblings inside `render`. `api.ready()` marks non-native playback
-ready, `api.fail(text)` blocks it, and `api.note(text)` shows escaped text.
+ready, `api.fail(text)` blocks it, and `api.note(text, error = false)` shows
+escaped transient text below the pinned bar.
 `api.worker(name)` creates a tracked Worker from declared inlined source;
 `api.wasm(name, imports)` instantiates declared inlined bytes. Both reject
 undeclared names. Components never fetch extra paths.
@@ -200,6 +219,13 @@ then built-ins. A found untrusted or invalid override fails the build. The
 frozen file records selected manifests, file hashes, and bundle digests.
 The page uses a hash CSP, enables wasm evaluation only for a selected
 component declaring wasm, and blocks network connections.
+
+Built-in image version 1.1.0 adds image cycling, labelled equal-scale pairs,
+and an explicit close control. Its manifest and literal registration version
+match; builds freeze its new file hashes and bundle digest as usual. Existing
+external trust records do not authorize a changed bundle: review and trust
+the new exact digest when using an external copy. No owner trust record is
+rewritten by a built-in update; preserve old pages with their frozen files.
 
 ## Presets
 

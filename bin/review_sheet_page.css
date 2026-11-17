@@ -5,7 +5,8 @@ header { background: #fff;
   border-bottom: 2px solid #3b526f; padding: .7rem 0; }
 h1 { margin: 0; font-size: 1.6rem; }
 h2 { margin-bottom: .35rem; }
-.toolbar { position: sticky; top: 0; z-index: 5; background: #fff;
+.pinned { position: sticky; top: 0; z-index: 5; }
+.toolbar { background: #fff;
   display: flex; gap: .5rem; align-items: center; padding: .3rem .5rem;
   border-bottom: 2px solid #3b526f; box-sizing: border-box;
   min-height: 2.75rem; overflow-x: auto; }
@@ -19,6 +20,10 @@ button { cursor: pointer; padding: .25rem .55rem; }
 :focus-visible { outline: 3px solid #155cbd; outline-offset: 2px; }
 .banner { padding: .5rem; margin: .5rem 0; border: 2px solid #a35a00;
   background: #fff4d6; }
+#messages { position: absolute; top: 100%; left: 0; right: 0;
+  max-height: calc(100vh - 4rem); overflow: auto; pointer-events: none; }
+#messages .banner { margin: 0; overflow-wrap: anywhere;
+  box-sizing: border-box; pointer-events: auto; }
 .error { border-color: #a22; background: #ffe5e5; }
 .group { margin: 1.4rem 0; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit,
@@ -33,6 +38,14 @@ button { cursor: pointer; padding: .25rem .55rem; }
 .item summary { cursor: pointer; font-weight: 600; }
 .media { margin: .5rem 0; }
 .media img, .media video { max-width: 100%; max-height: 28rem; }
+.image-view { min-width: 0; }
+.image-panels { display: flex; align-items: flex-start; gap: .5rem;
+  overflow: auto; }
+.image-panels figure { margin: 0; flex: 0 0 auto; min-width: 0; }
+.image-panels figcaption { max-width: 60ch; overflow-wrap: anywhere; }
+.image-panels img { display: block; cursor: zoom-in; }
+.image-view.zoomed img { cursor: zoom-out; }
+.image-controls { display: flex; gap: .5rem; margin-top: .35rem; }
 .media audio { width: 100%; }
 .media pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .decision { margin: .5rem 0; padding: .5rem; border-left: 3px solid #8a9aab; }

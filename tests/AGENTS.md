@@ -44,6 +44,9 @@ selected-answer mark, legacy field visibility, prompt emphasis, media before,
 between or after fields, and collapsed details after answer controls. Python
 checks reject missing/duplicate presentation references and bind valid
 presentation metadata into frozen answer digests without changing v1 results.
+Pointer regressions also cover scrolled live messages and their dismissal,
+multi-image Compare cycling/closing, shared pixel scale, pointer/`z` zoom,
+no Compare for an isolated image, and ordinary/configured group alternatives.
 
 ## SteamOS
 

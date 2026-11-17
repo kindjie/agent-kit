@@ -31,6 +31,7 @@
   let reviewerValue = '';
   let pageDisposed = false;
   let generation = 0;
+  let noteTimer;
 
   function mediaKey(item, index) { return item.id + ':' + index; }
   function deferred() {
@@ -131,14 +132,22 @@
       '%' + character.charCodeAt(0).toString(16).toUpperCase()) +
       '-results.json';
   }
+  function clearNote() {
+    clearTimeout(noteTimer);
+    document.querySelector('#messages')?.replaceChildren();
+  }
   function note(text, error) {
     const host = document.querySelector('#messages');
     if (!host) {
       pendingNotes.push([text, error]);
       return null;
     }
-    const banner = el('p', 'banner' + (error ? ' error' : ''), text);
+    clearTimeout(noteTimer);
+    const banner = el('p', 'banner' + (error ? ' error' : ''),
+      (error ? 'Error: ' : '') + text);
+    banner.setAttribute('role', error ? 'alert' : 'status');
     host.append(banner);
+    noteTimer = setTimeout(clearNote, 8000);
     return banner;
   }
   function bytes(base64) {
@@ -564,13 +573,22 @@
     };
     const api = {
       url: null, bytes: null,
+      item: Object.freeze({id: item.id, index,
+        media: Object.freeze((item.media || []).map((entry, at) =>
+          Object.freeze({index: at, kind: entry.kind, label: entry.alt || ''})))}),
       settings: Object.freeze({gain: desc.settings?.gain ?? 0.15,
         gainCap: 0.5, privacy: desc.privacy,
         darkMode: matchMedia('(prefers-color-scheme: dark)').matches,
         reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches}),
       group: group ? Object.freeze({id: group.id, layout: group.layout,
+        comparison: group.comparison ? Object.freeze({
+          reference: group.comparison.reference,
+          candidates: Object.freeze([...(group.comparison.candidates || [])])
+        }) : null,
         members: Object.freeze(group.items.map(entry => Object.freeze({
-          id: entry.id, label: entry.title || entry.id}))),
+          id: entry.id, label: entry.title || entry.id,
+          media: Object.freeze((entry.media || []).map((row, at) =>
+            Object.freeze({index: at, kind: row.kind, label: row.alt || ''})))}))),
         get focused() {
           return group.items.includes(allItems[focused]) ?
             allItems[focused].id : null;
@@ -578,7 +596,8 @@
       media: (itemId, mediaIndex) => {
         if (resources.disposed || pageDisposed)
           return Promise.reject(Error('media disposed'));
-        if (!group || !group.items.some(entry => entry.id === itemId))
+        if (itemId !== item.id &&
+            !group?.items.some(entry => entry.id === itemId))
           return Promise.reject(Error('missing sibling media'));
         const siblingKey = itemId + ':' + mediaIndex;
         if (failedMedia.has(siblingKey))
@@ -601,7 +620,7 @@
           settleReady();
       },
       fail: message => failMedia(String(message)),
-      note: message => note(message),
+      note: (message, error) => note(message, error),
       worker: name => {
         if (resources.disposed || pageDisposed)
           throw Error('media disposed');
@@ -1049,7 +1068,10 @@
     file.addEventListener('change', importResults);
     toolbar.append(file);
     const messages = el('div'); messages.id = 'messages';
-    app.append(header, toolbar, messages,
+    messages.setAttribute('aria-live', 'polite');
+    messages.setAttribute('aria-atomic', 'true');
+    const pinned = el('div', 'pinned'); pinned.append(toolbar, messages);
+    app.append(header, pinned,
       button('Discard stale draft entries', discardDraft));
     for (const [message, error] of pendingNotes) note(message, error);
     pendingNotes.length = 0;
@@ -1337,7 +1359,11 @@
           event.preventDefault(); return;
         }
       }
-      for (const entry of mediaViews.get(item.id) || []) {
+      const entries = [...(mediaViews.get(item.id) || [])];
+      // Give the image/control the reader last focused first refusal of z.
+      entries.sort((a, b) => Number(b.view.contains(active)) -
+        Number(a.view.contains(active)));
+      for (const entry of entries) {
         try {
           if (entry.component.key?.(event, entry.view, entry.api)) {
             event.preventDefault(); return;
@@ -1376,6 +1402,8 @@
         'Missing component registration: ' + kind);
     for (const error of registryErrors) note(error, true);
     if (registryErrors.length) renderStatus();
+    for (const type of ['pointerdown', 'keydown', 'input', 'change'])
+      document.addEventListener(type, clearNote, true);
     document.addEventListener('keydown', keydown);
     window.addEventListener('pagehide', () => {
       pageDisposed = true;
