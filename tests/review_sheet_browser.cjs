@@ -288,6 +288,7 @@ async function check(browserType, name, launchOptions = {}) {
   }
   console.log('RUN: ' + name + ' ' + browser.version());
   try {
+    await require('./review_sheet_page_checks.cjs')(browser, root);
     await checkPage(browser, name);
     await checkComparison(browser, name);
     await checkCustom(browser, name);

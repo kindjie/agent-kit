@@ -7,9 +7,9 @@ media or write project catalogues.
 ```sh
 ./bin/review-sheet schema
 ./bin/review-sheet build description.json --output ignored/review.html
-./bin/review-sheet import review-results.json \
+./bin/review-sheet import sample-batch-01-results.json \
   --resolved ignored/review.resolved.json --check-current
-./bin/review-sheet status review-results.json
+./bin/review-sheet status sample-batch-01-results.json
 ```
 
 `build` also writes `<page>.resolved.json`. Preserve that exact file with
@@ -67,6 +67,22 @@ legend. Choice hotkeys are declared; flags use numbered keys by default.
 Component keys yield to global and decision keys. Local storage is a guarded
 draft; the downloaded JSON is the handoff. Re-import shows differing valid
 answers for manual resolution.
+
+Clicking or tabbing into an answer keeps keyboard focus in that control.
+Cmd+Enter or Ctrl+Enter saves a text or number answer; Escape returns focus
+to its card. Authority answers still need their explicit confirmation.
+The introduction and banners scroll away; a slim pinned bar keeps progress,
+export, import, keys and the focused item's group available. Tall cards
+align below the bar; cards that fit scroll fully into view.
+
+Backtick-delimited text renders as inline code in item fields, titles,
+instructions, caveats and decision questions. Other text, including HTML,
+stays literal; an unmatched backtick stays visible. Prose uses a reading
+measure of about 75 characters while media can use the card's full width.
+Exports download as `<review>-results.json`, with the review ID percent
+encoded for a portable filename. The page displays its exact filename.
+The filename does not change the results format or import validation;
+results downloaded by earlier pages remain supported.
 
 ## Components and trust
 

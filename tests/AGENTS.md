@@ -34,6 +34,11 @@ the sandbox so Chrome can launch. Safari is best effort. The harness uses no
 remote media or services.
 Launch fixtures also check Chrome failure without fallback, missing-Chrome
 fallback, the no-browser skip, and browser cleanup when a check fails.
+`review_sheet_page_checks.cjs` adds real pointer and Tab editing, text
+save/escape shortcuts, sheet-specific download names, safe inline code,
+reading measure and dark-mode checks. It measures the pinned bar and card
+placement at 1440 by 900 and 1280 by 720, including focus mode. Run it alone
+with `node tests/review_sheet_page_checks.cjs .` for focused Chrome feedback.
 
 ## SteamOS
 

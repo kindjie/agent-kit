@@ -114,6 +114,23 @@
     node.addEventListener('click', action);
     return node;
   }
+  function text(tag, className, value) {
+    const node = el(tag, className);
+    const source = String(value);
+    let start = 0;
+    for (const match of source.matchAll(/`([^`\n]+)`/g)) {
+      node.append(document.createTextNode(source.slice(start, match.index)),
+        el('code', '', match[1]));
+      start = match.index + match[0].length;
+    }
+    node.append(document.createTextNode(source.slice(start)));
+    return node;
+  }
+  function resultsFilename() {
+    return encodeURIComponent(desc.review).replace(/[!'()*]/g, character =>
+      '%' + character.charCodeAt(0).toString(16).toUpperCase()) +
+      '-results.json';
+  }
   function note(text, error) {
     const host = document.querySelector('#messages');
     if (!host) {
@@ -387,7 +404,9 @@
     document.querySelector('#progress').value = done;
     document.querySelector('#progress').max = Math.max(1, total);
     document.querySelector('#progress-text').textContent =
-      done + ' of ' + total + ' required decisions answered';
+      done + '/' + total + ' required';
+    document.querySelector('#progress').setAttribute('aria-label',
+      done + ' of ' + total + ' required decisions answered');
     for (const group of groups) {
       const keys = scopeKeys.filter(key =>
         key.startsWith('group:' + group.id + ':') ||
@@ -408,7 +427,7 @@
     const definition = data.scopes[key].definition;
     const wrapper = el('div', 'decision' +
       (definition.authority ? ' authority' : ''));
-    const title = el('div', '', definition.question || key.split(':').at(-1));
+    const title = text('div', '', definition.question || key.split(':').at(-1));
     wrapper.append(title);
     const status = el('span', 'state');
     status.dataset.scopeState = key;
@@ -469,14 +488,26 @@
         input.value = previous.value;
       options.append(input);
       if (definition.unit) options.append(el('span', '', definition.unit));
-      options.append(button('Save answer', () => {
+      const saveAnswer = () => {
         if (definition.kind === 'number') {
           if (!input.value || !input.checkValidity()) {
             note('Number is missing or outside its bounds.', true); return;
           }
           choose(Number(input.value));
         } else choose(input.value);
-      }));
+      };
+      options.append(button('Save answer', saveAnswer));
+      input.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+          event.preventDefault(); event.stopPropagation(); saveAnswer();
+        } else if (event.key === 'Escape') {
+          const card = input.closest('.item');
+          if (card) {
+            event.preventDefault(); event.stopPropagation();
+            card.focus({preventScroll: true});
+          }
+        }
+      });
     }
     wrapper.append(options);
     const answer = answers[key];
@@ -666,18 +697,28 @@
     const card = el('article', 'item');
     card.dataset.itemId = item.id;
     card.tabIndex = -1;
-    card.append(el('h3', '', item.title || item.id));
+    card.append(text('h3', '', item.title || item.id));
     if (item.fields) {
       const fields = el('dl', 'fields');
       for (const [name, value] of Object.entries(item.fields)) {
-        fields.append(el('dt', '', name), el('dd', '', String(value)));
+        fields.append(el('dt', '', name), text('dd', '', value));
       }
       card.append(fields);
     }
     (item.media || []).forEach((media, index) =>
       mediaPending.push(renderMedia(media, card, item, index)));
     for (const key of allScopes(item)) card.append(decision(key));
-    card.addEventListener('click', () => focusItem(allItems.indexOf(item)));
+    card.addEventListener('click', event => {
+      const control = event.target.closest('input,textarea,select,button,a,' +
+        'summary,audio,video,[contenteditable],[tabindex]');
+      if (!control || control === card)
+        focusItem(allItems.indexOf(item));
+      else if (allItems[focused] !== item)
+        focusItem(allItems.indexOf(item), false);
+    });
+    card.addEventListener('focusin', () => {
+      if (allItems[focused] !== item) focusItem(allItems.indexOf(item), false);
+    });
     return card;
   }
   function renderComparison(group, section) {
@@ -929,7 +970,7 @@
       if (group.items.includes(allItems[focused])) controller.activate();
     });
   }
-  function focusItem(index) {
+  function focusItem(index, moveFocus = true) {
     if (!allItems.length) return;
     const previousGroup = groups.find(group =>
       group.items.includes(allItems[focused]));
@@ -944,6 +985,8 @@
     focused = (index + allItems.length) % allItems.length;
     const nextGroup = groups.find(group =>
       group.items.includes(allItems[focused]));
+    document.getElementById('focused-group').textContent =
+      nextGroup ? nextGroup.title || nextGroup.id : '';
     if (previousGroup !== nextGroup) {
       comparisonControllers.get(previousGroup?.id)?.deactivate();
       comparisonControllers.get(nextGroup?.id)?.activate();
@@ -955,16 +998,21 @@
       for (const entry of mediaViews.get(card.dataset.itemId) || [])
         try { entry.component.focus?.(entry.view, entry.api); }
         catch (error) { entry.fail('Component focus failed: ' + error); }
-      card.scrollIntoView({block: 'nearest'});
-      card.focus({preventScroll: true});
+      if (moveFocus) {
+        const barHeight = document.querySelector('.toolbar').offsetHeight;
+        const tall = card.offsetHeight > window.innerHeight - barHeight - 16;
+        card.scrollIntoView({block: tall ? 'start' : 'nearest'});
+        card.focus({preventScroll: true});
+      }
     }
   }
   function render() {
     const app = document.getElementById('app');
     const header = el('header');
-    header.append(el('h1', '', desc.title || desc.review));
-    if (desc.instructions) header.append(el('p', '', desc.instructions));
-    for (const caveat of desc.caveats || []) header.append(el('p', '', caveat));
+    header.append(text('h1', '', desc.title || desc.review));
+    if (desc.instructions) header.append(text('p', '', desc.instructions));
+    for (const caveat of desc.caveats || [])
+      header.append(text('p', '', caveat));
     const toolbar = el('div', 'toolbar');
     const bar = el('progress'); bar.id = 'progress';
     const progressText = el('span'); progressText.id = 'progress-text';
@@ -972,16 +1020,16 @@
       button('Export results', exportResults),
       button('Import results', () =>
         document.getElementById('import-file').click()),
-      button('Discard stale draft entries', discardDraft),
       button('Keys (?)', showLegend));
+    const groupName = el('span'); groupName.id = 'focused-group';
+    toolbar.append(groupName);
     const file = el('input'); file.id = 'import-file'; file.type = 'file';
     file.accept = 'application/json,.json'; file.className = 'hidden';
     file.addEventListener('change', importResults);
     toolbar.append(file);
-    header.append(toolbar);
     const messages = el('div'); messages.id = 'messages';
-    header.append(messages);
-    app.append(header);
+    app.append(header, toolbar, messages,
+      button('Discard stale draft entries', discardDraft));
     for (const [message, error] of pendingNotes) note(message, error);
     pendingNotes.length = 0;
     const reviewer = el('input'); reviewer.id = 'reviewer';
@@ -1014,7 +1062,7 @@
     (desc.items || []).forEach(item => app.append(renderItem(item)));
     const dialog = el('dialog'); dialog.id = 'dialog'; app.append(dialog);
     renderStatus(); focusItem(0);
-    note('Exports download as review-results.json. Move private results to '
+    note('Exports download as ' + resultsFilename() + '. Move private results to '
       + 'the private review directory before import.');
   }
   function packet() {
@@ -1059,7 +1107,7 @@
     const url = URL.createObjectURL(new Blob([output],
       {type: 'application/json'}));
     const link = el('a'); link.href = url;
-    link.download = 'review-results.json'; link.click();
+    link.download = resultsFilename(); link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   async function importResults(event) {
@@ -1196,7 +1244,9 @@
     dialog.replaceChildren(el('h2', '', 'Keyboard controls'),
       el('p', '', 'j/k item · J/K group · n next unanswered · f focus mode '
         + '· / filter · u undo · ? legend. Choice and flag keys appear '
-        + 'beside their options. Authority decisions require confirmation.'),
+        + 'beside their options. Authority decisions require confirmation. '
+        + 'In a text or number answer: Cmd/Ctrl+Enter saves; Escape returns '
+        + 'to the card.'),
       button('Close', () => dialog.close()));
     const item = allItems[focused];
     for (const kind of new Set((item?.media || []).map(media => media.kind)))
@@ -1230,6 +1280,7 @@
     } else if (key === 'f') {
       focusMode = !focusMode;
       document.body.classList.toggle('focus-mode', focusMode);
+      focusItem(focused);
     } else if (key === 'u') undo();
     else if (key === '?') showLegend();
     else if (key === '/') {

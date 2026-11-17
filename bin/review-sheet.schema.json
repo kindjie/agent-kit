@@ -9,7 +9,8 @@
   "properties": {
     "review": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "description": "Sheet identity, percent encoded in its results filename."
     },
     "title": {
       "anyOf": [
