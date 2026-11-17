@@ -13,6 +13,23 @@ from tests import test_steamos_deploy
 
 
 class BuildDoctorTest(unittest.TestCase):
+  def test_device_names_fold_punctuation_and_suggest_a_match(self):
+    module = runpy.run_path(str(test_steamos.BIN))
+    config = {'devices': {'deck': {}, 'steammachine': {}}}
+    self.assertEqual(module['device'](config, 'steam-machine')[0],
+                     'steammachine')
+    self.assertEqual(module['device'](config, 'Steam_Machine')[0],
+                     'steammachine')
+    with self.assertRaisesRegex(module['Failure'], "did you mean 'deck'"):
+      module['device'](config, 'steamdeck')
+    with self.assertRaisesRegex(module['Failure'],
+                                r"configured: deck, steammachine$"):
+      module['device'](config, 'laptop')
+    shouty = {'devices': {'STEAM-MACHINE': {}}}
+    with self.assertRaisesRegex(module['Failure'],
+                                "did you mean 'STEAM-MACHINE'"):
+      module['device'](shouty, 'steam-machin')
+
   setUp = test_steamos.SteamosTest.setUp
   configure = test_steamos.SteamosTest.configure
   device_home = test_steamos.SteamosTest.device_home

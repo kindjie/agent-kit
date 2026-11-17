@@ -6,6 +6,7 @@ Configuration lives in $XDG_CONFIG_HOME/agent-kit/steamos.json; see
 steamos.md beside this file.
 """
 import argparse
+import difflib
 import ipaddress
 import json
 import os
@@ -126,13 +127,28 @@ def load_config():
   return config
 
 
+def canonical_device(devices, name):
+  """Accept a name that differs from one configured device only in case,
+  hyphens or underscores; otherwise refuse with the likeliest match."""
+  def fold(value):
+    return re.sub(r'[-_]', '', str(value or '')).lower()
+  matches = [known for known in devices if fold(known) == fold(name)]
+  if len(matches) == 1:
+    return matches[0]
+  known = ', '.join(sorted(devices))
+  folded = {fold(known): known for known in sorted(devices)}
+  close = difflib.get_close_matches(fold(name), list(folded), n=1)
+  hint = f'; did you mean {folded[close[0]]!r}?' if close else ''
+  raise Failure(USAGE,
+                f'unknown device {name!r}; configured: {known}{hint}')
+
+
 def device(config, name):
   name = name or config.get('default')
   if not name and len(config['devices']) == 1:
     name = next(iter(config['devices']))
   if name not in config['devices']:
-    known = ', '.join(sorted(config['devices']))
-    raise Failure(USAGE, f'unknown device {name!r}; configured: {known}')
+    name = canonical_device(config['devices'], name)
   entry = dict(config['devices'][name])
   if type(entry.get('mains_only', False)) is not bool:
     raise Failure(USAGE, 'device mains_only must be true or false')

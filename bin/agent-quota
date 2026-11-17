@@ -2633,5 +2633,21 @@ def main(argv: list[str] | None = None) -> int:
   return status
 
 
+def run() -> int:
+  """Report a denied write plainly: in an agent sandbox it is the usual
+  failure, and a traceback hides the fix."""
+  try:
+    return main()
+  except PermissionError as exc:
+    print(
+      f"agent-quota: cannot write {exc.filename or 'its state'}: "
+      f"{exc.strerror or exc}. It needs writable ~/.cache and ~/.codex "
+      "state and network access; run it outside the sandbox or approve an "
+      "unsandboxed invocation",
+      file=sys.stderr,
+    )
+    return 1
+
+
 if __name__ == "__main__":
-  raise SystemExit(main())
+  raise SystemExit(run())

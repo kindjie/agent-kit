@@ -1110,6 +1110,17 @@ class AgentQuotaTest(unittest.TestCase):
         self.assertTrue(first)
         self.assertFalse(second)
 
+  def test_denied_write_is_reported_without_a_traceback(self) -> None:
+    denied = PermissionError(1, "Operation not permitted", "/x/report.lock")
+    stderr = io.StringIO()
+    with patch.object(AGENT_QUOTA, "main", side_effect=denied), \
+        patch("sys.stderr", stderr):
+      self.assertEqual(AGENT_QUOTA.run(), 1)
+    message = stderr.getvalue()
+    self.assertIn("cannot write /x/report.lock", message)
+    self.assertIn("outside the sandbox", message)
+    self.assertNotIn("Traceback", message)
+
   def test_exit_status_treats_missing_requested_service_as_strict_failure(
     self,
   ) -> None:

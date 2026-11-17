@@ -99,7 +99,8 @@ class RecordToolRegressionTest(RecordsFixture):
     before = (self.changes / entry).read_bytes()
     result = self.invoke("agent-task", "close", first, "done")
     self.assertEqual(result.returncode, 1, result.stderr)
-    self.assertIn("transfer or close the records first", result.stderr)
+    self.assertIn("open associated records: " + entry, result.stderr)
+    self.assertIn("--transfer T-NNNN", result.stderr)
     self.assertEqual((self.changes / entry).read_bytes(), before)
 
   def test_cancelled_transfer_to_existing_association_deduplicates(self):

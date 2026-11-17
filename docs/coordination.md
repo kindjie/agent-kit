@@ -241,7 +241,8 @@ Read queue health on demand:
 agent-resource status --resource cpu --resource gpu
 ```
 
-The JSON snapshot groups participating waiters by credits and shows their
+Without `--resource` it reports every resource used on this machine. The
+JSON snapshot groups participating waiters by credits and shows their
 current ages/order, oldest head weight and backfill/drain state, configured
 capacity and reserved/free credits. Reserved credits are lock reservations,
 not measured CPU/GPU utilization. Status creates or prunes no files and uses

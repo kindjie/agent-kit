@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -256,6 +258,21 @@ class RecoveryTest(RecordsFixture):
        "--dir=" + str(self.tasks), "list"], env=explicit,
       capture_output=True, text=True)
     self.assertEqual(result.returncode, 5)
+
+  def test_denied_write_names_the_path_and_the_sandbox(self):
+    sys.path.insert(0, str(BIN))
+    try:
+      import agent_records_core
+    finally:
+      sys.path.remove(str(BIN))
+    stderr = io.StringIO()
+    denied = PermissionError(1, "Operation not permitted", "/x/state.lock")
+    with contextlib.redirect_stderr(stderr):
+      agent_records_core.unexpected_error(denied)
+    self.assertIn("cannot write /x/state.lock: Operation not permitted",
+                  stderr.getvalue())
+    self.assertIn("writable roots", stderr.getvalue())
+    self.assertEqual(len(stderr.getvalue().splitlines()), 1)
 
   def test_recovery_preserves_git_error_instead_of_lock_hint(self):
     self.init()
