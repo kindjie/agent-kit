@@ -153,7 +153,8 @@ exchange stays with the work:
   An agent asks with `log T-NNNN '...' --request helper`;
 - address a message with `log T-NNNN '...' --to <id>[,<id>]`;
 - read what is new with `show T-NNNN --after <cursor>`, or wait with
-  `watch T-NNNN --for <id> --until message`.
+  `watch T-NNNN --for <id> --until message`. Plain `show` prints the last
+  20 log entries (`--tail N` changes that); `--full` prints everything.
 
 This is for collaboration on an ongoing task. A quick question or heads-up
 to another session can still go as a direct cross-session message.

@@ -3,7 +3,9 @@ import importlib.util
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -474,6 +476,30 @@ class EfficiencyTest(unittest.TestCase):
     self.assertEqual(report['totals']['output_tokens'], 17)
     self.assertEqual(report['duplicate_records'], 2)
 
+  def test_compressed_codex_rollouts_are_read(self):
+    codex = {'timestamp': '2026-01-01T12:00:00Z',
+             'type': 'token_usage_record', 'payload': {
+               'thread_id': 'z', 'response_id': 'rz', 'usage': {
+                 'input_tokens': 40, 'cached_input_tokens': 30,
+                 'output_tokens': 2, 'total_tokens': 42}}}
+    root = self.base / 'sessions'
+    (root / '2026/01/01').mkdir(parents=True)
+    plain = self.write('sessions/2026/01/01/a.jsonl', [codex])
+    subprocess.run(['zstd', '-q', '--rm', str(plain)], check=True)
+    broken = root / 'b.jsonl.zst'
+    broken.write_bytes(b'not zstd')
+    stale = self.write('sessions/stale.jsonl', [codex])
+    os.utime(stale, (1, 1))
+    paths, skipped = self.mod.transcripts(root, 1000)
+    self.assertEqual([p.name for p in paths], ['a.jsonl.zst', 'b.jsonl.zst'])
+    self.assertEqual(skipped, 1)
+    report = self.mod.audit([('codex', p) for p in paths],
+                            self.mod.timestamp('2026-01-01T11:00:00Z'),
+                            self.mod.timestamp('2026-01-01T13:00:00Z'))
+    self.assertEqual(report['totals']['total_tokens'], 42)
+    self.assertEqual(report['diagnostics']['unreadable_files'], 1)
+    self.assertFalse(report['complete'])
+
   def test_cumulative_baseline_and_reset(self):
     events = []
     for hour, n in ((10, 100), (12, 160), (13, 20)):
@@ -487,6 +513,55 @@ class EfficiencyTest(unittest.TestCase):
                             self.mod.timestamp('2026-01-01T14:00:00Z'))
     self.assertEqual(report['totals']['total_tokens'], 80)
     self.assertIn('counter_resets', report['diagnostics'])
+
+  def test_counters_matching_request_sums_are_covered(self):
+    def count(at, inp, out):
+      return {'timestamp': at, 'type': 'event_msg', 'payload': {
+        'type': 'token_count', 'info': {'total_token_usage': {
+          'input_tokens': inp, 'cached_input_tokens': 0,
+          'output_tokens': out, 'total_tokens': inp + out}}}}
+    def request(at, rid, inp, out):
+      return {'timestamp': at, 'type': 'token_usage_record', 'payload': {
+        'thread_id': 'a', 'response_id': rid, 'usage': {
+          'input_tokens': inp, 'output_tokens': out,
+          'total_tokens': inp + out}}}
+    meta = {'timestamp': '2026-01-01T11:59:00Z', 'type': 'session_meta',
+            'payload': {'id': 'a', 'timestamp': '2026-01-01T11:59:00Z'}}
+    window = (self.mod.timestamp('2026-01-01T11:00:00Z'),
+              self.mod.timestamp('2026-01-01T13:00:00Z'))
+    covered = self.write('covered.jsonl', [
+      meta, request('2026-01-01T12:00:00Z', 'r1', 9, 1),
+      count('2026-01-01T12:00:00Z', 9, 1),
+      request('2026-01-01T12:01:00Z', 'r2', 5, 2),
+      count('2026-01-01T12:01:00Z', 14, 3)])
+    report = self.mod.audit([('codex', covered)], *window)
+    self.assertNotIn('mixed_accounting_coverage_unverified',
+                     report['diagnostics'])
+    self.assertEqual(report['totals']['total_tokens'], 17)
+    extra = self.write('extra.jsonl', [
+      meta, request('2026-01-01T12:00:00Z', 'r1', 9, 1),
+      request('2026-01-01T12:00:30Z', 'compact', 50, 5),
+      count('2026-01-01T12:01:00Z', 9, 1)])
+    report = self.mod.audit([('codex', extra)], *window)
+    self.assertNotIn('mixed_accounting_coverage_unverified',
+                     report['diagnostics'])
+    fork = dict(meta, payload=dict(meta['payload'], forked_from_id='p'))
+    forked = self.write('forked.jsonl', [
+      fork, count('2026-01-01T12:00:00Z', 500, 50),
+      request('2026-01-01T12:01:00Z', 'r1', 9, 1),
+      count('2026-01-01T12:01:00Z', 509, 51)])
+    report = self.mod.audit([('codex', forked)], *window)
+    self.assertNotIn('mixed_accounting_coverage_unverified',
+                     report['diagnostics'])
+    self.assertEqual(report['totals']['total_tokens'], 10)
+    gap = self.write('gap.jsonl', [
+      meta, request('2026-01-01T12:00:00Z', 'r1', 9, 1),
+      count('2026-01-01T12:01:00Z', 30, 3),
+      request('2026-01-01T12:02:00Z', 'r2', 50, 5)])
+    report = self.mod.audit([('codex', gap)], *window)
+    self.assertEqual(
+      report['diagnostics']['mixed_accounting_coverage_unverified'], 1)
+    self.assertFalse(report['complete'])
 
   def test_request_records_override_cumulative(self):
     path = self.write('new.jsonl', [

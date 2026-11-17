@@ -1106,6 +1106,10 @@ def format_task(fields):
           " " + fields["owner"] + remaining + " " + fields["title"])
 
 
+SHOW_TAIL = 20
+SHOW_ASSOCIATIONS = 10
+
+
 def task_read(root, changes, args, authoritative=True):
   command = args.command
   if command in ("show", "watch"):
@@ -1127,6 +1131,22 @@ def task_read(root, changes, args, authoritative=True):
                   "\n".join(lines[n:]) + "\n")
       elif args.no_messages:
         body = body[:body.index("## Log")]
+      compact = not (args.json or args.after or args.no_messages or
+                     getattr(args, "full", False))
+      notes = []
+      if compact:
+        tail = max(0, getattr(args, "tail", SHOW_TAIL))
+        older = max(0, len(lines) - tail)
+        if older:
+          body = (body[:body.index("## Log")] + "## Log\n" +
+                  "\n".join(lines[older:]) + "\n")
+          notes.append(f"({older} earlier log entries omitted; --full "
+                       "prints all, --after CURSOR prints newer ones)")
+        if len(related) > SHOW_ASSOCIATIONS:
+          notes.append(f"({len(related) - SHOW_ASSOCIATIONS} older "
+                       "associations omitted; --full lists all)")
+          related = sorted(related, key=lambda r: r[0].name)[
+            -SHOW_ASSOCIATIONS:]
       if args.json:
         print(json.dumps({"fields": fields, "body": body,
                           "changes": [{"path": str(p.relative_to(changes)),
@@ -1139,6 +1159,7 @@ def task_read(root, changes, args, authoritative=True):
         for line in (put_task(fields, ORDER, body).decode().rstrip() +
                      "\n" + "\n".join(str(p.relative_to(changes)) +
                      " " + f.get("status", "") for p, f in related) +
+                     "".join("\n" + n for n in notes) +
                      "\ncursor: " + cursor(lines)).splitlines():
           print(prefix + line)
     else:

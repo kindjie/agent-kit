@@ -1,13 +1,16 @@
 """Offline observed usage ledger. No network, model calls, or transcript text output."""
 import argparse
+import bisect
 from collections import Counter
 from datetime import datetime
 import hashlib
+import io
 import json
 import math
 from pathlib import Path
 import re
 import shlex
+import subprocess
 import sys
 import time
 
@@ -413,6 +416,52 @@ class Coordination:
       coverage='recognized literal shell calls and supported result envelopes')
 
 
+class ZstdStream:
+  """Stream a zstd-compressed transcript; Codex compresses older rollouts."""
+
+  def __init__(self, path):
+    self.failed = False
+    self.proc = subprocess.Popen(['zstd', '-dcq', '--', str(path)],
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL)
+    assert self.proc.stdout is not None
+    self.text = io.TextIOWrapper(self.proc.stdout, encoding='utf-8')
+
+  def __iter__(self):
+    return iter(self.text)
+
+  def __enter__(self):
+    return self
+
+  def __exit__(self, *exc):
+    self.text.close()
+    self.failed = self.proc.wait() != 0
+
+
+def open_transcript(path):
+  if path.name.endswith('.jsonl.zst'):
+    return ZstdStream(path)
+  return path.open(encoding='utf-8')
+
+
+def transcripts(root, since=None):
+  """Return (paths, skipped): files last written before since are skipped.
+
+  A transcript's mtime is never earlier than its last event, and Codex's
+  compressed copies are written after the rollout ends.
+  """
+  paths, skipped = [], 0
+  for path in sorted([*root.rglob('*.jsonl'), *root.rglob('*.jsonl.zst')]):
+    try:
+      old = since is not None and path.stat().st_mtime < since
+    except OSError:
+      old = False  # Let the audit report it as unreadable.
+    skipped += old
+    if not old:
+      paths.append(path)
+  return paths, skipped
+
+
 def timestamp(value):
   if not isinstance(value, str):
     raise ValueError('timestamp must be an ISO date with timezone')
@@ -451,6 +500,7 @@ def audit(paths, since, until):
   coordination = Coordination()
   requests, cumulative, tools, compactions = {}, {}, {}, {}
   modern_threads = {}
+  forked = set()  # Their counters start from the parent's cumulative usage.
   duplicate = 0
   files = 0
   for provider, path in paths:
@@ -464,7 +514,7 @@ def audit(paths, since, until):
     window_activity = False
     window_usage = False
     try:
-      stream = path.open(encoding='utf-8')
+      stream = open_transcript(path)
     except OSError:
       diagnostics['unreadable_files'] += 1
       continue
@@ -487,6 +537,8 @@ def audit(paths, since, until):
                         isinstance(source.get('subagent'), dict) and
                         source['subagent'].get('other') == 'guardian')
             start = timestamp(payload.get('timestamp', event['timestamp']))
+            if payload.get('forked_from_id'):
+              forked.add(thread)
             continue
           if kind == 'turn_context':
             model = payload.get('model') or 'unknown'
@@ -578,16 +630,40 @@ def audit(paths, since, until):
                                      (at, seconds))
         except (ValueError, KeyError, TypeError, OverflowError):
           diagnostics['malformed_lines'] += 1
+    if getattr(stream, 'failed', False):
+      diagnostics['unreadable_files'] += 1
     if window_activity and not window_usage:
       diagnostics['window_activity_without_usage'] += 1
     if assistant_activity and not recognized_usage:
       diagnostics['assistant_files_without_usage'] += 1
   rows = list(requests.values())
-  previous = {}
+  # Modern Codex threads log both per-request records and cumulative
+  # counters. Requests also record usage the counter omits, so a counter at
+  # or below the thread's request total so far is covered by them; a larger
+  # one is usage the requests missed. A forked thread's first counter
+  # includes its parent's usage; that excess is an inherited baseline.
+  counted = [k for k in KEYS if k != 'total_tokens']
+  running = {}
+  for row in sorted(rows, key=lambda r: r['at']):
+    if row['provider'] != 'codex':
+      continue
+    times, totals = running.setdefault(row['thread'], ([], []))
+    last = totals[-1] if totals else (0,) * len(counted)
+    times.append(row['at'])
+    totals.append(tuple(a + row['usage'][k] for a, k in zip(last, counted)))
+  previous, inherited = {}, {}
   for row in sorted(cumulative.values(), key=lambda r: r['at']):
     ident = row['thread']
     if ident in modern_threads:
-      if since <= row['at'] < until:
+      times, totals = running.get(ident, ([], []))
+      seen = bisect.bisect_right(times, row['at'])
+      so_far = totals[seen - 1] if seen else (0,) * len(counted)
+      base = inherited.setdefault(ident, tuple(
+        max(0, row['usage'][k] - n) if ident in forked else 0
+        for k, n in zip(counted, so_far)))
+      covered = all(row['usage'][k] - b <= n
+                    for k, b, n in zip(counted, base, so_far))
+      if since <= row['at'] < until and not covered:
         diagnostics['mixed_accounting_coverage_unverified'] += 1
       if since <= row['at'] < min(until, modern_threads[ident]):
         diagnostics['uncovered_legacy_observations'] += 1
@@ -815,16 +891,20 @@ def main():
     parser.error('--since must precede --until')
   if args.receipts_only and not args.scheduler_receipts:
     parser.error('--receipts-only requires --scheduler-receipts')
-  paths, missing = [], 0
+  paths, missing, skipped = [], 0, 0
   for provider, root in (('codex', args.codex_dir), ('claude', args.claude_dir)):
     if args.receipts_only or args.provider not in (provider, 'both'):
       continue
     if not root.is_dir():
       missing += 1
-    paths.extend((provider, p) for p in sorted(root.rglob('*.jsonl')))
+    found, old = transcripts(root, args.since)
+    paths.extend((provider, p) for p in found)
+    skipped += old
   report = ({'schema_version': 1, 'since': args.since, 'until': args.until,
              'complete': True, 'mode': 'receipts-only'} if args.receipts_only
             else audit(paths, args.since, args.until))
+  if not args.receipts_only:
+    report['files_skipped_before_window'] = skipped
   if missing:
     report['diagnostics']['missing_source_roots'] = missing
     report['complete'] = False

@@ -329,7 +329,11 @@ agent-efficiency --since 2026-01-01T00:00:00Z \
 ```
 
 The default window is the last six hours. `--provider codex|claude|both`,
-`--codex-dir`, and `--claude-dir` select local JSONL inputs. The command reads
+`--codex-dir`, and `--claude-dir` select local JSONL inputs, including the
+`.jsonl.zst` files Codex compresses older rollouts into (decompressed with
+the `zstd` CLI). Files last modified before `--since` are skipped and counted
+in `files_skipped_before_window`, since a transcript's mtime is never earlier
+than its last event. The command reads
 transcripts without contacting providers, invoking models, or writing caches.
 Output contains identifiers and usage, but no prompts, commands, source paths,
 or tool arguments. Treat even this metadata as private. Exit 1 means detected
@@ -341,9 +345,12 @@ cache creation is counted once, and reasoning is not added to output twice.
 Request IDs deduplicate globally, including copied transcripts and streaming
 updates. Earliest observed request time determines the half-open window
 `[since, until)`. Codex per-request records take precedence over cumulative
-counters for a thread. When both formats occur, the report marks coverage
-unverified: it does not prove that request records cover every cumulative
-observation, even though it avoids double-counting them. Legacy counters use the previous observation as their
+counters for a thread. When both formats occur, each counter is checked
+against the thread's request total so far: requests also record usage the
+counter omits, so a counter at or below that total is covered, and a larger
+one is reported as `mixed_accounting_coverage_unverified`. A forked thread's
+first counter includes its parent's usage; that excess is treated as an
+inherited baseline. Legacy counters use the previous observation as their
 baseline; an unknown first baseline is omitted and diagnosed. Decreases start
 a new counter epoch. A transition to per-request records within a thread can
 leave older activity uncovered; earlier cumulative observations in the window

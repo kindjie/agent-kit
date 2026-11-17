@@ -262,6 +262,25 @@ class SetupTest(RecordsFixture):
                  "cancelled", "--reason", "stopped")
     self.assertTrue(list((self.tasks / "archive").glob("T-0001-*.md")))
 
+  def test_show_prints_a_recent_tail_by_default(self):
+    self.init()
+    task = self.run_cmd("agent-task", "--agent", "agent-a", "new",
+                        "--title", "Long task").strip()
+    for n in range(3):
+      self.run_cmd("agent-task", "--agent", "agent-a", "log", task,
+                   f"entry-{n}")
+    shown = self.run_cmd("agent-task", "show", task, "--tail", "1")
+    self.assertIn("entry-2", shown)
+    self.assertNotIn("entry-1", shown)
+    self.assertIn("3 earlier log entries omitted", shown)  # plus creation
+    full = self.run_cmd("agent-task", "show", task, "--full")
+    self.assertIn("entry-0", full)
+    self.assertNotIn("omitted", full)
+    cursor = shown.strip().splitlines()[-1].split()[-1]
+    self.assertEqual(cursor, full.strip().splitlines()[-1].split()[-1])
+    data = json.loads(self.run_cmd("agent-task", "show", task, "--json"))
+    self.assertIn("entry-0", data["body"])
+
   def test_help_and_missing_git(self):
     commands = {
       "agent-id": ("show", "new", "recent", "machine", "repo-keys",
