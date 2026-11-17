@@ -46,7 +46,8 @@ checks reject missing/duplicate presentation references and bind valid
 presentation metadata into frozen answer digests without changing v1 results.
 Pointer regressions also cover scrolled live messages and their dismissal,
 multi-image Compare cycling/closing, shared pixel scale, pointer/`z` zoom,
-no Compare for an isolated image, and ordinary/configured group alternatives.
+no Compare for an isolated image or an ordinary group's single-image items,
+and explicit cross-item comparison with the source item's title in captions.
 
 ## SteamOS
 

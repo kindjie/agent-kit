@@ -1,4 +1,4 @@
-ReviewSheet.register({kind: 'image', version: '1.1.0', api: 1,
+ReviewSheet.register({kind: 'image', version: '1.1.1', api: 1,
   keys: {z: 'zoom'}, render(media, api) {
     const box = document.createElement('div');
     box.className = 'image-view';
@@ -43,15 +43,15 @@ ReviewSheet.register({kind: 'image', version: '1.1.0', api: 1,
       row.id !== api.item?.id).flatMap(row => {
       const image = row.media?.find(entry => entry.kind === 'image');
       return image ? [{id: row.id, index: image.index,
-        label: image.label || row.label}] : [];
+        label: row.label + (image.label ? ': ' + image.label : '')}] : [];
     });
     // Explicit comparison groups keep their cross-item meaning. Ordinary
-    // galleries prefer their own images, then fall back to group alternatives.
+    // galleries compare only their own images.
     const targets = api.group?.comparison ? siblings : images.length > 1 ?
       images.slice(position + 1).concat(images.slice(0, position)).map(row => ({
         id: api.item.id, index: row.index,
         label: row.label || `${images.indexOf(row) + 1} of ${images.length}`})) :
-      siblings;
+      [];
     if (targets.length) {
       const controls = document.createElement('div');
       controls.className = 'image-controls';

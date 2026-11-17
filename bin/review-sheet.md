@@ -83,10 +83,12 @@ Image Compare shows the next image in the same item, skipping other media
 kinds, and cycles through the remaining images. Both images use the same
 pixel scale and retain their aspect ratios; captions use `alt` text or the
 image's position (for example, "2 of 6"). Click either image or press `z`
-to toggle full size; **Close comparison** returns to one image. For an item
-with one image, Compare uses another image-bearing item in its group. An
-explicit group `comparison` keeps that cross-item behavior even when an
-item has several images. No available alternative means no Compare button.
+to toggle full size; **Close comparison** returns to one image. An ordinary
+group's single-image items have no Compare button. Cross-item comparison
+requires explicit group `comparison` configuration, which compares members
+even when an item has several images. The second caption includes the source
+item's title (or ID when untitled) and its image caption when supplied.
+No available alternative means no Compare button.
 
 Backtick-delimited text renders as inline code in item fields, titles,
 instructions, caveats and decision questions. Other text, including HTML,
@@ -220,8 +222,10 @@ frozen file records selected manifests, file hashes, and bundle digests.
 The page uses a hash CSP, enables wasm evaluation only for a selected
 component declaring wasm, and blocks network connections.
 
-Built-in image version 1.1.0 adds image cycling, labelled equal-scale pairs,
-and an explicit close control. Its manifest and literal registration version
+Built-in image version 1.1.1 requires explicit group `comparison` for
+cross-item pairs and labels their source item. Same-item image cycling,
+equal-scale pairs and the close control are unchanged from 1.1.0.
+Its manifest and literal registration version
 match; builds freeze its new file hashes and bundle digest as usual. Existing
 external trust records do not authorize a changed bundle: review and trust
 the new exact digest when using an external copy. No owner trust record is

@@ -183,9 +183,11 @@ async function checkPageLayout(browser, root) {
         {kind: 'image', src: 'third.svg', mode: 'embed', alt: 'Third caption'}]},
       {id: 'single', media: [{kind: 'image', src: 'wide.svg', mode: 'embed'}]}],
       groups: [{id: 'alternatives', items: [
-        {id: 'variant-a', media: [{kind: 'image', src: 'wide.svg',
+        {id: 'variant-a', title: 'First sample', media: [
+          {kind: 'image', src: 'wide.svg',
           mode: 'embed', alt: 'Variant A'}]},
-        {id: 'variant-b', media: [{kind: 'image', src: 'tall.svg',
+        {id: 'variant-b', title: 'Second sample', media: [
+          {kind: 'image', src: 'tall.svg',
           mode: 'embed', alt: 'Variant B'}]}]}]};
     for (const [name, width, height] of [
       ['wide', 800, 400], ['tall', 400, 800], ['third', 600, 300]]) {
@@ -253,17 +255,16 @@ async function checkPageLayout(browser, root) {
       assert.equal(await media.locator('img').evaluate(node =>
         node.style.maxHeight), 'none');
     });
-    await test('group alternatives still compare', async page => {
+    await test('ordinary group single images have no Compare', async page => {
       await page.goto('file://' + imagePage);
-      const media = page.locator('[data-item-id=variant-b] .media');
-      await media.getByRole('button', {name: 'Compare', exact: true}).click();
-      await media.locator('img').nth(1).waitFor();
-      assert.deepEqual(await media.locator('figcaption').allTextContents(),
-        ['Variant B', 'Variant A']);
-      await media.getByRole('button', {name: 'Close comparison'}).click();
-      assert.equal(await media.locator('img').count(), 1);
+      for (const id of ['variant-a', 'variant-b']) {
+        const media = page.locator(`[data-item-id=${id}] .media`);
+        await media.locator('img').waitFor();
+        assert.equal(await media.getByRole('button',
+          {name: 'Compare', exact: true}).count(), 0);
+      }
     });
-    await test('configured comparison retains cross-item images', async page => {
+    await test('configured comparison labels the source item', async page => {
       const configured = JSON.parse(JSON.stringify(imageDescription));
       const group = configured.groups[0];
       group.comparison = {reference: 'variant-a', candidates: ['variant-b'],
@@ -279,9 +280,9 @@ async function checkPageLayout(browser, root) {
       await page.goto('file://' + imagePage);
       const media = page.locator('[data-item-id=variant-a] .media').first();
       await media.getByRole('button', {name: 'Compare', exact: true}).click();
-      await media.getByText('Variant B', {exact: true}).waitFor();
+      await media.locator('img').nth(1).waitFor();
       assert.deepEqual(await media.locator('figcaption').allTextContents(),
-        ['Variant A', 'Variant B']);
+        ['Variant A', 'Second sample: Variant B']);
       await media.getByRole('button', {name: 'Close comparison'}).click();
       assert.equal(await media.locator('img').count(), 1);
     });
