@@ -53,7 +53,9 @@ variable does not persist between calls, and a one-off prefix such as
 command, so the deploy would run as the parent). `--holder <id>` works
 on every `steamos` command too, not only `lease`: deploy, title, devkit,
 frametimes and bench check the lease as the same holder. `steamos lease
-show` confirms it.
+show` confirms it. In Codex, prefer `--holder` to the export: a call that
+needs approval skips review only when its plain command matches an allow
+rule, and an `export` prefix prevents that.
 
 Use `--allow-sleep` when a lease only reserves a device for a person, so it
 can still sleep: it starts no inhibitor and stops an existing one. Renew and a

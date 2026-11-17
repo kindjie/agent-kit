@@ -21,7 +21,8 @@ from agent_records_core import (
   validate_root,
 )
 from agent_records_tasks import (alter_task, close_task, lint_tasks, new_task,
-                                 dependency_view, task_read, watch_task)
+                                 dependency_view, task_read, watch_task,
+                                 SHOW_TAIL)
 
 
 def positive_index(value):
@@ -122,6 +123,11 @@ def parser():
   show.add_argument("--after")
   show.add_argument("--no-messages", action="store_true")
   show.add_argument("--json", action="store_true")
+  show.add_argument("--tail", type=int, default=SHOW_TAIL, metavar="N",
+                    help="log entries to print without --after or --full "
+                         f"(default {SHOW_TAIL})")
+  show.add_argument("--full", action="store_true",
+                    help="print every log entry and association")
   listing = add("list", "Read task summaries; writes nothing.",
                 "agent-task list --all")
   listing.add_argument("--status")
