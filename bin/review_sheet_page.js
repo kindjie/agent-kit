@@ -697,17 +697,38 @@
     const card = el('article', 'item');
     card.dataset.itemId = item.id;
     card.tabIndex = -1;
-    card.append(text('h3', '', item.title || item.id));
-    if (item.fields) {
-      const fields = el('dl', 'fields');
-      for (const [name, value] of Object.entries(item.fields)) {
-        fields.append(el('dt', '', name), text('dd', '', value));
+    const fields = item.fields || {};
+    const presentation = item.presentation;
+    const hasPrompt = presentation?.prompt !== undefined;
+    card.append(text('h3', hasPrompt ? 'prompt' : '',
+      hasPrompt ? fields[presentation.prompt] : item.title || item.id));
+    function fieldList(names, parent = card) {
+      if (!names.length) return;
+      const list = el('dl', 'fields');
+      for (const name of names) {
+        list.append(el('dt', '', name), text('dd', '', fields[name]));
       }
-      card.append(fields);
+      parent.append(list);
     }
+    fieldList(presentation ? presentation.before_media || [] :
+      Object.keys(fields));
     (item.media || []).forEach((media, index) =>
       mediaPending.push(renderMedia(media, card, item, index)));
+    if (presentation) fieldList(presentation.after_media || []);
     for (const key of allScopes(item)) card.append(decision(key));
+    if (presentation) {
+      const visible = new Set([presentation.prompt,
+        ...(presentation.before_media || []),
+        ...(presentation.after_media || [])]);
+      const remaining = Object.keys(fields).filter(name => !visible.has(name));
+      if (remaining.length || hasPrompt) {
+        const details = el('details');
+        details.append(el('summary', '', 'Details'));
+        if (hasPrompt) details.append(text('p', '', item.title || item.id));
+        fieldList(remaining, details);
+        card.append(details);
+      }
+    }
     card.addEventListener('click', event => {
       const control = event.target.closest('input,textarea,select,button,a,' +
         'summary,audio,video,[contenteditable],[tabindex]');

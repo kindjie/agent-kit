@@ -65,6 +65,36 @@ class ReviewSheetTest(unittest.TestCase):
     self.assertIn('Content-Security-Policy', self.page.read_text())
     self.assertNotIn('https://', self.page.read_text())
 
+  def test_presentation_is_optional_validated_and_bound(self):
+    item = self.description['groups'][0]['items'][0]
+    baseline = self.build()
+    self.assertNotIn('presentation', baseline['description']['groups'][0]
+                     ['items'][0])
+    for presentation in (None, [], {'unknown': []}, {'prompt': 'missing'},
+                         {'before_media': 'label'},
+                         {'before_media': [0]},
+                         {'after_media': ['missing']},
+                         {'before_media': ['label', 'label']},
+                         {'prompt': 'label', 'after_media': ['label']},
+                         {'before_media': ['label'],
+                          'after_media': ['label']}):
+      with self.subTest(presentation=presentation):
+        item['presentation'] = presentation
+        self.write_desc()
+        self.run_tool('build', self.desc, '--output', self.page, code=2)
+    item['presentation'] = {'prompt': 'label'}
+    self.write_desc()
+    changed = self.build()
+    self.assertEqual(changed['schema_version'], 1)
+    self.assertEqual(changed['description']['groups'][0]['items'][0]
+                     ['presentation'], {'prompt': 'label'})
+    key = 'item:one:verdict'
+    self.assertNotEqual(baseline['scopes'][key]['digest'],
+                        changed['scopes'][key]['digest'])
+    item['presentation'] = {}
+    self.write_desc()
+    self.build()
+
   def test_import_states_and_staleness(self):
     resolved = self.build()
     packet = {'schema_version': 1, 'review': 'sample-1',

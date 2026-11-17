@@ -23,6 +23,13 @@ only for fields reusable across batches. A project component is executable
 code: review its files, then trust its exact bundle digest with
 `review-sheet component trust PATH`. Never let a description grant trust.
 
+For question-first cards, use item `presentation.prompt` to name the question
+field, and `before_media` / `after_media` arrays to order the visible fields.
+Unlisted fields collapse into Details after the answers; the original item
+title also moves there when a prompt is supplied. Reference existing fields
+once, without copying or dropping their text. Omit presentation to retain the
+original card order. See the command reference for the additive format.
+
 Keep media local. Build to an ignored, private output location and preserve
 the page with its `review.resolved.json`. Spot-check a sample in Chrome
 before handing it to the person. For synchronized frame comparisons, verify

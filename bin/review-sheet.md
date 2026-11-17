@@ -84,6 +84,46 @@ encoded for a portable filename. The page displays its exact filename.
 The filename does not change the results format or import validation;
 results downloaded by earlier pages remain supported.
 
+### Optional item presentation
+
+An item may reference its existing `fields` by name:
+
+```json
+{
+  "id": "sample",
+  "title": "Sample record",
+  "fields": {
+    "Question": "Which sample should stay?",
+    "Context": "Compare the supplied media.",
+    "Recommended": "Keep the clearer sample.",
+    "Careful": "Confirm before acting.",
+    "Record": "Supporting background."
+  },
+  "presentation": {
+    "prompt": "Question",
+    "before_media": ["Context"],
+    "after_media": ["Recommended", "Careful"]
+  }
+}
+```
+
+`prompt` is optional and names the field displayed as the main heading.
+When supplied, the ordinary item title moves into details. The two optional
+arrays order visible fields before and after media; either defaults to empty.
+Put all visible fields in `after_media` for media first, or in `before_media`
+for media last. All unlisted fields retain their original order in one closed
+**Details** section after the answers. Field references must exist and be
+distinct across the prompt and both arrays; unknown properties are refused.
+No field content is discarded.
+
+This is an additive description extension. Without `presentation`, the
+original title, fields, media and answer ordering remains. The results and
+resolved-file schema version remain v1; presentation is bound into answer
+digests, while import still reads the frozen resolved file alone. Rebuilding
+a page changes its binding as before; retain the exact page and resolved file
+used by the reviewer. Import of old packets with their old frozen files is
+unchanged.
+
 ## Components and trust
 
 A component directory contains `component.json`, `component.js`, and

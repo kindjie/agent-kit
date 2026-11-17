@@ -281,6 +281,24 @@
             ]
           }
         },
+        "presentation": {
+          "type": "object",
+          "description": "Unlisted fields collapse after answers.",
+          "properties": {
+            "prompt": {"type": "string"},
+            "before_media": {
+              "type": "array",
+              "items": {"type": "string"},
+              "uniqueItems": true
+            },
+            "after_media": {
+              "type": "array",
+              "items": {"type": "string"},
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
         "evidence": {
           "type": "object"
         },

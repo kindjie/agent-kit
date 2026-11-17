@@ -680,6 +680,8 @@ def scopes_for(description, component_hashes, page_core_hashes):
   def media_context(items):
     return [{'id': item['id'], 'title': item.get('title'),
              'fields': item.get('fields', {}),
+             **({'presentation': item['presentation']}
+                if 'presentation' in item else {}),
              'evidence': item.get('evidence', {}),
              'media': [m.copy() for m in item.get('media', [])]}
             for item in items]
@@ -935,7 +937,7 @@ def resolve(path, limits):
   embedded = {}
   for item in items:
     keys_only(item, ('id', 'title', 'fields', 'evidence', 'decisions',
-                     'media', 'prefill'), 'item')
+                     'media', 'prefill', 'presentation'), 'item')
     identifier(item.get('id'), 'item id')
     if 'title' in item and not isinstance(item['title'], str):
       raise ReviewError('item title must be text')
@@ -947,6 +949,21 @@ def resolve(path, limits):
     if any(not isinstance(value, (str, int, float, bool, type(None)))
            for value in item.get('fields', {}).values()):
       raise ReviewError('item fields must contain scalar values')
+    if 'presentation' in item:
+      presentation = item['presentation']
+      keys_only(presentation, ('prompt', 'before_media', 'after_media'),
+                'item presentation')
+      names = []
+      if 'prompt' in presentation:
+        names.append(presentation['prompt'])
+      for position in ('before_media', 'after_media'):
+        rows = presentation.get(position, [])
+        if not isinstance(rows, list):
+          raise ReviewError('presentation field lists must be arrays')
+        names.extend(rows)
+      if (any(not isinstance(name, str) or name not in item.get('fields', {})
+              for name in names) or len(names) != len(set(names))):
+        raise ReviewError('presentation needs distinct existing field names')
     if not isinstance(item.get('evidence', {}), dict):
       raise ReviewError('item evidence must be an object')
     if not isinstance(item.get('decisions', {}), dict):

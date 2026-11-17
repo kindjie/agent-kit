@@ -86,6 +86,32 @@ async function checkPageLayout(browser, root) {
       assert.equal(await card.locator('[data-choice]').first()
         .getAttribute('aria-pressed'), 'true');
     });
+    await test('component controls retain focus', async page => {
+      const card = page.locator('.item').last();
+      // Exercise the host boundary with controls a trusted component can add.
+      await card.evaluate(node => {
+        for (const tag of ['select', 'button', 'audio', 'video', 'a']) {
+          const control = document.createElement(tag);
+          control.dataset.probe = tag;
+          if (tag === 'select') control.add(new Option('Sample', 'sample'));
+          else if (tag === 'audio' || tag === 'video') control.controls = true;
+          else control.textContent = 'Sample ' + tag;
+          if (tag === 'a') {
+            control.href = '#';
+            control.addEventListener('click', event => event.preventDefault());
+          }
+          node.append(control);
+        }
+      });
+      for (const tag of ['select', 'button', 'audio', 'video', 'a']) {
+        const control = card.locator('[data-probe=' + tag + ']');
+        await control.click();
+        assert(await control.evaluate(node => node === document.activeElement),
+          tag + ' lost keyboard focus');
+        assert((await card.getAttribute('class')).includes('focused'));
+        await page.keyboard.press('Escape');
+      }
+    });
     await test('slim pinned bar and focus mode', async page => {
       for (const [width, height] of [[1440, 900], [1280, 720]]) {
         await page.setViewportSize({width, height});
@@ -100,6 +126,8 @@ async function checkPageLayout(browser, root) {
         });
         assert(dimensions.bar.height <= 48, JSON.stringify(dimensions));
         assert.equal(Math.round(dimensions.bar.top), 0);
+        assert((await page.locator('#focused-group').textContent())
+          .endsWith(' group'));
         assert(dimensions.header.bottom <= 0);
         assert(dimensions.card.top >= dimensions.bar.bottom,
           JSON.stringify(dimensions));
@@ -126,6 +154,12 @@ async function checkPageLayout(browser, root) {
       assert.equal(await field.locator('img,script').count(), 0);
       assert((await field.textContent()).endsWith('unmatched `tick.'));
     });
+    await test('selected answer has a visible mark', async page => {
+      await page.keyboard.press('2');
+      const chosen = page.locator('.item.focused [aria-pressed=true]');
+      assert((await chosen.evaluate(node =>
+        getComputedStyle(node, '::before').content)).includes('✓'));
+    });
     await test('reading measure and dark mode', async page => {
       const field = page.locator('.item').first().locator('.fields');
       const measure = await field.evaluate(node => ({
@@ -135,6 +169,52 @@ async function checkPageLayout(browser, root) {
       await page.emulateMedia({colorScheme: 'dark'});
       assert.notEqual(await page.locator('body').evaluate(node =>
         getComputedStyle(node).backgroundColor), 'rgb(244, 245, 247)');
+      assert.equal(await page.locator('details').count(), 0);
+    });
+    await test('prompt, field placement and collapsed details', async page => {
+      fs.writeFileSync(path.join(temp, 'sample.txt'), 'Full-width media');
+      const structured = JSON.parse(JSON.stringify(description));
+      const item = structured.groups[0].items[0];
+      item.fields = {Prompt: 'Choose `sample`?', Context: 'Some context.',
+        Recommended: 'Keep the sample.', Careful: 'Confirm before acting.',
+        Record: 'Background record.', Path: 'sample.txt'};
+      item.media = [{kind: 'text', src: 'sample.txt'}];
+      const shapedInput = path.join(temp, 'structured.json');
+      const shapedPage = path.join(temp, 'structured.html');
+      for (const [before, after] of [
+        [['Context'], ['Recommended', 'Careful']],
+        [[], ['Context', 'Recommended', 'Careful']],
+        [['Context', 'Recommended', 'Careful'], []]]) {
+        item.presentation = {prompt: 'Prompt', before_media: before,
+          after_media: after};
+        fs.writeFileSync(shapedInput, JSON.stringify(structured));
+        const result = spawnSync(path.join(root, 'bin/review-sheet'),
+          ['build', shapedInput, '--output', shapedPage], {encoding: 'utf8'});
+        assert.equal(result.status, 0, result.stderr);
+        await page.goto('file://' + shapedPage);
+        const card = page.locator('.item').first();
+        assert.equal(await card.locator('h3').textContent(), 'Choose sample?');
+        assert.equal(await card.locator('h3 code').textContent(), 'sample');
+        const order = await card.evaluate(node => [...node.children].map(
+          child => child.matches('.media') ? 'media' :
+            child.matches('dl') ? child.querySelector('dt').textContent :
+              child.tagName.toLowerCase()));
+        assert.deepEqual(order.slice(0, 1 + !!before.length + 1 + !!after.length),
+          ['h3', ...(before.length ? [before[0]] : []), 'media',
+            ...(after.length ? [after[0]] : [])]);
+        assert.equal(order.at(-1), 'details');
+        const details = card.locator('details');
+        assert.equal(await details.getAttribute('open'), null);
+        assert.equal(await details.locator('dd').first().isVisible(), false);
+        assert.deepEqual(await details.locator('dt').allTextContents(),
+          ['Record', 'Path']);
+        await details.locator('summary').click();
+        assert.equal(await details.locator('dd').first().isVisible(), true);
+        assert((await details.textContent()).includes(item.title));
+        assert.equal(await card.locator('.media').boundingBox().then(box =>
+          box.width) > await card.locator('.fields').first().boundingBox()
+          .then(box => box.width), true);
+      }
     });
   } finally {
     await context.close();
