@@ -4,7 +4,6 @@ import bisect
 from collections import Counter
 from datetime import datetime
 import hashlib
-import io
 import json
 import math
 from pathlib import Path
@@ -425,30 +424,31 @@ class ZstdStream:
                                  stdout=subprocess.PIPE,
                                  stderr=subprocess.DEVNULL)
     assert self.proc.stdout is not None
-    self.text = io.TextIOWrapper(self.proc.stdout, encoding='utf-8')
+    self.out = self.proc.stdout
 
   def __iter__(self):
-    return iter(self.text)
+    return iter(self.out)
 
   def __enter__(self):
     return self
 
   def __exit__(self, *exc):
-    self.text.close()
+    self.out.close()
     self.failed = self.proc.wait() != 0
 
 
 def open_transcript(path):
   if path.name.endswith('.jsonl.zst'):
     return ZstdStream(path)
-  return path.open(encoding='utf-8')
+  return path.open('rb')
 
 
 def transcripts(root, since=None):
   """Return (paths, skipped): files last written before since are skipped.
 
-  A transcript's mtime is never earlier than its last event, and Codex's
-  compressed copies are written after the rollout ends.
+  This assumes a transcript's mtime is not earlier than its last event,
+  which holds for files the tools write in place (Codex compresses a rollout
+  after it ends) but not for copies that reset times or a skewed clock.
   """
   paths, skipped = [], 0
   for path in sorted([*root.rglob('*.jsonl'), *root.rglob('*.jsonl.zst')]):
@@ -519,6 +519,8 @@ def audit(paths, since, until):
       diagnostics['unreadable_files'] += 1
       continue
     with stream:
+      # Byte lines: json.loads rejects invalid UTF-8 per line, so one bad
+      # line is malformed rather than ending the file.
       for index, line in enumerate(stream):
         try:
           event = json.loads(line)
@@ -640,8 +642,10 @@ def audit(paths, since, until):
   # Modern Codex threads log both per-request records and cumulative
   # counters. Requests also record usage the counter omits, so a counter at
   # or below the thread's request total so far is covered by them; a larger
-  # one is usage the requests missed. A forked thread's first counter
-  # includes its parent's usage; that excess is an inherited baseline.
+  # one is usage the requests missed, as is a counter that grows by more
+  # than the requests since the thread's previous counter. A forked
+  # thread's first counter includes its parent's usage; that excess is an
+  # inherited baseline, so usage missing before it goes undetected.
   counted = [k for k in KEYS if k != 'total_tokens']
   running = {}
   for row in sorted(rows, key=lambda r: r['at']):
@@ -651,7 +655,7 @@ def audit(paths, since, until):
     last = totals[-1] if totals else (0,) * len(counted)
     times.append(row['at'])
     totals.append(tuple(a + row['usage'][k] for a, k in zip(last, counted)))
-  previous, inherited = {}, {}
+  previous, inherited, last_seen = {}, {}, {}
   for row in sorted(cumulative.values(), key=lambda r: r['at']):
     ident = row['thread']
     if ident in modern_threads:
@@ -661,8 +665,14 @@ def audit(paths, since, until):
       base = inherited.setdefault(ident, tuple(
         max(0, row['usage'][k] - n) if ident in forked else 0
         for k, n in zip(counted, so_far)))
-      covered = all(row['usage'][k] - b <= n
-                    for k, b, n in zip(counted, base, so_far))
+      value = tuple(row['usage'][k] for k in counted)
+      prior = last_seen.get(ident)
+      last_seen[ident] = (so_far, value)
+      outgrew = prior is not None and any(
+        v - pv > n - pn
+        for v, pv, n, pn in zip(value, prior[1], so_far, prior[0]))
+      covered = not outgrew and all(
+        u - b <= n for u, b, n in zip(value, base, so_far))
       if since <= row['at'] < until and not covered:
         diagnostics['mixed_accounting_coverage_unverified'] += 1
       if since <= row['at'] < min(until, modern_threads[ident]):
@@ -880,6 +890,8 @@ def main():
                       default=Path.home() / '.codex' / 'sessions')
   parser.add_argument('--claude-dir', type=Path,
                       default=Path.home() / '.claude' / 'projects')
+  parser.add_argument('--all-files', action='store_true',
+                      help='read files last modified before --since too')
   parser.add_argument('--provider', choices=('codex', 'claude', 'both'),
                       default='both')
   parser.add_argument('--scheduler-receipts', type=Path, action='append',
@@ -897,7 +909,7 @@ def main():
       continue
     if not root.is_dir():
       missing += 1
-    found, old = transcripts(root, args.since)
+    found, old = transcripts(root, None if args.all_files else args.since)
     paths.extend((provider, p) for p in found)
     skipped += old
   report = ({'schema_version': 1, 'since': args.since, 'until': args.until,

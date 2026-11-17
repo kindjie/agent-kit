@@ -280,6 +280,16 @@ class SetupTest(RecordsFixture):
     self.assertEqual(cursor, full.strip().splitlines()[-1].split()[-1])
     data = json.loads(self.run_cmd("agent-task", "show", task, "--json"))
     self.assertIn("entry-0", data["body"])
+    for n in range(3, 21):
+      self.run_cmd("agent-task", "--agent", "agent-a", "log", task,
+                   f"entry-{n}")
+    plain = self.run_cmd("agent-task", "show", task)
+    self.assertIn("2 earlier log entries omitted", plain)  # 22 entries
+    self.assertIn("entry-1\n", plain)
+    self.assertNotIn("entry-0\n", plain)
+    newer = self.run_cmd("agent-task", "show", task, "--after", cursor)
+    self.assertIn("entry-20", newer)
+    self.assertNotIn("omitted", newer)
 
   def test_help_and_missing_git(self):
     commands = {

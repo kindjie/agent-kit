@@ -31,7 +31,9 @@ Implicit lookups (`agent-id show`, the `steamos` holder) take `--holder`
 (steamos), else `AGENT_ID`, else the session. A subagent therefore starts
 each Bash call with `export AGENT_ID=<id>;` (it does not persist between
 calls; a one-off `AGENT_ID=<id> cmd` prefix covers only the first command of
-`a && b`) and passes `--agent <id>`. `AGENT_ID` is honoured only in the
+`a && b`) and passes `--agent <id>`. In Codex, pass `--agent` and
+`--holder` without the export where they apply: an `export` prefix keeps
+allow rules from matching, so a call that needs approval goes to review. `AGENT_ID` is honoured only in the
 session context that minted the ID: it is ignored, with a stderr notice,
 when no session variable is set or when the current providers' variables
 differ from the minting context (a codex child of Claude, or the reverse);
@@ -167,9 +169,10 @@ channel back and forth. For example:
 
 ```text
 Your agent ID is helper-0123456789abcdef. Work on T-0001.
-Pass --agent helper-0123456789abcdef to every records write. Start each
-shell call with `export AGENT_ID=helper-0123456789abcdef;` (steamos also
-takes --holder with that ID). Run nested claude/codex with `env -u AGENT_ID`.
+Pass --agent helper-0123456789abcdef to every records write and --holder
+with that ID to steamos. In Claude Code, also start each shell call with
+`export AGENT_ID=helper-0123456789abcdef;`; in Codex, pass the flags alone so
+allow rules match. Run nested claude/codex with `env -u AGENT_ID`.
 At each milestone, read new messages with
   agent-task show T-0001 --after <cursor>
 and report progress or blockers with

@@ -422,10 +422,13 @@ ID has its own session, so `AGENT_ID` is ignored there: it must pass
 
 ```text
 Your agent ID is helper-0123456789abcdef. Work on T-0001.
-Start each shell call with `export AGENT_ID=helper-0123456789abcdef;` (the
-variable does not persist between calls, and a one-off prefix covers only
-the first command of `a && b`) so implicit lookups such as steamos use it,
-and pass --agent helper-0123456789abcdef to every records mutation. `--holder helper-0123456789abcdef` works on every steamos command.
+Pass --agent helper-0123456789abcdef to every records mutation and
+--holder helper-0123456789abcdef to every steamos command. In Claude Code,
+also start each shell call with `export AGENT_ID=helper-0123456789abcdef;`
+(the variable does not persist between calls, and a one-off prefix covers
+only the first command of `a && b`) so other implicit lookups use it. In
+Codex, pass the flags alone: an export prefix keeps allow rules from
+matching a call that needs approval.
 Start nested claude or codex sessions with `env -u AGENT_ID`.
 Use agent-task --agent helper-0123456789abcdef log T-0001
   --to all 'Progress update' for coordination.

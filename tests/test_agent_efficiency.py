@@ -499,6 +499,14 @@ class EfficiencyTest(unittest.TestCase):
     self.assertEqual(report['totals']['total_tokens'], 42)
     self.assertEqual(report['diagnostics']['unreadable_files'], 1)
     self.assertFalse(report['complete'])
+    garbled = root / 'c.jsonl'
+    garbled.write_bytes(json.dumps(codex).encode() + b'\n\xff\xfe\n')
+    subprocess.run(['zstd', '-q', '--rm', str(garbled)], check=True)
+    report = self.mod.audit([('codex', root / 'c.jsonl.zst')],
+                            self.mod.timestamp('2026-01-01T11:00:00Z'),
+                            self.mod.timestamp('2026-01-01T13:00:00Z'))
+    self.assertEqual(report['totals']['total_tokens'], 42)
+    self.assertEqual(report['diagnostics']['malformed_lines'], 1)
 
   def test_cumulative_baseline_and_reset(self):
     events = []
@@ -562,6 +570,30 @@ class EfficiencyTest(unittest.TestCase):
     self.assertEqual(
       report['diagnostics']['mixed_accounting_coverage_unverified'], 1)
     self.assertFalse(report['complete'])
+    # A repeated counter is fine; one that grows by more than the requests
+    # since the previous counter is missed usage, even below their sum.
+    repeat = self.write('repeat.jsonl', [
+      meta, request('2026-01-01T12:00:00Z', 'r1', 90, 10),
+      count('2026-01-01T12:00:00Z', 9, 1),
+      count('2026-01-01T12:01:00Z', 9, 1)])
+    report = self.mod.audit([('codex', repeat)], *window)
+    self.assertNotIn('mixed_accounting_coverage_unverified',
+                     report['diagnostics'])
+    surplus = self.write('surplus.jsonl', [
+      meta, request('2026-01-01T12:00:00Z', 'r1', 90, 10),
+      count('2026-01-01T12:00:00Z', 9, 1),
+      count('2026-01-01T12:01:00Z', 18, 2)])
+    report = self.mod.audit([('codex', surplus)], *window)
+    self.assertEqual(
+      report['diagnostics']['mixed_accounting_coverage_unverified'], 1)
+    smaller = self.write('smaller.jsonl', [
+      meta, request('2026-01-01T12:00:00Z', 'r1', 90, 10),
+      count('2026-01-01T12:00:00Z', 9, 1),
+      request('2026-01-01T12:00:30Z', 'r2', 1, 0),
+      count('2026-01-01T12:01:00Z', 18, 2)])
+    report = self.mod.audit([('codex', smaller)], *window)
+    self.assertEqual(
+      report['diagnostics']['mixed_accounting_coverage_unverified'], 1)
 
   def test_request_records_override_cumulative(self):
     path = self.write('new.jsonl', [
