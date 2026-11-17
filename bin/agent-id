@@ -85,7 +85,11 @@ def main():
     try:
       private_append(state_path("agent-ids.log"), json.dumps(row) + "\n")
     except OSError as exc:
-      raise RecordsError("could not register ID: " + str(exc), 1)
+      hint = ("; an agent sandbox usually causes this, so add "
+              "${XDG_STATE_HOME:-~/.local/state}/agent-kit to its writable "
+              "roots or run agent-id outside it"
+              if isinstance(exc, PermissionError) else "")
+      raise RecordsError("could not register ID: " + str(exc) + hint, 1)
     print(value)
   elif args.command == "recent":
     try:

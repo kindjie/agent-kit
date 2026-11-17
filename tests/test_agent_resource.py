@@ -603,6 +603,16 @@ sys.exit(functions['main']())
     self.assertEqual({str(p): p.read_bytes() for p in root.rglob('*')
                       if p.is_file()}, before)
 
+  def test_status_without_resource_reports_every_configured_one(self):
+    for credits, name in ((3, 'cpu'), (1, 'gpu')):
+      self.assertEqual(self.configure(credits, name).returncode, 0)
+    result = subprocess.run([sys.executable, str(BIN), 'status'],
+                            env=self.env, capture_output=True, timeout=2)
+    self.assertEqual(result.returncode, 0, result.stderr)
+    rows = json.loads(result.stdout)['resources']
+    self.assertEqual(sorted(rows), ['cpu', 'gpu'])
+    self.assertEqual(rows['cpu']['capacity'], 3)
+
   def test_fresh_status_needs_exclusive_gate_to_establish_idle(self):
     self.assertEqual(self.configure(3, 'cpu').returncode, 0)
     root = Path(self.tmp.name) / 'agent-kit/resources'

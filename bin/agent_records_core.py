@@ -713,6 +713,12 @@ def unexpected_error(exc):
     traceback.print_exc()
   else:
     message = " ".join(str(exc).splitlines())
+    if isinstance(exc, PermissionError):
+      message = ("cannot write " + str(exc.filename or "records state") +
+                 ": " + str(exc.strerror or exc) + "; an agent sandbox "
+                 "usually causes this, so add the records directories and "
+                 "${XDG_STATE_HOME:-~/.local/state}/agent-kit to its "
+                 "writable roots or run the command outside it")
     print("unexpected records error: " + message, file=sys.stderr)
   roots = []
   for kind in ("tasks", "changelog"):
