@@ -1,6 +1,7 @@
 """Run the pinned file:// browser harness when its tools are installed."""
 import os
 from pathlib import Path
+import os
 import shutil
 import subprocess
 import tempfile
@@ -69,14 +70,15 @@ module.exports = {
     self.assertIn('SKIP: bundled Firefox executable absent', proc.stdout)
 
   def test_chromium_and_firefox(self):
-    if not shutil.which('node'):
+    require_browser = os.environ.get('REVIEW_SHEET_REQUIRE_BROWSER') == '1'
+    if not require_browser and not shutil.which('node'):
       self.skipTest('Node is absent; browser harness did not run')
     proc = subprocess.run(['node', str(HARNESS), str(ROOT)],
                           text=True, capture_output=True,
                           env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
     if proc.stdout:
       print(proc.stdout, end='')
-    if proc.returncode == 77:
+    if proc.returncode == 77 and not require_browser:
       self.skipTest(proc.stdout.strip() or proc.stderr.strip())
     self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 

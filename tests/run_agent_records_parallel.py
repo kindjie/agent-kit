@@ -47,6 +47,9 @@ def run(test_class):
 
 
 def main():
+  if not CLASSES:
+    print("No agent-records unittest classes found", file=sys.stderr)
+    return 1
   with concurrent.futures.ThreadPoolExecutor(
       max_workers=worker_count()) as pool:
     results = list(pool.map(run, CLASSES))
