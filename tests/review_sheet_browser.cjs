@@ -277,12 +277,13 @@ if (previousConfig === undefined) delete process.env.XDG_CONFIG_HOME;
 else process.env.XDG_CONFIG_HOME = previousConfig;
 
 async function check(browserType, name, launchOptions = {}) {
-  const options = {headless: true, timeout: 10000, ...launchOptions};
+  // Cold hosted runners can take longer than 10 s to start a browser.
+  const options = {headless: true, timeout: 60000, ...launchOptions};
   let browser;
   try { browser = await browserType.launch(options); }
   catch (error) {
     const launchError = new Error(name + ' could not launch: ' +
-      String(error.message).split('\n')[0]);
+      String(error.message).split('\n').slice(0, 8).join('\n'));
     launchError.browserLaunchError = true;
     throw launchError;
   }
