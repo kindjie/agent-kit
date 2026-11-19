@@ -1,5 +1,20 @@
 # Focused Tests
 
+## Pull request gates
+
+`PR Gates` runs on pull requests and pushes to `main`. Ubuntu runs the
+Python 3.13 unittest suites in parallel jobs for core, records and SteamOS.
+Core installs the Markdown preview dependencies and requires the Playwright
+fixtures to run with the Ubuntu runner's Chrome. Bundled Firefox and absent
+optional tools such as tmux use the existing fixture skips. The macOS 15
+job runs the installation doctor, resource and speech suites, including
+the native Darwin resource clock test.
+
+The public source job runs ShellCheck on the shipped shell commands,
+checks the repository and tess MIT notices, and scans the history reachable
+from the tested revision with Gitleaks. `agent-kit PR gate` requires all of
+these jobs to succeed. `SteamOS Linux` continues to run separately.
+
 ## Review sheet
 
 ```sh

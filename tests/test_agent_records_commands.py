@@ -154,6 +154,7 @@ class CommandsTest(RecordsFixture):
     classes = {test.__class__.__module__ + "." +
                test.__class__.__name__ for test in cases(discovered)}
     self.assertEqual(set(runner.CLASSES), classes)
+    self.assertEqual(runner.EMPTY_MODULES, [])
     with mock.patch.object(runner.os, "cpu_count", return_value=7):
       self.assertEqual(runner.worker_count(), 7)
 

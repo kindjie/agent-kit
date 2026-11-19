@@ -1,0 +1,187 @@
+name: PR Gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-gates-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  portable:
+    name: Ubuntu (${{ matrix.suite }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [core, records, steamos]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The legacy agent-kit rules fixture reads a historical snippet.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.13'
+      - name: Install core test dependencies
+        if: matrix.suite == 'core'
+        run: |
+          # Match the pins in bin/md-preview.py and use the runner's Chrome.
+          python -m pip install --only-binary=:all: \
+            cmarkgfm==2025.10.22 nh3==0.3.6
+          npm ci --prefix tests --ignore-scripts --no-audit --no-fund
+          test -x /opt/google/chrome/chrome
+      - name: Run unittest fixtures
+        env:
+          SUITE: ${{ matrix.suite }}
+        shell: bash
+        run: |
+          if [[ "$SUITE" == records ]]; then
+            python tests/run_agent_records_parallel.py
+          else
+            # Include new test modules in core unless they belong to a shard.
+            modules=()
+            for path in tests/test_*.py; do
+              case "$path" in
+                tests/test_agent_records_*.py) continue ;;
+                tests/test_steamos*.py) group=steamos ;;
+                *) group=core ;;
+              esac
+              if [[ "$group" == "$SUITE" ]]; then
+                module=${path%.py}
+                modules+=("${module//\//.}")
+              fi
+            done
+            test "${#modules[@]}" -gt 0
+            if [[ "$SUITE" == core ]]; then
+              export REVIEW_SHEET_REQUIRE_BROWSER=1
+            fi
+            python -m unittest -v "${modules[@]}"
+          fi
+
+  macos:
+    name: macOS smoke
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.13'
+      - name: Run installation, resource and speech fixtures
+        run: |
+          python -m unittest -v \
+            tests.test_agent_doctor tests.test_agent_resource \
+            tests.test_agent_speak
+
+  public-checks:
+    name: Public source checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out source and history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Lint shipped shell commands
+        run: |
+          shellcheck bin/agent-dash bin/claude-ctx.sh bin/claude-status.sh \
+            bin/md-preview
+          # The ownership test -O is supported by the target sh on both OSes.
+          shellcheck --exclude=SC3067 bin/agent-speak.sh
+      - name: Check MIT notices
+        run: |
+          python3 -I - <<'PY'
+          import re
+          from pathlib import Path
+
+          terms = """
+          Permission is hereby granted, free of charge, to any person obtaining
+          a copy of this software and associated documentation files (the
+          "Software"), to deal in the Software without restriction, including
+          without limitation the rights to use, copy, modify, merge, publish,
+          distribute, sublicense, and/or sell copies of the Software, and to
+          permit persons to whom the Software is furnished to do so, subject to
+          the following conditions:
+
+          The above copyright notice and this permission notice shall be
+          included in all copies or substantial portions of the Software.
+
+          THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+          EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+          MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+          NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+          BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+          ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+          CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+          SOFTWARE.
+          """
+          body = re.escape(' '.join(terms.split()))
+          for path, owner, heading in (
+            ('LICENSE', 'Owen Wiggins', '^MIT License '),
+            ('docs/site-tooling.md', 'tess contributors', ''),
+          ):
+            content = ' '.join(Path(path).read_text(encoding='utf-8').split())
+            notice = rf'{heading}Copyright \(c\) \d{{4}} {owner} {body}'
+            if not re.search(notice, content):
+              raise SystemExit(f'{path}: missing or incomplete MIT notice')
+          PY
+      - name: Scan checked-out Git history for secrets
+        shell: bash
+        run: |
+          # Use the checksum-pinned CLI without a token or an upload step.
+          scratch=$(mktemp -d "$RUNNER_TEMP/gitleaks.XXXXXX")
+          archive=gitleaks_8.30.1_linux_x64.tar.gz
+          release=https://github.com/gitleaks/gitleaks/releases/download/v8.30.1
+          sha256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          cd "$scratch"
+          curl --fail --silent --show-error --location --retry 3 \
+            --output "$archive" "$release/$archive"
+          printf '%s  %s\n' "$sha256" "$archive" \
+            | sha256sum --check --strict
+          tar -xzf "$archive" gitleaks
+          # A bare repo exposes history without checkout-level ignore files.
+          git init --bare --quiet source.git
+          git -C source.git fetch --quiet --no-tags "$GITHUB_WORKSPACE" HEAD
+          git -C source.git update-ref HEAD FETCH_HEAD
+          printf '[extend]\nuseDefault = true\n' > gitleaks.toml
+          touch .gitleaksignore
+          ./gitleaks git --no-banner --redact --ignore-gitleaks-allow \
+            --config gitleaks.toml --gitleaks-ignore-path . --log-opts=-m \
+            source.git
+
+  required:
+    name: agent-kit PR gate
+    runs-on: ubuntu-24.04
+    permissions: {}
+    timeout-minutes: 2
+    needs: [portable, macos, public-checks]
+    if: ${{ always() }}
+    steps:
+      - name: Require every job to succeed
+        env:
+          PORTABLE: ${{ needs.portable.result }}
+          MACOS: ${{ needs.macos.result }}
+          PUBLIC_CHECKS: ${{ needs.public-checks.result }}
+        run: |
+          printf 'Ubuntu: %s\nmacOS: %s\nPublic source: %s\n' \
+            "$PORTABLE" "$MACOS" "$PUBLIC_CHECKS"
+          test "$PORTABLE" = success && test "$MACOS" = success && \
+            test "$PUBLIC_CHECKS" = success

@@ -21,17 +21,22 @@ MODULES = sorted("tests." + path.stem for path in
 
 def discover_classes():
   classes = []
+  empty = []
   for module_name in MODULES:
     module = importlib.import_module(module_name)
-    for _, candidate in inspect.getmembers(module, inspect.isclass):
+    found = [
+      module_name + "." + candidate.__name__
+      for _, candidate in inspect.getmembers(module, inspect.isclass)
       if (issubclass(candidate, unittest.TestCase) and
           candidate.__module__ == module_name and
-          unittest.defaultTestLoader.getTestCaseNames(candidate)):
-        classes.append(module_name + "." + candidate.__name__)
-  return classes
+          unittest.defaultTestLoader.getTestCaseNames(candidate))]
+    if not found:
+      empty.append(module_name)
+    classes.extend(found)
+  return classes, empty
 
 
-CLASSES = discover_classes()
+CLASSES, EMPTY_MODULES = discover_classes()
 
 
 def worker_count():
@@ -47,6 +52,14 @@ def run(test_class):
 
 
 def main():
+  if not CLASSES:
+    print("No agent-records unittest classes found", file=sys.stderr)
+    return 1
+  if EMPTY_MODULES:
+    # A module whose tests this runner cannot dispatch would pass silently.
+    print("No unittest classes found in: " + ", ".join(EMPTY_MODULES),
+          file=sys.stderr)
+    return 1
   with concurrent.futures.ThreadPoolExecutor(
       max_workers=worker_count()) as pool:
     results = list(pool.map(run, CLASSES))
