@@ -1,7 +1,6 @@
 """Run the pinned file:// browser harness when its tools are installed."""
 import os
 from pathlib import Path
-import os
 import shutil
 import subprocess
 import tempfile
