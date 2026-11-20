@@ -7,7 +7,7 @@ ReviewSheet.register({kind: 'image', version: '1.1.1', api: 1,
     const images = (api.item?.media || []).filter(row => row.kind === 'image');
     const position = images.findIndex(row => row.index === api.item?.index);
     const ownLabel = media.alt || `${position + 1} of ${images.length}`;
-    let zoomed = false, other = null, cursor = -1, generation = 0;
+    let zoomed = false, other = null, attempted = -1, generation = 0;
     let disposed = false;
     function fit() {
       const nodes = [...panels.querySelectorAll('img')];
@@ -39,7 +39,7 @@ ReviewSheet.register({kind: 'image', version: '1.1.1', api: 1,
     }
     panels.append(figure(api.url, ownLabel));
     box.append(panels);
-    const siblings = (api.group?.members || []).filter(row =>
+    const siblings = (api.group?.comparison ? api.group.members : []).filter(row =>
       row.id !== api.item?.id).flatMap(row => {
       const image = row.media?.find(entry => entry.kind === 'image');
       return image ? [{id: row.id, index: image.index,
@@ -63,14 +63,14 @@ ReviewSheet.register({kind: 'image', version: '1.1.1', api: 1,
       close.hidden = true;
       compare.addEventListener('click', async () => {
         const current = ++generation;
-        const next = (cursor + 1) % targets.length;
-        const target = targets[next];
+        attempted = (attempted + 1) % targets.length;
+        const target = targets[attempted];
         try {
           const handle = await api.media(target.id, target.index);
           const candidate = figure(handle.url, target.label);
           await candidate.querySelector('img').decode();
           if (disposed || current !== generation) return;
-          other?.remove(); other = candidate; cursor = next;
+          other?.remove(); other = candidate;
           panels.append(other); close.hidden = false;
           compare.setAttribute('aria-expanded', 'true');
           fit();
@@ -80,7 +80,7 @@ ReviewSheet.register({kind: 'image', version: '1.1.1', api: 1,
         }
       });
       close.addEventListener('click', () => {
-        generation++; other?.remove(); other = null; cursor = -1;
+        generation++; other?.remove(); other = null; attempted = -1;
         close.hidden = true; compare.setAttribute('aria-expanded', 'false');
         compare.focus({preventScroll: true}); fit();
       });

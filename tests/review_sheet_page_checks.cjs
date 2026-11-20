@@ -14,6 +14,7 @@ async function checkPageLayout(browser, root) {
       review: 'page-fixture', title: 'A review with a long introduction',
       instructions: 'Read these instructions. '.repeat(35),
       caveats: ['A caveat. '.repeat(20)],
+      decisions_review: {summary: {kind: 'text', question: 'Review note'}},
       decisions: {
         verdict: {kind: 'choice', options: ['keep', 'revise'], keys: '12',
           required: true},
@@ -24,6 +25,9 @@ async function checkPageLayout(browser, root) {
             Command: 'Run `sample --check` and `<img src=x onerror=alert(1)>`.'
               + ' Keep <script> literal and an unmatched `tick.'},
           media: []}))}))};
+    description.groups[0].decisions = {
+      rating: {kind: 'number', question: 'Group rating'},
+      approved: {kind: 'boolean'}};
     const input = path.join(temp, 'description.json');
     const output = path.join(temp, 'page.html');
     fs.writeFileSync(input, JSON.stringify(description));
@@ -43,6 +47,28 @@ async function checkPageLayout(browser, root) {
         console.error('FAIL: page ' + name + ': ' + error.message);
       } finally { await page.close(); }
     }
+    await test('Escape leaves group and review answers', async page => {
+      const card = page.locator('.item.focused');
+      for (const label of ['Group rating', 'Review note']) {
+        const input = page.getByLabel(label, {exact: true});
+        await input.focus();
+        await input.press('Escape');
+        assert(await card.evaluate(node => node === document.activeElement),
+          label);
+      }
+    });
+    await test('both boolean selections have a visible mark', async page => {
+      const buttons = page.locator('[data-choice="group:first:approved"]');
+      for (const value of ['true', 'false']) {
+        const selected = buttons.filter({hasText: new RegExp('^' + value + '$')});
+        const other = buttons.filter({hasNotText: value});
+        await selected.click();
+        assert.equal(await selected.getAttribute('aria-pressed'), 'true');
+        assert.equal(await other.getAttribute('aria-pressed'), 'false');
+        assert((await selected.evaluate(node =>
+          getComputedStyle(node, '::before').content)).includes('✓'));
+      }
+    });
     await test('pointer and Tab focus', async page => {
       const card = page.locator('.item').nth(1);
       const note = card.locator('textarea');
@@ -254,6 +280,26 @@ async function checkPageLayout(browser, root) {
       await media.locator('img').click();
       assert.equal(await media.locator('img').evaluate(node =>
         node.style.maxHeight), 'none');
+    });
+    await test('Compare advances past a failed decode', async page => {
+      await page.addInitScript(() => {
+        const decode = HTMLImageElement.prototype.decode;
+        HTMLImageElement.prototype.decode = function () {
+          if (this.alt === '2 of 3') return Promise.reject(Error('fixture'));
+          return decode.call(this);
+        };
+      });
+      await page.goto('file://' + imagePage);
+      const media = page.locator('[data-item-id=gallery] .media').first();
+      const compare = media.getByRole('button', {name: 'Compare', exact: true});
+      await compare.click();
+      await page.getByText('Comparison image is unavailable.').waitFor();
+      assert.equal(await media.locator('img').count(), 1);
+      await compare.click();
+      await media.getByText('Third caption', {exact: true}).waitFor();
+      await compare.click();
+      assert.deepEqual(await media.locator('figcaption').allTextContents(),
+        ['Wide caption', 'Third caption']);
     });
     await test('ordinary group single images have no Compare', async page => {
       await page.goto('file://' + imagePage);

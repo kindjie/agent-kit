@@ -85,10 +85,13 @@ pixel scale and retain their aspect ratios; captions use `alt` text or the
 image's position (for example, "2 of 6"). Click either image or press `z`
 to toggle full size; **Close comparison** returns to one image. An ordinary
 group's single-image items have no Compare button. Cross-item comparison
-requires explicit group `comparison` configuration, which compares members
+requires explicit group `comparison` configuration with a `reference` item ID
+and a nonempty `candidates` array listing the other member IDs. Compare
+shows the first image from each other member in group order,
 even when an item has several images. The second caption includes the source
 item's title (or ID when untitled) and its image caption when supplied.
-No available alternative means no Compare button.
+No available alternative means no Compare button. Item answer digests bind
+the sibling images that Compare can show.
 
 Backtick-delimited text renders as inline code in item fields, titles,
 instructions, caveats and decision questions. Other text, including HTML,

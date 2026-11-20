@@ -353,6 +353,14 @@ async function checkCustom(browser, name) {
     try { await window.customApis[1].media('first', 0); return false; }
     catch (error) { return /failed sibling/.test(error.message); }
   }), true);
+  assert.equal(await page.evaluate(() => {
+    const [first, second] = window.customApis;
+    const group = first.group;
+    return group === second.group && Object.isFrozen(group) &&
+      Object.isFrozen(group.members) && group.members.every(member =>
+        Object.isFrozen(member) && Object.isFrozen(member.media) &&
+        member.media.every(Object.isFrozen));
+  }), true, 'media instances must share frozen group metadata');
   await page.evaluate(() => dispatchEvent(new Event('pagehide')));
   assert.equal(await page.evaluate(() => window.customDisposed), 2);
   assert.equal(await page.evaluate(async () => {

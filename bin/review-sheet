@@ -728,10 +728,24 @@ def scopes_for(description, component_hashes, page_core_hashes):
                            'options': options,
                            'required': group['pick'].get('required', False)}
     add('group', group['id'], decisions, group['items'], group)
+    comparison_images = []
+    if ('comparison' in group and
+        group.get('layout') != 'synchronized-comparison'):
+      for item in group['items']:
+        image = next((media for media in item.get('media', [])
+                      if media['kind'] == 'image'), None)
+        if image is not None:
+          comparison_images.append({'id': item['id'],
+                                    'title': item.get('title'),
+                                    'media': [image]})
     for item in group['items']:
       item_decisions = description.get('decisions', {}).copy()
       item_decisions.update(item.get('decisions', {}))
-      add('item', item['id'], item_decisions, [item], group)
+      evidence = [item]
+      if any(media['kind'] == 'image' for media in item.get('media', [])):
+        evidence.extend(target for target in comparison_images
+                        if target['id'] != item['id'])
+      add('item', item['id'], item_decisions, evidence, group)
   for item in top_items:
     item_decisions = description.get('decisions', {}).copy()
     item_decisions.update(item.get('decisions', {}))
@@ -751,7 +765,8 @@ def media_hashes(media):
 def check_comparison(group):
   info = group.get('comparison')
   if not isinstance(info, dict):
-    raise ReviewError('synchronized comparison needs comparison object')
+    raise ReviewError('comparison needs comparison object')
+  synchronized = group.get('layout') == 'synchronized-comparison'
   keys_only(info, ('reference', 'candidates', 'views', 'fps',
                    'motion_frames', 'hold_start', 'hold_end',
                    'frame_count', 'key_frames', 'crops', 'reveal'),
@@ -759,12 +774,15 @@ def check_comparison(group):
   ids = [item['id'] for item in group['items']]
   candidates = info.get('candidates')
   if (not isinstance(candidates, list) or not candidates or
+      any(not isinstance(candidate, str) for candidate in candidates) or
       len(set(candidates)) != len(candidates) or
-      any(x in ('tie', 'none') for x in candidates) or
+      (synchronized and any(x in ('tie', 'none') for x in candidates)) or
       info.get('reference') not in ids or
       set([info['reference'], *candidates]) != set(ids) or
       info['reference'] in candidates):
     raise ReviewError('comparison reference/candidates do not match items')
+  if not synchronized:
+    return
   views = info.get('views')
   if (not isinstance(views, list) or not views or
       len(set(views)) != len(views)):
@@ -1083,7 +1101,7 @@ def resolve(path, limits):
           raise ReviewError('embedded media total exceeds limit')
         embedded[(item['id'], media['src'])] = raw
   for group in groups:
-    if group.get('layout') == 'synchronized-comparison':
+    if 'comparison' in group or group.get('layout') == 'synchronized-comparison':
       check_comparison(group)
   check_hotkeys(description, groups, items,
                 {kind: bundle['keys'] for kind, bundle in selected.items()})

@@ -14,6 +14,8 @@
   const verifiedMedia = new Map();
   const mediaViews = new Map();
   const mediaHandles = new Map();
+  const componentGroups = new WeakMap();
+  const choiceValues = new WeakMap();
   const failedMedia = new Set();
   const frameCache = new Map();
   let cacheEvictions = 0;
@@ -425,7 +427,7 @@
     }
     for (const node of document.querySelectorAll('[data-choice]')) {
       node.setAttribute('aria-pressed', String(
-        currentValue(node.dataset.choice) === node.dataset.value));
+        currentValue(node.dataset.choice) === choiceValues.get(node)));
     }
     for (const node of document.querySelectorAll('[data-flag]')) {
       node.setAttribute('aria-pressed', String(
@@ -468,6 +470,7 @@
           () => choose(value));
         control.dataset.choice = key;
         control.dataset.value = String(value);
+        choiceValues.set(control, value);
         options.append(control);
       });
     } else if (definition.kind === 'flags') {
@@ -492,6 +495,7 @@
         if (definition.max !== undefined) input.max = definition.max;
       }
       input.setAttribute('aria-label', definition.question || key);
+      wrapper.tabIndex = -1;
       const previous = answers[key];
       if (previous && previous.value !== undefined)
         input.value = previous.value;
@@ -510,11 +514,11 @@
         if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
           event.preventDefault(); event.stopPropagation(); saveAnswer();
         } else if (event.key === 'Escape') {
-          const card = input.closest('.item');
-          if (card) {
-            event.preventDefault(); event.stopPropagation();
-            card.focus({preventScroll: true});
-          }
+          const scope = input.closest('.group') || document;
+          const target = input.closest('.item') ||
+            scope.querySelector('.item.focused') || wrapper;
+          event.preventDefault(); event.stopPropagation();
+          target.focus({preventScroll: true});
         }
       });
     }
@@ -524,6 +528,26 @@
       'Prior answer from ' + answer.source + ': ' +
       JSON.stringify(answer.value) + '. Reconfirm to answer.'));
     return wrapper;
+  }
+  function componentGroup(group) {
+    if (!group) return null;
+    if (!componentGroups.has(group)) {
+      componentGroups.set(group, Object.freeze({id: group.id,
+        layout: group.layout,
+        comparison: group.comparison ? Object.freeze({
+          reference: group.comparison.reference,
+          candidates: Object.freeze([...group.comparison.candidates])
+        }) : null,
+        members: Object.freeze(group.items.map(entry => Object.freeze({
+          id: entry.id, label: entry.title || entry.id,
+          media: Object.freeze((entry.media || []).map((row, at) =>
+            Object.freeze({index: at, kind: row.kind, label: row.alt || ''})))}))),
+        get focused() {
+          return group.items.includes(allItems[focused]) ?
+            allItems[focused].id : null;
+        }}));
+    }
+    return componentGroups.get(group);
   }
   async function renderMedia(media, parent, item, index) {
     const shell = el('div', 'media');
@@ -580,19 +604,7 @@
         gainCap: 0.5, privacy: desc.privacy,
         darkMode: matchMedia('(prefers-color-scheme: dark)').matches,
         reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches}),
-      group: group ? Object.freeze({id: group.id, layout: group.layout,
-        comparison: group.comparison ? Object.freeze({
-          reference: group.comparison.reference,
-          candidates: Object.freeze([...(group.comparison.candidates || [])])
-        }) : null,
-        members: Object.freeze(group.items.map(entry => Object.freeze({
-          id: entry.id, label: entry.title || entry.id,
-          media: Object.freeze((entry.media || []).map((row, at) =>
-            Object.freeze({index: at, kind: row.kind, label: row.alt || ''})))}))),
-        get focused() {
-          return group.items.includes(allItems[focused]) ?
-            allItems[focused].id : null;
-        }}) : null,
+      group: componentGroup(group),
       media: (itemId, mediaIndex) => {
         if (resources.disposed || pageDisposed)
           return Promise.reject(Error('media disposed'));

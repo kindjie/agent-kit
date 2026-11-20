@@ -95,6 +95,49 @@ class ReviewSheetTest(unittest.TestCase):
     self.write_desc()
     self.build()
 
+  def test_still_comparison_binds_sibling_image(self):
+    group = self.description['groups'][0]
+    group['comparison'] = {'reference': 'one', 'candidates': ['two']}
+    for index, item_id in enumerate(('one', 'two')):
+      source = f'{item_id}.svg'
+      (self.root / source).write_text('<svg/>')
+      item = {'id': item_id, 'media': [{'kind': 'image', 'src': source,
+                                     'mode': 'embed'}]}
+      if index == 0:
+        group['items'][0] = item
+      else:
+        group['items'].append(item)
+    self.write_desc()
+    key = 'item:one:verdict'
+    before = self.build()['scopes'][key]
+    (self.root / 'two.svg').write_text('<svg width="10"/>')
+    after = self.build()['scopes'][key]
+    self.assertNotEqual(before['digest'], after['digest'])
+    self.assertEqual(after['media']['two.svg'], hashlib.sha256(
+      (self.root / 'two.svg').read_bytes()).hexdigest())
+    del group['comparison']
+    self.write_desc()
+    before = self.build()['scopes'][key]
+    (self.root / 'two.svg').write_text('<svg width="20"/>')
+    self.assertEqual(before, self.build()['scopes'][key])
+
+  def test_still_comparison_metadata(self):
+    group = self.description['groups'][0]
+    group['items'].append({'id': 'two'})
+    for layout in ('list', 'grid'):
+      group['layout'] = layout
+      for candidates in (3, 'two', [['two']], [], ['one'], ['missing'],
+                         ['two', 'two']):
+        with self.subTest(layout=layout, candidates=candidates):
+          group['comparison'] = {'reference': 'one', 'candidates': candidates}
+          self.write_desc()
+          result = self.run_tool('build', self.desc, '--output', self.page,
+                                 code=2)
+          self.assertIn('comparison reference/candidates', result.stderr)
+      group['comparison'] = {'reference': 'one', 'candidates': ['two']}
+      self.write_desc()
+      self.build()
+
   def test_import_states_and_staleness(self):
     resolved = self.build()
     packet = {'schema_version': 1, 'review': 'sample-1',
