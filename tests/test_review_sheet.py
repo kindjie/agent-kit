@@ -65,6 +65,119 @@ class ReviewSheetTest(unittest.TestCase):
     self.assertIn('Content-Security-Policy', self.page.read_text())
     self.assertNotIn('https://', self.page.read_text())
 
+  def test_presentation_is_optional_validated_and_bound(self):
+    item = self.description['groups'][0]['items'][0]
+    baseline = self.build()
+    self.assertNotIn('presentation', baseline['description']['groups'][0]
+                     ['items'][0])
+    for presentation in (None, [], {'unknown': []}, {'prompt': 'missing'},
+                         {'before_media': 'label'},
+                         {'before_media': [0]},
+                         {'after_media': ['missing']},
+                         {'before_media': ['label', 'label']},
+                         {'prompt': 'label', 'after_media': ['label']},
+                         {'before_media': ['label'],
+                          'after_media': ['label']}):
+      with self.subTest(presentation=presentation):
+        item['presentation'] = presentation
+        self.write_desc()
+        self.run_tool('build', self.desc, '--output', self.page, code=2)
+    item['presentation'] = {'prompt': 'label'}
+    self.write_desc()
+    changed = self.build()
+    self.assertEqual(changed['schema_version'], 1)
+    self.assertEqual(changed['description']['groups'][0]['items'][0]
+                     ['presentation'], {'prompt': 'label'})
+    key = 'item:one:verdict'
+    self.assertNotEqual(baseline['scopes'][key]['digest'],
+                        changed['scopes'][key]['digest'])
+    item['presentation'] = {}
+    self.write_desc()
+    self.build()
+
+  def test_still_comparison_binds_sibling_image(self):
+    group = self.description['groups'][0]
+    group['comparison'] = {'reference': 'one', 'candidates': ['two']}
+    for index, item_id in enumerate(('one', 'two')):
+      source = f'{item_id}.svg'
+      (self.root / source).write_text('<svg/>')
+      item = {'id': item_id, 'media': [{'kind': 'image', 'src': source,
+                                     'mode': 'embed'}]}
+      if index == 0:
+        group['items'][0] = item
+      else:
+        group['items'].append(item)
+    self.write_desc()
+    key = 'item:one:verdict'
+    before = self.build()['scopes'][key]
+    (self.root / 'two.svg').write_text('<svg width="10"/>')
+    after = self.build()['scopes'][key]
+    self.assertNotEqual(before['digest'], after['digest'])
+    self.assertEqual(after['media']['two.svg'], hashlib.sha256(
+      (self.root / 'two.svg').read_bytes()).hexdigest())
+    del group['comparison']
+    self.write_desc()
+    before = self.build()['scopes'][key]
+    (self.root / 'two.svg').write_text('<svg width="20"/>')
+    self.assertEqual(before, self.build()['scopes'][key])
+
+  def test_sibling_authority_embeds_comparison_image(self):
+    group = self.description['groups'][0]
+    group['comparison'] = {'reference': 'one', 'candidates': ['two']}
+    for item_id in ('one', 'two'):
+      (self.root / f'{item_id}.svg').write_text('<svg/>')
+    group['items'][0] = {
+      'id': 'one',
+      'media': [{'kind': 'image', 'src': 'one.svg', 'mode': 'reference'}],
+      'decisions': {'final': {'kind': 'boolean', 'authority': True}}}
+    group['items'].append({'id': 'two', 'media': [
+      {'kind': 'image', 'src': 'two.svg', 'mode': 'reference'}]})
+    self.write_desc()
+    items = self.build()['description']['groups'][0]['items']
+    self.assertEqual([item['media'][0]['mode'] for item in items],
+                     ['embed', 'embed'])
+    del group['comparison']
+    self.write_desc()
+    items = self.build()['description']['groups'][0]['items']
+    self.assertEqual(items[1]['media'][0]['mode'], 'reference')
+
+  def test_inherited_authority_embeds_only_first_sibling_image(self):
+    group = self.description['groups'][0]
+    group['comparison'] = {'reference': 'one', 'candidates': ['two']}
+    verdict = self.description['decisions']['verdict']
+    verdict['authority'] = True
+    del verdict['keys']
+    for name in ('one.svg', 'two.svg', 'extra.svg'):
+      (self.root / name).write_text('<svg/>')
+    group['items'][0] = {'id': 'one', 'media': [
+      {'kind': 'image', 'src': 'one.svg', 'mode': 'reference'}]}
+    group['items'].append({'id': 'two', 'media': [
+      {'kind': 'image', 'src': 'two.svg', 'mode': 'reference'},
+      {'kind': 'image', 'src': 'extra.svg', 'mode': 'reference'}],
+      'decisions': {'verdict': {'kind': 'choice', 'required': True,
+                                'options': ['keep', 'revise']}}})
+    self.write_desc()
+    items = self.build()['description']['groups'][0]['items']
+    self.assertEqual([row['mode'] for row in items[1]['media']],
+                     ['embed', 'reference'])
+
+  def test_still_comparison_metadata(self):
+    group = self.description['groups'][0]
+    group['items'].append({'id': 'two'})
+    for layout in ('list', 'grid'):
+      group['layout'] = layout
+      for candidates in (3, 'two', [['two']], [], ['one'], ['missing'],
+                         ['two', 'two']):
+        with self.subTest(layout=layout, candidates=candidates):
+          group['comparison'] = {'reference': 'one', 'candidates': candidates}
+          self.write_desc()
+          result = self.run_tool('build', self.desc, '--output', self.page,
+                                 code=2)
+          self.assertIn('comparison reference/candidates', result.stderr)
+      group['comparison'] = {'reference': 'one', 'candidates': ['two']}
+      self.write_desc()
+      self.build()
+
   def test_import_states_and_staleness(self):
     resolved = self.build()
     packet = {'schema_version': 1, 'review': 'sample-1',

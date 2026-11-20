@@ -14,6 +14,8 @@
   const verifiedMedia = new Map();
   const mediaViews = new Map();
   const mediaHandles = new Map();
+  const componentGroups = new WeakMap();
+  const choiceValues = new WeakMap();
   const failedMedia = new Set();
   const frameCache = new Map();
   let cacheEvictions = 0;
@@ -31,6 +33,7 @@
   let reviewerValue = '';
   let pageDisposed = false;
   let generation = 0;
+  let noteTimer;
 
   function mediaKey(item, index) { return item.id + ':' + index; }
   function deferred() {
@@ -114,14 +117,39 @@
     node.addEventListener('click', action);
     return node;
   }
+  function text(tag, className, value) {
+    const node = el(tag, className);
+    const source = String(value);
+    let start = 0;
+    for (const match of source.matchAll(/`([^`\n]+)`/g)) {
+      node.append(document.createTextNode(source.slice(start, match.index)),
+        el('code', '', match[1]));
+      start = match.index + match[0].length;
+    }
+    node.append(document.createTextNode(source.slice(start)));
+    return node;
+  }
+  function resultsFilename() {
+    return encodeURIComponent(desc.review).replace(/[!'()*]/g, character =>
+      '%' + character.charCodeAt(0).toString(16).toUpperCase()) +
+      '-results.json';
+  }
+  function clearNote() {
+    clearTimeout(noteTimer);
+    document.querySelector('#messages')?.replaceChildren();
+  }
   function note(text, error) {
     const host = document.querySelector('#messages');
     if (!host) {
       pendingNotes.push([text, error]);
       return null;
     }
-    const banner = el('p', 'banner' + (error ? ' error' : ''), text);
+    clearTimeout(noteTimer);
+    const banner = el('p', 'banner' + (error ? ' error' : ''),
+      (error ? 'Error: ' : '') + text);
+    banner.setAttribute('role', error ? 'alert' : 'status');
     host.append(banner);
+    noteTimer = setTimeout(clearNote, 8000);
     return banner;
   }
   function bytes(base64) {
@@ -387,7 +415,9 @@
     document.querySelector('#progress').value = done;
     document.querySelector('#progress').max = Math.max(1, total);
     document.querySelector('#progress-text').textContent =
-      done + ' of ' + total + ' required decisions answered';
+      done + '/' + total + ' required';
+    document.querySelector('#progress').setAttribute('aria-label',
+      done + ' of ' + total + ' required decisions answered');
     for (const group of groups) {
       const keys = scopeKeys.filter(key =>
         key.startsWith('group:' + group.id + ':') ||
@@ -397,7 +427,7 @@
     }
     for (const node of document.querySelectorAll('[data-choice]')) {
       node.setAttribute('aria-pressed', String(
-        currentValue(node.dataset.choice) === node.dataset.value));
+        currentValue(node.dataset.choice) === choiceValues.get(node)));
     }
     for (const node of document.querySelectorAll('[data-flag]')) {
       node.setAttribute('aria-pressed', String(
@@ -408,7 +438,7 @@
     const definition = data.scopes[key].definition;
     const wrapper = el('div', 'decision' +
       (definition.authority ? ' authority' : ''));
-    const title = el('div', '', definition.question || key.split(':').at(-1));
+    const title = text('div', '', definition.question || key.split(':').at(-1));
     wrapper.append(title);
     const status = el('span', 'state');
     status.dataset.scopeState = key;
@@ -440,6 +470,7 @@
           () => choose(value));
         control.dataset.choice = key;
         control.dataset.value = String(value);
+        choiceValues.set(control, value);
         options.append(control);
       });
     } else if (definition.kind === 'flags') {
@@ -464,19 +495,34 @@
         if (definition.max !== undefined) input.max = definition.max;
       }
       input.setAttribute('aria-label', definition.question || key);
+      wrapper.tabIndex = -1;
       const previous = answers[key];
       if (previous && previous.value !== undefined)
         input.value = previous.value;
       options.append(input);
       if (definition.unit) options.append(el('span', '', definition.unit));
-      options.append(button('Save answer', () => {
+      const saveAnswer = () => {
         if (definition.kind === 'number') {
           if (!input.value || !input.checkValidity()) {
             note('Number is missing or outside its bounds.', true); return;
           }
           choose(Number(input.value));
         } else choose(input.value);
-      }));
+      };
+      options.append(button('Save answer', saveAnswer));
+      input.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+          event.preventDefault(); event.stopPropagation(); saveAnswer();
+        } else if (event.key === 'Escape') {
+          // Synchronized layouts hide their cards; never focus a hidden one.
+          const scope = input.closest('.group') || document;
+          const target = [input.closest('.item'),
+            scope.querySelector('.item.focused')].find(node =>
+            node && node.getClientRects().length) || wrapper;
+          event.preventDefault(); event.stopPropagation();
+          target.focus({preventScroll: true});
+        }
+      });
     }
     wrapper.append(options);
     const answer = answers[key];
@@ -484,6 +530,26 @@
       'Prior answer from ' + answer.source + ': ' +
       JSON.stringify(answer.value) + '. Reconfirm to answer.'));
     return wrapper;
+  }
+  function componentGroup(group) {
+    if (!group) return null;
+    if (!componentGroups.has(group)) {
+      componentGroups.set(group, Object.freeze({id: group.id,
+        layout: group.layout,
+        comparison: group.comparison ? Object.freeze({
+          reference: group.comparison.reference,
+          candidates: Object.freeze([...group.comparison.candidates])
+        }) : null,
+        members: Object.freeze(group.items.map(entry => Object.freeze({
+          id: entry.id, label: entry.title || entry.id,
+          media: Object.freeze((entry.media || []).map((row, at) =>
+            Object.freeze({index: at, kind: row.kind, label: row.alt || ''})))}))),
+        get focused() {
+          return group.items.includes(allItems[focused]) ?
+            allItems[focused].id : null;
+        }}));
+    }
+    return componentGroups.get(group);
   }
   async function renderMedia(media, parent, item, index) {
     const shell = el('div', 'media');
@@ -533,21 +599,19 @@
     };
     const api = {
       url: null, bytes: null,
+      item: Object.freeze({id: item.id, index,
+        media: Object.freeze((item.media || []).map((entry, at) =>
+          Object.freeze({index: at, kind: entry.kind, label: entry.alt || ''})))}),
       settings: Object.freeze({gain: desc.settings?.gain ?? 0.15,
         gainCap: 0.5, privacy: desc.privacy,
         darkMode: matchMedia('(prefers-color-scheme: dark)').matches,
         reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches}),
-      group: group ? Object.freeze({id: group.id, layout: group.layout,
-        members: Object.freeze(group.items.map(entry => Object.freeze({
-          id: entry.id, label: entry.title || entry.id}))),
-        get focused() {
-          return group.items.includes(allItems[focused]) ?
-            allItems[focused].id : null;
-        }}) : null,
+      group: componentGroup(group),
       media: (itemId, mediaIndex) => {
         if (resources.disposed || pageDisposed)
           return Promise.reject(Error('media disposed'));
-        if (!group || !group.items.some(entry => entry.id === itemId))
+        if (itemId !== item.id &&
+            !group?.items.some(entry => entry.id === itemId))
           return Promise.reject(Error('missing sibling media'));
         const siblingKey = itemId + ':' + mediaIndex;
         if (failedMedia.has(siblingKey))
@@ -570,7 +634,7 @@
           settleReady();
       },
       fail: message => failMedia(String(message)),
-      note: message => note(message),
+      note: (message, error) => note(message, error),
       worker: name => {
         if (resources.disposed || pageDisposed)
           throw Error('media disposed');
@@ -666,18 +730,49 @@
     const card = el('article', 'item');
     card.dataset.itemId = item.id;
     card.tabIndex = -1;
-    card.append(el('h3', '', item.title || item.id));
-    if (item.fields) {
-      const fields = el('dl', 'fields');
-      for (const [name, value] of Object.entries(item.fields)) {
-        fields.append(el('dt', '', name), el('dd', '', String(value)));
+    const fields = item.fields || {};
+    const presentation = item.presentation;
+    const hasPrompt = presentation?.prompt !== undefined;
+    card.append(text('h3', hasPrompt ? 'prompt' : '',
+      hasPrompt ? fields[presentation.prompt] : item.title || item.id));
+    function fieldList(names, parent = card) {
+      if (!names.length) return;
+      const list = el('dl', 'fields');
+      for (const name of names) {
+        list.append(el('dt', '', name), text('dd', '', fields[name]));
       }
-      card.append(fields);
+      parent.append(list);
     }
+    fieldList(presentation ? presentation.before_media || [] :
+      Object.keys(fields));
     (item.media || []).forEach((media, index) =>
       mediaPending.push(renderMedia(media, card, item, index)));
+    if (presentation) fieldList(presentation.after_media || []);
     for (const key of allScopes(item)) card.append(decision(key));
-    card.addEventListener('click', () => focusItem(allItems.indexOf(item)));
+    if (presentation) {
+      const visible = new Set([presentation.prompt,
+        ...(presentation.before_media || []),
+        ...(presentation.after_media || [])]);
+      const remaining = Object.keys(fields).filter(name => !visible.has(name));
+      if (remaining.length || hasPrompt) {
+        const details = el('details');
+        details.append(el('summary', '', 'Details'));
+        if (hasPrompt) details.append(text('p', '', item.title || item.id));
+        fieldList(remaining, details);
+        card.append(details);
+      }
+    }
+    card.addEventListener('click', event => {
+      const control = event.target.closest('input,textarea,select,button,a,' +
+        'summary,audio,video,[contenteditable],[tabindex]');
+      if (!control || control === card)
+        focusItem(allItems.indexOf(item));
+      else if (allItems[focused] !== item)
+        focusItem(allItems.indexOf(item), false);
+    });
+    card.addEventListener('focusin', () => {
+      if (allItems[focused] !== item) focusItem(allItems.indexOf(item), false);
+    });
     return card;
   }
   function renderComparison(group, section) {
@@ -929,7 +1024,7 @@
       if (group.items.includes(allItems[focused])) controller.activate();
     });
   }
-  function focusItem(index) {
+  function focusItem(index, moveFocus = true) {
     if (!allItems.length) return;
     const previousGroup = groups.find(group =>
       group.items.includes(allItems[focused]));
@@ -944,6 +1039,8 @@
     focused = (index + allItems.length) % allItems.length;
     const nextGroup = groups.find(group =>
       group.items.includes(allItems[focused]));
+    document.getElementById('focused-group').textContent =
+      nextGroup ? nextGroup.title || nextGroup.id : '';
     if (previousGroup !== nextGroup) {
       comparisonControllers.get(previousGroup?.id)?.deactivate();
       comparisonControllers.get(nextGroup?.id)?.activate();
@@ -955,16 +1052,21 @@
       for (const entry of mediaViews.get(card.dataset.itemId) || [])
         try { entry.component.focus?.(entry.view, entry.api); }
         catch (error) { entry.fail('Component focus failed: ' + error); }
-      card.scrollIntoView({block: 'nearest'});
-      card.focus({preventScroll: true});
+      if (moveFocus) {
+        const barHeight = document.querySelector('.toolbar').offsetHeight;
+        const tall = card.offsetHeight > window.innerHeight - barHeight - 16;
+        card.scrollIntoView({block: tall ? 'start' : 'nearest'});
+        card.focus({preventScroll: true});
+      }
     }
   }
   function render() {
     const app = document.getElementById('app');
     const header = el('header');
-    header.append(el('h1', '', desc.title || desc.review));
-    if (desc.instructions) header.append(el('p', '', desc.instructions));
-    for (const caveat of desc.caveats || []) header.append(el('p', '', caveat));
+    header.append(text('h1', '', desc.title || desc.review));
+    if (desc.instructions) header.append(text('p', '', desc.instructions));
+    for (const caveat of desc.caveats || [])
+      header.append(text('p', '', caveat));
     const toolbar = el('div', 'toolbar');
     const bar = el('progress'); bar.id = 'progress';
     const progressText = el('span'); progressText.id = 'progress-text';
@@ -972,16 +1074,19 @@
       button('Export results', exportResults),
       button('Import results', () =>
         document.getElementById('import-file').click()),
-      button('Discard stale draft entries', discardDraft),
       button('Keys (?)', showLegend));
+    const groupName = el('span'); groupName.id = 'focused-group';
+    toolbar.append(groupName);
     const file = el('input'); file.id = 'import-file'; file.type = 'file';
     file.accept = 'application/json,.json'; file.className = 'hidden';
     file.addEventListener('change', importResults);
     toolbar.append(file);
-    header.append(toolbar);
     const messages = el('div'); messages.id = 'messages';
-    header.append(messages);
-    app.append(header);
+    messages.setAttribute('aria-live', 'polite');
+    messages.setAttribute('aria-atomic', 'true');
+    const pinned = el('div', 'pinned'); pinned.append(toolbar, messages);
+    app.append(header, pinned,
+      button('Discard stale draft entries', discardDraft));
     for (const [message, error] of pendingNotes) note(message, error);
     pendingNotes.length = 0;
     const reviewer = el('input'); reviewer.id = 'reviewer';
@@ -1014,7 +1119,7 @@
     (desc.items || []).forEach(item => app.append(renderItem(item)));
     const dialog = el('dialog'); dialog.id = 'dialog'; app.append(dialog);
     renderStatus(); focusItem(0);
-    note('Exports download as review-results.json. Move private results to '
+    note('Exports download as ' + resultsFilename() + '. Move private results to '
       + 'the private review directory before import.');
   }
   function packet() {
@@ -1059,7 +1164,7 @@
     const url = URL.createObjectURL(new Blob([output],
       {type: 'application/json'}));
     const link = el('a'); link.href = url;
-    link.download = 'review-results.json'; link.click();
+    link.download = resultsFilename(); link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   async function importResults(event) {
@@ -1196,7 +1301,9 @@
     dialog.replaceChildren(el('h2', '', 'Keyboard controls'),
       el('p', '', 'j/k item · J/K group · n next unanswered · f focus mode '
         + '· / filter · u undo · ? legend. Choice and flag keys appear '
-        + 'beside their options. Authority decisions require confirmation.'),
+        + 'beside their options. Authority decisions require confirmation. '
+        + 'In a text or number answer: Cmd/Ctrl+Enter saves; Escape returns '
+        + 'to the card.'),
       button('Close', () => dialog.close()));
     const item = allItems[focused];
     for (const kind of new Set((item?.media || []).map(media => media.kind)))
@@ -1230,6 +1337,7 @@
     } else if (key === 'f') {
       focusMode = !focusMode;
       document.body.classList.toggle('focus-mode', focusMode);
+      focusItem(focused);
     } else if (key === 'u') undo();
     else if (key === '?') showLegend();
     else if (key === '/') {
@@ -1265,7 +1373,11 @@
           event.preventDefault(); return;
         }
       }
-      for (const entry of mediaViews.get(item.id) || []) {
+      const entries = [...(mediaViews.get(item.id) || [])];
+      // Give the image/control the reader last focused first refusal of z.
+      entries.sort((a, b) => Number(b.view.contains(active)) -
+        Number(a.view.contains(active)));
+      for (const entry of entries) {
         try {
           if (entry.component.key?.(event, entry.view, entry.api)) {
             event.preventDefault(); return;
@@ -1304,6 +1416,8 @@
         'Missing component registration: ' + kind);
     for (const error of registryErrors) note(error, true);
     if (registryErrors.length) renderStatus();
+    for (const type of ['pointerdown', 'keydown', 'input', 'change'])
+      document.addEventListener(type, clearNote, true);
     document.addEventListener('keydown', keydown);
     window.addEventListener('pagehide', () => {
       pageDisposed = true;

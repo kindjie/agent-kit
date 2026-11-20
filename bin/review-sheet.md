@@ -7,9 +7,9 @@ media or write project catalogues.
 ```sh
 ./bin/review-sheet schema
 ./bin/review-sheet build description.json --output ignored/review.html
-./bin/review-sheet import review-results.json \
+./bin/review-sheet import sample-batch-01-results.json \
   --resolved ignored/review.resolved.json --check-current
-./bin/review-sheet status review-results.json
+./bin/review-sheet status sample-batch-01-results.json
 ```
 
 `build` also writes `<page>.resolved.json`. Preserve that exact file with
@@ -68,6 +68,80 @@ Component keys yield to global and decision keys. Local storage is a guarded
 draft; the downloaded JSON is the handoff. Re-import shows differing valid
 answers for manual resolution.
 
+Clicking or tabbing into an answer keeps keyboard focus in that control.
+Cmd+Enter or Ctrl+Enter saves a text or number answer; Escape returns focus
+to its card. Authority answers still need their explicit confirmation.
+The introduction scrolls away; a slim pinned bar keeps progress,
+export, import, keys and the focused item's group available. Tall cards
+align below the bar; cards that fit scroll fully into view.
+Messages appear directly below the bar in a live region, including while
+scrolled. Errors carry an "Error:" prefix and alert role. The next pointer,
+keyboard or input action clears the message; it also expires after eight
+seconds. Messages overlay the page without increasing the bar's height.
+
+Image Compare shows the next image in the same item, skipping other media
+kinds, and cycles through the remaining images. Both images use the same
+pixel scale and retain their aspect ratios; captions use `alt` text or the
+image's position (for example, "2 of 6"). Click either image or press `z`
+to toggle full size; **Close comparison** returns to one image. An ordinary
+group's single-image items have no Compare button. Cross-item comparison
+requires explicit group `comparison` configuration with a `reference` item ID
+and a nonempty `candidates` array listing the other member IDs. Compare
+shows the first image from each other member in group order,
+even when an item has several images. The second caption includes the source
+item's title (or ID when untitled) and its image caption when supplied.
+No available alternative means no Compare button. Item answer digests bind
+the sibling images that Compare can show.
+
+Backtick-delimited text renders as inline code in item fields, titles,
+instructions, caveats and decision questions. Other text, including HTML,
+stays literal; an unmatched backtick stays visible. Prose uses a reading
+measure of about 75 characters while media can use the card's full width.
+Exports download as `<review>-results.json`, with the review ID percent
+encoded for a portable filename. The page displays its exact filename.
+The filename does not change the results format or import validation;
+results downloaded by earlier pages remain supported.
+
+### Optional item presentation
+
+An item may reference its existing `fields` by name:
+
+```json
+{
+  "id": "sample",
+  "title": "Sample record",
+  "fields": {
+    "Question": "Which sample should stay?",
+    "Context": "Compare the supplied media.",
+    "Recommended": "Keep the clearer sample.",
+    "Careful": "Confirm before acting.",
+    "Record": "Supporting background."
+  },
+  "presentation": {
+    "prompt": "Question",
+    "before_media": ["Context"],
+    "after_media": ["Recommended", "Careful"]
+  }
+}
+```
+
+`prompt` is optional and names the field displayed as the main heading.
+When supplied, the ordinary item title moves into details. The two optional
+arrays order visible fields before and after media; either defaults to empty.
+Put all visible fields in `after_media` for media first, or in `before_media`
+for media last. All unlisted fields retain their original order in one closed
+**Details** section after the answers. Field references must exist and be
+distinct across the prompt and both arrays; unknown properties are refused.
+No field content is discarded.
+
+This is an additive description extension. Without `presentation`, the
+original title, fields, media and answer ordering remains. The results and
+resolved-file schema version remain v1; presentation is bound into answer
+digests, while import still reads the frozen resolved file alone. Rebuilding
+a page changes its binding as before; retain the exact page and resolved file
+used by the reviewer. Import of old packets with their old frozen files is
+unchanged.
+
 ## Components and trust
 
 A component directory contains `component.json`, `component.js`, and
@@ -102,11 +176,17 @@ and media index.
 The read-only per-media API has `url` (verified blob URL or sibling file URL),
 `bytes`
 (a copy of embedded bytes, else `null`), `settings`, and `group` (ordered
-public members and focused ID). `api.media(itemId, index)` awaits a sibling
-handle in the same group and rejects missing, failed, or disposed entries.
+public members and focused ID). `item` supplies the rendering item's `id`,
+current media `index`, and ordered `media` metadata (`index`, `kind`, and
+`label`, the optional `alt` text). Group members also expose that media
+metadata; `group.comparison`, when present, supplies `reference` and
+`candidates` IDs. These objects and arrays are frozen. `api.media(itemId,
+index)` awaits a handle in the same item or group and rejects missing,
+failed, or disposed entries.
 It exposes bytes, URL, play and pause, never answers. Avoid awaiting mutually
 dependent siblings inside `render`. `api.ready()` marks non-native playback
-ready, `api.fail(text)` blocks it, and `api.note(text)` shows escaped text.
+ready, `api.fail(text)` blocks it, and `api.note(text, error = false)` shows
+escaped transient text below the pinned bar.
 `api.worker(name)` creates a tracked Worker from declared inlined source;
 `api.wasm(name, imports)` instantiates declared inlined bytes. Both reject
 undeclared names. Components never fetch extra paths.
@@ -144,6 +224,15 @@ then built-ins. A found untrusted or invalid override fails the build. The
 frozen file records selected manifests, file hashes, and bundle digests.
 The page uses a hash CSP, enables wasm evaluation only for a selected
 component declaring wasm, and blocks network connections.
+
+Built-in image version 1.1.1 requires explicit group `comparison` for
+cross-item pairs and labels their source item. Same-item image cycling,
+equal-scale pairs and the close control are unchanged from 1.1.0.
+Its manifest and literal registration version
+match; builds freeze its new file hashes and bundle digest as usual. Existing
+external trust records do not authorize a changed bundle: review and trust
+the new exact digest when using an external copy. No owner trust record is
+rewritten by a built-in update; preserve old pages with their frozen files.
 
 ## Presets
 

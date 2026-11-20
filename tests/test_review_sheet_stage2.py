@@ -432,7 +432,7 @@ class Stage2Test(unittest.TestCase):
                           'reusable.json').exists())
         del self.description[field]
 
-  def test_reveal_revision_validation_and_packet_conflict(self):
+  def write_reveal_fixture(self):
     png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAf'
       'FcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==')
     items = []
@@ -454,6 +454,16 @@ class Stage2Test(unittest.TestCase):
         'hold_start': 0, 'hold_end': 0, 'frame_count': 1,
         'key_frames': [0], 'crops': {'full': [0, 0, 1, 1]}}}]}
     self.write_desc()
+
+  def test_synchronized_key_frames_default_to_empty(self):
+    self.write_reveal_fixture()
+    del self.description['groups'][0]['comparison']['key_frames']
+    self.write_desc()
+    comparison = self.build()['description']['groups'][0]['comparison']
+    self.assertEqual(comparison['key_frames'], [])
+
+  def test_reveal_revision_validation_and_packet_conflict(self):
+    self.write_reveal_fixture()
     resolved = self.build()
     frozen = self.page.with_suffix('.resolved.json')
     scope = resolved['scopes']['group:case:pick']

@@ -49,6 +49,20 @@ the sandbox so Chrome can launch. Safari is best effort. The harness uses no
 remote media or services.
 Launch fixtures also check Chrome failure without fallback, missing-Chrome
 fallback, the no-browser skip, and browser cleanup when a check fails.
+`review_sheet_page_checks.cjs` adds real pointer and Tab editing, text
+save/escape shortcuts, sheet-specific download names, safe inline code,
+reading measure and dark-mode checks. It measures the pinned bar and card
+placement at 1440 by 900 and 1280 by 720, including focus mode. Run it alone
+with `node tests/review_sheet_page_checks.cjs .` for focused Chrome feedback.
+The cases also cover select/button/link/native-media focus, a non-colour
+selected-answer mark, legacy field visibility, prompt emphasis, media before,
+between or after fields, and collapsed details after answer controls. Python
+checks reject missing/duplicate presentation references and bind valid
+presentation metadata into frozen answer digests without changing v1 results.
+Pointer regressions also cover scrolled live messages and their dismissal,
+multi-image Compare cycling/closing, shared pixel scale, pointer/`z` zoom,
+no Compare for an isolated image or an ordinary group's single-image items,
+and explicit cross-item comparison with the source item's title in captions.
 
 ## SteamOS
 

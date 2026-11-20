@@ -19,6 +19,7 @@ class ReviewSheetBrowserTest(unittest.TestCase):
       fixture = Path(folder)
       harness = fixture / HARNESS.name
       shutil.copy2(HARNESS, harness)
+      shutil.copy2(HARNESS.with_name('review_sheet_page_checks.cjs'), fixture)
       module = fixture / 'node_modules' / 'playwright'
       module.mkdir(parents=True)
       executable = module / 'browser'
@@ -51,6 +52,7 @@ module.exports = {
     proc = self.run_launch_fixture(False, True)
     self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
     self.assertIn('FAIL: Google Chrome', proc.stderr)
+    self.assertIn('fixture check failed', proc.stderr)
     self.assertIn('RUN: Google Chrome fixture-version', proc.stdout)
     self.assertIn('CLOSE: fixture browser', proc.stdout)
     self.assertNotIn('LAUNCH: bundled', proc.stdout)
@@ -61,6 +63,7 @@ module.exports = {
     self.assertIn('SKIP: Google Chrome is absent', proc.stdout)
     self.assertIn('LAUNCH: bundled', proc.stdout)
     self.assertIn('FAIL: bundled Chromium', proc.stderr)
+    self.assertIn('fixture check failed', proc.stderr)
 
   def test_no_available_browser_exits_skip(self):
     proc = self.run_launch_fixture(True, False)

@@ -680,6 +680,8 @@ def scopes_for(description, component_hashes, page_core_hashes):
   def media_context(items):
     return [{'id': item['id'], 'title': item.get('title'),
              'fields': item.get('fields', {}),
+             **({'presentation': item['presentation']}
+                if 'presentation' in item else {}),
              'evidence': item.get('evidence', {}),
              'media': [m.copy() for m in item.get('media', [])]}
             for item in items]
@@ -726,10 +728,24 @@ def scopes_for(description, component_hashes, page_core_hashes):
                            'options': options,
                            'required': group['pick'].get('required', False)}
     add('group', group['id'], decisions, group['items'], group)
+    comparison_images = []
+    if ('comparison' in group and
+        group.get('layout') != 'synchronized-comparison'):
+      for item in group['items']:
+        image = next((media for media in item.get('media', [])
+                      if media['kind'] == 'image'), None)
+        if image is not None:
+          comparison_images.append({'id': item['id'],
+                                    'title': item.get('title'),
+                                    'media': [image]})
     for item in group['items']:
       item_decisions = description.get('decisions', {}).copy()
       item_decisions.update(item.get('decisions', {}))
-      add('item', item['id'], item_decisions, [item], group)
+      evidence = [item]
+      if any(media['kind'] == 'image' for media in item.get('media', [])):
+        evidence.extend(target for target in comparison_images
+                        if target['id'] != item['id'])
+      add('item', item['id'], item_decisions, evidence, group)
   for item in top_items:
     item_decisions = description.get('decisions', {}).copy()
     item_decisions.update(item.get('decisions', {}))
@@ -749,7 +765,8 @@ def media_hashes(media):
 def check_comparison(group):
   info = group.get('comparison')
   if not isinstance(info, dict):
-    raise ReviewError('synchronized comparison needs comparison object')
+    raise ReviewError('comparison needs comparison object')
+  synchronized = group.get('layout') == 'synchronized-comparison'
   keys_only(info, ('reference', 'candidates', 'views', 'fps',
                    'motion_frames', 'hold_start', 'hold_end',
                    'frame_count', 'key_frames', 'crops', 'reveal'),
@@ -757,12 +774,15 @@ def check_comparison(group):
   ids = [item['id'] for item in group['items']]
   candidates = info.get('candidates')
   if (not isinstance(candidates, list) or not candidates or
+      any(not isinstance(candidate, str) for candidate in candidates) or
       len(set(candidates)) != len(candidates) or
-      any(x in ('tie', 'none') for x in candidates) or
+      (synchronized and any(x in ('tie', 'none') for x in candidates)) or
       info.get('reference') not in ids or
       set([info['reference'], *candidates]) != set(ids) or
       info['reference'] in candidates):
     raise ReviewError('comparison reference/candidates do not match items')
+  if not synchronized:
+    return
   views = info.get('views')
   if (not isinstance(views, list) or not views or
       len(set(views)) != len(views)):
@@ -782,6 +802,7 @@ def check_comparison(group):
   if (not isinstance(keys, list) or keys != sorted(set(keys)) or
       any(not isinstance(x, int) or x < 0 or x >= motion for x in keys)):
     raise ReviewError('comparison key frames are invalid')
+  info['key_frames'] = keys
   crops = info.get('crops', {})
   if not isinstance(crops, dict) or not crops:
     raise ReviewError('comparison needs crops')
@@ -935,7 +956,7 @@ def resolve(path, limits):
   embedded = {}
   for item in items:
     keys_only(item, ('id', 'title', 'fields', 'evidence', 'decisions',
-                     'media', 'prefill'), 'item')
+                     'media', 'prefill', 'presentation'), 'item')
     identifier(item.get('id'), 'item id')
     if 'title' in item and not isinstance(item['title'], str):
       raise ReviewError('item title must be text')
@@ -947,6 +968,21 @@ def resolve(path, limits):
     if any(not isinstance(value, (str, int, float, bool, type(None)))
            for value in item.get('fields', {}).values()):
       raise ReviewError('item fields must contain scalar values')
+    if 'presentation' in item:
+      presentation = item['presentation']
+      keys_only(presentation, ('prompt', 'before_media', 'after_media'),
+                'item presentation')
+      names = []
+      if 'prompt' in presentation:
+        names.append(presentation['prompt'])
+      for position in ('before_media', 'after_media'):
+        rows = presentation.get(position, [])
+        if not isinstance(rows, list):
+          raise ReviewError('presentation field lists must be arrays')
+        names.extend(rows)
+      if (any(not isinstance(name, str) or name not in item.get('fields', {})
+              for name in names) or len(names) != len(set(names))):
+        raise ReviewError('presentation needs distinct existing field names')
     if not isinstance(item.get('evidence', {}), dict):
       raise ReviewError('item evidence must be an object')
     if not isinstance(item.get('decisions', {}), dict):
@@ -983,6 +1019,18 @@ def resolve(path, limits):
                              group.get('decisions', {}).values())
     authoritative |= any(d.get('authority') for d in
                          description.get('decisions_review', {}).values())
+    # A sibling's authority decision compares against this item's first
+    # still image, so those bytes must be embedded and verified too.
+    compared = any(d.get('authority')
+                   for group in groups
+                   if item in group['items'] and 'comparison' in group and
+                   group.get('layout') != 'synchronized-comparison'
+                   for other in group['items']
+                   for d in {**description.get('decisions', {}),
+                             **other.get('decisions', {})}.values())
+    first_image = next((media for media in item.get('media', [])
+                        if isinstance(media, dict) and
+                        media.get('kind') == 'image'), None)
     for media in item.get('media', []):
       keys_only(media, ('kind', 'src', 'alt', 'fps', 'sha256', 'mode', 'view'),
                 'media')
@@ -1039,6 +1087,7 @@ def resolve(path, limits):
           raise ReviewError('embedded media total exceeds limit')
         continue
       mode = ('embed' if authoritative or kind == 'text' or
+              (compared and media is first_image) or
               media.get('mode', settings.get('media_mode')) == 'embed' else
               'reference')
       if media.get('mode') not in (None, 'embed', 'reference'):
@@ -1066,7 +1115,7 @@ def resolve(path, limits):
           raise ReviewError('embedded media total exceeds limit')
         embedded[(item['id'], media['src'])] = raw
   for group in groups:
-    if group.get('layout') == 'synchronized-comparison':
+    if 'comparison' in group or group.get('layout') == 'synchronized-comparison':
       check_comparison(group)
   check_hotkeys(description, groups, items,
                 {kind: bundle['keys'] for kind, bundle in selected.items()})

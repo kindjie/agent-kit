@@ -1,37 +1,67 @@
 :root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; }
 body { margin: 0; background: #f4f5f7; color: #20242b; }
 main { max-width: 80rem; margin: auto; padding: 1.2rem; }
-header { position: sticky; top: 0; z-index: 5; background: #fff;
+header { background: #fff;
   border-bottom: 2px solid #3b526f; padding: .7rem 0; }
 h1 { margin: 0; font-size: 1.6rem; }
 h2 { margin-bottom: .35rem; }
-.toolbar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+.pinned { position: sticky; top: 0; z-index: 5; }
+.toolbar { background: #fff;
+  display: flex; gap: .5rem; align-items: center; padding: .3rem .5rem;
+  border-bottom: 2px solid #3b526f; box-sizing: border-box;
+  min-height: 2.75rem; overflow-x: auto; }
+.toolbar > * { flex-shrink: 0; }
+.toolbar button { white-space: nowrap; }
+#focused-group { min-width: 0; flex: 1 1 auto; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+#reviewer { width: min(24rem, 100%); box-sizing: border-box; }
 .toolbar button, button, input, textarea { font: inherit; }
 button { cursor: pointer; padding: .25rem .55rem; }
 :focus-visible { outline: 3px solid #155cbd; outline-offset: 2px; }
 .banner { padding: .5rem; margin: .5rem 0; border: 2px solid #a35a00;
   background: #fff4d6; }
+#messages { position: absolute; top: 100%; left: 0; right: 0;
+  max-height: calc(100vh - 4rem); overflow: auto; pointer-events: none; }
+#messages .banner { margin: 0; overflow-wrap: anywhere;
+  box-sizing: border-box; pointer-events: auto; }
 .error { border-color: #a22; background: #ffe5e5; }
 .group { margin: 1.4rem 0; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit,
   minmax(18rem, 1fr)); gap: .7rem; }
 .item { background: #fff; border: 2px solid #a7b2c0; border-radius: .4rem;
-  padding: .8rem; margin: .6rem 0; }
+  padding: 1rem; margin: .8rem 0; scroll-margin-top: 3.5rem; }
 .item.focused { border-color: #155cbd; box-shadow: 0 0 0 2px #155cbd; }
 .item h3 { margin: 0 0 .35rem; }
+.item h3.prompt { font-size: 1.35rem; max-width: 65ch; }
+.item details { margin-top: .75rem; border-top: 1px solid #8894a3;
+  padding-top: .5rem; }
+.item summary { cursor: pointer; font-weight: 600; }
 .media { margin: .5rem 0; }
 .media img, .media video { max-width: 100%; max-height: 28rem; }
+.image-view { min-width: 0; }
+.image-panels { display: flex; align-items: flex-start; gap: .5rem;
+  overflow: auto; }
+.image-panels figure { margin: 0; flex: 0 0 auto; min-width: 0; }
+.image-panels figcaption { max-width: 60ch; overflow-wrap: anywhere; }
+.image-panels img { display: block; cursor: zoom-in; }
+.image-view.zoomed img { cursor: zoom-out; }
+.image-controls { display: flex; gap: .5rem; margin-top: .35rem; }
 .media audio { width: 100%; }
 .media pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .decision { margin: .5rem 0; padding: .5rem; border-left: 3px solid #8a9aab; }
 .decision.authority { border-left-color: #a22; background: #fff1f1; }
 .decision button[aria-pressed="true"] { background: #155cbd; color: white; }
+.decision button[aria-pressed="true"]::before { content: '✓ '; }
 .decision .options { display: flex; gap: .35rem; flex-wrap: wrap; }
 .state { font-size: .86rem; margin-left: .5rem; }
-.fields { margin: .3rem 0; }
+.fields, header p, .decision { max-width: 75ch; overflow-wrap: anywhere; }
+.fields { margin: .75rem 0; }
 .fields dt { font-weight: bold; }
-.fields dd { margin: 0 0 .2rem; }
-progress { width: min(30rem, 100%); height: 1.2rem; }
+.fields dd { margin: 0 0 .75rem; }
+textarea { width: min(100%, 60ch); min-height: 4.5rem; box-sizing: border-box; }
+code { font: .93em ui-monospace, monospace; padding: .1em .25em;
+  border: 1px solid #8894a3; border-radius: .2em; }
+progress { width: 6rem; height: 1rem; }
 dialog { max-width: min(50rem, 90vw); max-height: 85vh; overflow: auto; }
 .conflict { border: 1px solid #888; margin: .5rem 0; padding: .5rem; }
 .hidden { display: none !important; }
@@ -57,7 +87,7 @@ body.focus-mode .item:not(.focused) { display: none; }
 }
 @media (prefers-color-scheme: dark) {
   body { background: #171c23; color: #ebeff5; }
-  header, .item { background: #252d38; }
+  header, .toolbar, .item { background: #252d38; }
   .banner { background: #51410d; }
   .error, .decision.authority { background: #4f2222; }
 }

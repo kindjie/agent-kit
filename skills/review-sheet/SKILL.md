@@ -23,6 +23,13 @@ only for fields reusable across batches. A project component is executable
 code: review its files, then trust its exact bundle digest with
 `review-sheet component trust PATH`. Never let a description grant trust.
 
+For question-first cards, use item `presentation.prompt` to name the question
+field, and `before_media` / `after_media` arrays to order the visible fields.
+Unlisted fields collapse into Details after the answers; the original item
+title also moves there when a prompt is supplied. Reference existing fields
+once, without copying or dropping their text. Omit presentation to retain the
+original card order. See the command reference for the additive format.
+
 Keep media local. Build to an ignored, private output location and preserve
 the page with its `review.resolved.json`. Spot-check a sample in Chrome
 before handing it to the person. For synchronized frame comparisons, verify
@@ -32,7 +39,12 @@ extract video frames. Tell the person the page path, what they will judge,
 estimated time, and where results download. Never publish a private page or
 send its media to a third-party service.
 
-The downloaded `review-results.json` is the handoff, not the browser draft.
+The downloaded `<review>-results.json` is the handoff, not the browser draft.
+The page shows its exact filename (the review ID is percent encoded).
+Use backticks to set commands or paths apart as safe inline code in text
+fields. The introduction scrolls away while the compact controls stay
+pinned. In a text or number answer, Cmd/Ctrl+Enter saves and Escape returns
+to the card's answer keys; authority choices still require confirmation.
 Run `review-sheet import RESULTS --resolved PAGE.resolved.json
 --check-current`, using `--require-complete` when required answers must be
 present. Embedded media verification is separate from a decision's authority;
