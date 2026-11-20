@@ -23,6 +23,153 @@ revoked or changed, whether or not `--check-current` is selected. A project
 adapter must still
 check caller evidence against its own current records before applying results.
 
+## Opaque project editors (local prototype)
+
+This prototype carries one review-scoped project editor separately
+from primitive answers and media components. It does not migrate an existing
+project UI or establish browser, fidelity, scale or canonical acceptance.
+Descriptions without an editor retain the ordinary v1 contract.
+
+An explicit top-level `editor` has `kind`, relative `path`, `source_identity`,
+`parameters` (an object), and `initial_state` (opaque UTF-8 text). Editor state
+cannot be inherited or saved through presets, or mixed with primitive
+decisions, picks or synchronized comparisons. Hidden historical records may
+remain in the initial text independently of visible items. The frozen resolved
+file keeps the complete source description. The browser embeds one authoritative
+resolved editor configuration; owner code receives it through `create(config)`.
+Its `bundle` holds only `kind`, `version`, `api` and the bundle digest. The
+bundle's local path, manifest and file inventory stay in the frozen resolved
+file and never reach the page or owner code; the editor digest still covers
+that full record.
+
+The folder contains `editor.json` with `role: "editor"`, a simple `kind`,
+SemVer `version`, `api: 1` (state only) or `api: 2` (one owner view),
+and an ordered, nonempty `scripts` array. Scripts
+are ordinary trusted code under the page CSP, with no additional network,
+worker, wasm or media authority. Review their complete inventory before
+`review-sheet editor trust PATH --yes`. Editor trust lives separately from
+component trust; `editor list` and `editor untrust SHA256` inspect/revoke it.
+A trust row is the bundle's kind, version, digest, resolved path and role.
+Trusting an unchanged bundle again leaves its single row as it is. A bundle
+whose files changed has a new digest, so trusting it adds a row; the earlier
+row is not updated in place and stays until `editor untrust` removes it, so
+results bound to the earlier bundle still import. `editor list` adds
+`current` to each row: true only while the files at its path still produce
+that row. A `trusted-editors.json` that is not the expected object, or holds
+a row that is not an object with those five text fields, is refused by every
+command that reads it, with one message and exit status 2; the file is left
+as it is.
+Existing component file/total limits also bound editor bundles. A script
+containing NUL or closing-script markup (`</script`, in any letter case) is
+refused, because the page inlines trusted scripts in one script element.
+
+API2 may also declare an ordered `styles` array of relative `.css` files.
+Styles share those exact file/total bounds, safe-path checks and trusted bundle
+inventory. The host appends them in declaration order to its existing stylesheet
+before computing its single CSP hash; no inline-style permission or new origin
+is added. CRLF/lone CR normalize to LF for emitted text and its CSP hash;
+NUL is refused. The original file bytes remain the trust inventory.
+Keep project CSS scoped to the dedicated owner roots. Closing-style
+markup is refused. API1 cannot declare nonempty styles; an absent style list
+leaves existing state-only behavior and bindings unchanged. Dynamic style tags
+inside owner HTML are not authorized by this contract.
+
+Scripts register `ReviewSheet.registerEditor({kind, version, api: 1, create})`.
+`create(config, {changed})` receives copied initial text, parameters, source
+identity and visible IDs. It returns synchronous `snapshot()` and
+`prepare(raw)` methods. Preparation must preserve live state and undo history.
+The returned transaction has synchronous `snapshot()`, `commit()` and
+`rollback()` methods; the owner validates lifecycle and staleness before
+writes. Rollback must restore the full prior state even when commit throws
+after swapping it. Thenables are refused and their rejections handled; pending
+work or a failed rollback leaves state explicitly unrecovered, with normal
+export disabled. This API is not an asynchronous transaction framework.
+
+The host freezes source, bundle, parameters, exact baseline bytes and visible
+IDs into an editor digest. Editor pages, drafts and results use v2 so an older
+v1 importer cannot silently drop state. Results contain `answers: {}` and
+`project_state: {schema_version: 1, editor_sha256, data}`. The core never parses
+the domain data, mints owner IDs or counts inherited state as new answers.
+CLI import validates one bound packet and labels project validation `not-run`;
+it refuses merging and `--require-complete`. The owning canonical importer
+still decides validation, conflicts and catalogue writes.
+
+The complete candidate result is bounded before owner commit. Persistence is
+suppressed throughout prepare/commit/rollback, then attempted after a verified
+commit. Quota failure retains accepted state in memory and the old draft on
+disk, with an explicit unsaved status and recovery input. A refused import
+retains its original text and prior draft; another import is not consumed while
+recovery is pending. Export that recovery input before explicitly discarding
+it. On an editor page the toolbar control for that is **Discard recovery
+input**; it replaces **Discard stale draft entries**, which pages without an
+editor keep unchanged. The factory receives one isolated configuration
+snapshot. Its digest is captured before the factory runs, so caller or factory
+mutation cannot retag state.
+
+### API2 owner view
+
+API2 keeps the same opaque state transaction and adds one synchronous
+`session.mount({root, items, host, signal})`. Mount follows saved-state
+restoration. `root` is a dedicated global owner root; each frozen `items`
+entry contains its bound `id`, dedicated owner `root` and explicit host
+`media` container. The view may arrange that container inside its owner root.
+The host retains the outer wrapper, item identity/order, verified media
+children, readiness, focus and disposal. Do not access incidental host DOM
+selectors, replace verified children or create parallel media decoders.
+
+Mount returns `refresh()`, `focus(id|null)`, `key(event)` and `dispose()`.
+All hooks are synchronous; `key` returns a boolean. The single host dispatcher
+calls owner keys before generic defaults; true consumes the key. Modifiers
+are excluded, and only Escape is offered while editing text. The view must
+preserve its project's intended keyboard meanings without adding another
+document dispatcher. Refresh reads the current live owner after edits,
+imports or rollback; it must not mutate project state. Domain undo is handled
+by the API2 owner's `key` hook, with `beforeChange` before mutation. There is
+no generic editor-session undo hook; API1 declares only snapshot/prepare.
+Ordinary v1 primitive-answer undo is unchanged.
+
+The frozen host interface provides `currentId()`, `select(id, scroll=true)`,
+`setVisible(ids)`, `note(text,error)`, `beforeChange()`, `projectState()`,
+`importProject(raw)` and read-only `canImport`. Selection accepts currently
+visible bound IDs; visibility accepts only bound IDs. These operations never
+create answers or hidden-history pseudoitems. `projectState()` returns
+validated current opaque text and refuses transport-unrecovered state.
+`importProject` uses the same bounded
+prepare/commit/rollback path and retains the original input text in recovery,
+not a synthetic wrapper. File controls check `canImport` before reading,
+again after an awaited read, and honor a refused import without consuming
+another pending input. Project UI can offer its canonical direct download
+and importer alongside the explicit generic v2 state envelope; the core does
+not parse domain data or silently replace that canonical flow. The generic
+**Save editor state / Import editor state** controls carry the v2 envelope;
+they are distinct from the owner's canonical feedback file controls.
+Browser v2 downloads use the same compact serialization as the admission
+and storage size check, preserving opaque text including whitespace/escapes.
+The CLI bounds the actual transport packet before adding its diagnostic
+`project_validation: "not-run"` annotation. CLI import output is a report,
+not a reimportable transport packet; retain the original downloaded input.
+
+API2 `create` also receives `beforeChange()` beside `changed()`. Cooperative
+trusted adapters check it before every owner mutation or ID creation. The
+host compares the exact current draft text with its last observed value;
+changed or unreadable storage blocks edits/import before mutation. Persistence
+rechecks before writing. A race after the precheck can leave a valid local
+edit unsaved; retain/export that state and the competing draft, then reload
+to reconcile. This is not atomic WebStorage compare-and-swap or containment
+of arbitrary owner code. API1 behavior remains separate. Project adapters
+must also preserve and explicitly reconcile their own older storage keys;
+this host does not overwrite or interpret those keys.
+
+A hook failure aborts the view signal, calls dispose at most once, detaches
+owner roots while retaining host media, and leaves a persistent warning.
+Valid bound state remains exportable as explicitly unverified recovery state;
+a visual failure does not invent transport rollback. Transport-unrecovered
+state still refuses normal export and keeps its original recovery input.
+The view registers cleanup before risky work and observes the supplied abort
+signal. Its own event callbacks retain explicit error handling: hook wrappers
+do not contain arbitrary asynchronous work. Host media cleanup runs separately
+even if view disposal fails.
+
 ## Description and decisions
 
 ```json
@@ -92,6 +239,12 @@ ReviewSheet.register({
 });
 ```
 
+Key declarations use one literal character or a single-character JavaScript
+escape: backslash, either quote, slash, `\b`, `\f`, `\n`, `\r`, `\t`,
+`\v`, `\0`, `\xNN`, or `\uNNNN`. They are decoded without executing script
+before duplicate and hotkey checks. Multi-character keys, surrogate code units,
+and other escape forms are unsupported.
+
 `render` returns an element or a promise of one. Optional `focus`, `blur`,
 `key`, `showFrame`, and `dispose` hooks receive that element and API. `blur`
 stops playback; `dispose` releases listeners and nodes. The host catches
@@ -143,7 +296,11 @@ the description, nearest repository `.review-sheet/components/`, user config,
 then built-ins. A found untrusted or invalid override fails the build. The
 frozen file records selected manifests, file hashes, and bundle digests.
 The page uses a hash CSP, enables wasm evaluation only for a selected
-component declaring wasm, and blocks network connections.
+component declaring wasm, and blocks network connections. On every page,
+with or without an editor, CRLF and lone CR in the emitted stylesheet and
+script text are normalized to LF before the CSP hashes are computed, matching
+the text the HTML parser exposes. A trusted script saved with CRLF line
+endings therefore passes its hash; trust still binds the original file bytes.
 
 ## Presets
 

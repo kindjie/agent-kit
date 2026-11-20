@@ -117,6 +117,33 @@ class Stage2Test(unittest.TestCase):
     trust_path = self.config / 'review-sheet' / 'trusted-components.json'
     self.assertEqual(trust_path.stat().st_mode & 0o777, 0o600)
 
+  def test_component_keys_decode_character_literals_before_validation(self):
+    folder = self.root / 'component'
+    folder.mkdir()
+    (folder / 'component.json').write_text(json.dumps({
+      'kind': 'text', 'version': '1.0.0', 'api': 1}))
+    script = folder / 'component.js'
+    def write_keys(keys):
+      script.write_text("ReviewSheet.register({kind:'text',version:'1.0.0',"
+        "api:1,keys:{" + keys + "},"
+        "render(){return document.createElement('pre')}})")
+    write_keys(r"'\\':'rate','\u005b':'previous','\x5d':'next'")
+    trust = self.run_tool('component', 'trust', folder, '--yes')
+    self.assertEqual(json.loads(trust.stdout)['keys'], ['\\', '[', ']'])
+    self.description['components'] = {'text': 'component'}
+    self.write_desc()
+    self.build()
+    for keys in (r"'[':'one','\u005b':'alias'", r"'\xZZ':'invalid'",
+                 r"'\q':'unsupported'", r"'ab':'long'",
+                 r"'\uD800':'surrogate'"):
+      with self.subTest(keys=keys):
+        write_keys(keys)
+        refused = self.run_tool('component', 'trust', folder, '--yes', code=2)
+        self.assertIn('invalid component keys', refused.stderr)
+    write_keys(r"'\'':'quote','\"':'double'")
+    trust = self.run_tool('component', 'trust', folder, '--yes')
+    self.assertEqual(json.loads(trust.stdout)['keys'], ["'", '"'])
+
   def test_trust_requires_yes_and_literal_registration_fields(self):
     folder = self.root / 'component'
     folder.mkdir()

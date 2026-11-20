@@ -7,6 +7,21 @@
     "review"
   ],
   "properties": {
+    "editor": {
+      "type": "object",
+      "required": [
+        "kind", "path", "source_identity", "parameters", "initial_state"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"},
+        "path": {"type": "string", "minLength": 1,
+          "description": "Trusted editor bundle directory."},
+        "source_identity": {"type": "string", "minLength": 1},
+        "parameters": {"type": "object"},
+        "initial_state": {"type": "string"}
+      }
+    },
     "review": {
       "type": "string",
       "minLength": 1

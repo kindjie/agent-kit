@@ -31,6 +31,222 @@
   let reviewerValue = '';
   let pageDisposed = false;
   let generation = 0;
+  let editorFactory, editorTransport;
+  let editorStorageUnreadable = false;
+  let editorObservedDraft, editorCompetingDraft;
+  let editorView, editorViewAbort, editorViewRoot;
+  let editorViewStopped = false, editorViewFailed = false;
+  const editorItems = new Map();
+  const hasEditorView = () => data.editor?.api === 2;
+  const editorItemVisible = index => {
+    const card = editorItems.get(allItems[index]?.id)?.wrapper;
+    return !!card && !card.hidden && !card.classList.contains('hidden');
+  };
+  const visibleEditorIndices = () => allItems.map((_, i) => i)
+    .filter(editorItemVisible);
+  function synchronous(value) {
+    if (value && typeof value.then === 'function') {
+      Promise.resolve(value).catch(() => {});
+      throw Error('Asynchronous editor view lifecycle refused');
+    }
+    return value;
+  }
+  function stopEditorView(error) {
+    if (editorViewStopped) return;
+    editorViewStopped = true;
+    editorViewFailed = !!error;
+    editorViewAbort?.abort();
+    const view = editorView;
+    editorView = null;
+    try { if (view) synchronous(view.dispose()); }
+    catch (failure) { note('Editor view dispose failed: ' + failure, true); }
+    // Rescue host media before detaching owner roots, including after a hook
+    // moved its explicit container into an owner card layout.
+    for (const item of editorItems.values()) {
+      item.wrapper.append(item.media);
+      item.root.remove();
+    }
+    editorViewRoot?.remove();
+    if (error) note('Editor view failed: ' + error +
+      '. Valid state may still be exported as unverified recovery state.',
+      true);
+  }
+  function viewCall(name, ...args) {
+    if (!editorView || editorViewStopped) return;
+    try {
+      const value = synchronous(editorView[name](...args));
+      if (name === 'key' && typeof value !== 'boolean')
+        throw Error('Editor key hook must return a boolean');
+      return value;
+    } catch (error) { stopEditorView(error); }
+  }
+  function draftCurrent() {
+    if (!hasEditorView()) return !editorStorageUnreadable;
+    try {
+      const current = localStorage.getItem(storageKey);
+      if (!editorStorageUnreadable && current === editorObservedDraft)
+        return true;
+      if (current !== editorObservedDraft && editorCompetingDraft === undefined)
+        editorCompetingDraft = current;
+      note('Draft changed in another tab or became unreadable. Export current '
+        + 'state and the competing draft, then reload to reconcile. No draft '
+        + 'was overwritten.', true);
+    } catch (_) {
+      editorStorageUnreadable = true;
+      note('Draft storage is unreadable. Export current state before '
+        + 'reloading to reconcile; editing and import are blocked.', true);
+    }
+    return false;
+  }
+  function beforeEditorChange() {
+    return !pageDisposed && !editorViewStopped &&
+      !!editorTransport?.canImport && draftCurrent();
+  }
+  function mountEditorView() {
+    editorViewAbort = new AbortController();
+    const host = Object.freeze({
+      currentId: () => allItems[focused]?.id ?? null,
+      select(id, scroll = true) {
+        if (editorViewStopped || pageDisposed)
+          throw Error('Editor view disposed');
+        const item = editorItems.get(id);
+        if (!item || item.wrapper.hidden ||
+            item.wrapper.classList.contains('hidden'))
+          throw Error('Item is not bound and visible');
+        focusItem(allItems.findIndex(value => value.id === id), scroll);
+      },
+      setVisible(ids) {
+        if (editorViewStopped || pageDisposed)
+          throw Error('Editor view disposed');
+        if (!Array.isArray(ids) || new Set(ids).size !== ids.length ||
+            ids.some(id => !editorItems.has(id)))
+          throw Error('Unknown or duplicate bound item');
+        const visible = new Set(ids);
+        for (const [id, item] of editorItems) {
+          item.wrapper.hidden = !visible.has(id);
+          item.wrapper.classList.toggle('hidden', !visible.has(id));
+        }
+        if (!visible.has(allItems[focused]?.id)) focusItem(null, false);
+      },
+      note, beforeChange: beforeEditorChange,
+      projectState: () => editorTransport.envelope().data,
+      get canImport() {
+        return !pageDisposed && !editorViewStopped &&
+          !!editorTransport?.canImport;
+      },
+      importProject(raw) {
+        if (!beforeEditorChange()) return {ok: false, consumed: false};
+        return finishEditorImport(editorTransport.import({schema_version: 1,
+          editor_sha256: data.editor.sha256, data: raw}, raw));
+      }
+    });
+    try {
+      const session = editorTransport.session;
+      if (typeof session.mount !== 'function')
+        throw Error('Missing editor mount');
+      editorView = synchronous(session.mount(Object.freeze({
+        root: editorViewRoot,
+        items: Object.freeze([...editorItems].map(([id, item]) =>
+          Object.freeze({id, root: item.root, media: item.media}))),
+        host, signal: editorViewAbort.signal})));
+      if (!editorView || ['refresh', 'focus', 'key', 'dispose'].some(name =>
+          typeof editorView[name] !== 'function'))
+        throw Error('Invalid editor view');
+      viewCall('refresh');
+      viewCall('focus', host.currentId());
+    } catch (error) { stopEditorView(error); }
+  }
+
+  function editorPacket(project_state) {
+    return {schema_version: 2, review: desc.review,
+      resolved_sha256: data.resolved_sha256, context: desc.context || {},
+      reviewer: reviewerValue, answers: {}, project_state};
+  }
+  function importEditor(raw) {
+    let value, incomingReviewer;
+    try {
+      const p = JSON.parse(raw);
+      if (p.schema_version === 2 && p.review === desc.review &&
+          p.resolved_sha256 === data.resolved_sha256 && p.answers &&
+          typeof p.answers === 'object' && !Array.isArray(p.answers) &&
+          Object.keys(p.answers).length === 0 &&
+          (p.context === undefined || p.context &&
+            typeof p.context === 'object' && !Array.isArray(p.context)) &&
+          (p.reviewer === undefined || typeof p.reviewer === 'string') &&
+          Object.keys(p).every(k => ['schema_version', 'review',
+            'resolved_sha256', 'context', 'reviewer', 'answers',
+            'project_state'].includes(k))) {
+        value = p.project_state; incomingReviewer = p.reviewer;
+      }
+    } catch (_) {}
+    if (hasEditorView() && !beforeEditorChange())
+      return {ok: false, consumed: false};
+    const previousReviewer = reviewerValue;
+    if (!reviewerValue && typeof incomingReviewer === 'string')
+      reviewerValue = incomingReviewer;
+    // The effective metadata participates in every prepared/committed bound.
+    const result = editorTransport.import(value, raw);
+    if (!result.ok) reviewerValue = previousReviewer;
+    else {
+      const input = document.getElementById('reviewer');
+      if (input) input.value = reviewerValue;
+    }
+    return finishEditorImport(result);
+  }
+  function finishEditorImport(result) {
+    if (result.unrecovered) {
+      document.getElementById('export-results').disabled = true;
+      if (hasEditorView()) stopEditorView();
+      note('Editor state is unrecovered after rollback failed or work remained '
+        + 'pending. Normal export is disabled. Keep the recovery input and '
+        + 'original draft before reloading.', true);
+      return result;
+    }
+    if (result.consumed !== false) viewCall('refresh');
+    note(result.ok ? (result.persisted ? 'Project state imported; canonical '
+      + 'validation has not run.' : 'Imported in memory; draft storage failed. '
+      + 'Export now and retain the recovery input.') : 'Import refused. '
+      + 'The recovery input and prior draft are retained.', !result.ok);
+    return result;
+  }
+  function startEditor() {
+    if (!editorFactory) throw Error('Missing trusted editor registration');
+    editorTransport = ReviewSheetEditorTransport.create({binding: data.editor,
+      limit: data.limits.results,
+      create: hasEditorView() ? (binding, callbacks) =>
+        editorFactory(binding, {beforeChange: beforeEditorChange, changed() {
+          const saved = callbacks.changed();
+          if (editorTransport?.canImport) viewCall('refresh');
+          return saved;
+        }}) : editorFactory, wrap: editorPacket,
+      persist: p => {
+        try {
+          if (editorStorageUnreadable)
+            throw Error('Original draft is unreadable');
+          if (hasEditorView() && !draftCurrent())
+            throw Error('Draft changed; reconciliation required');
+          const raw = JSON.stringify(p);
+          localStorage.setItem(storageKey, raw);
+          if (hasEditorView()) editorObservedDraft = raw;
+        }
+        catch (error) {
+          note('Draft storage failed. Export your current state now.', true);
+          throw error;
+        }
+      }});
+    note('Opaque project state carries no generic answered count. '
+      + 'Canonical project validation has not run.');
+    let raw;
+    try { raw = localStorage.getItem(storageKey); editorObservedDraft = raw; }
+    catch (_) {
+      editorStorageUnreadable = true;
+      editorTransport.status.storageSafe = false;
+      note('Draft storage unavailable. Export your state.', true);
+    }
+    if (raw) importEditor(raw);
+    if (hasEditorView() && !editorViewStopped &&
+        !editorTransport.status.unrecovered) mountEditorView();
+  }
 
   function mediaKey(item, index) { return item.id + ':' + index; }
   function deferred() {
@@ -181,6 +397,7 @@
     return state(key) === 'answered' ? answers[key].value : undefined;
   }
   function save() {
+    if (data.editor) { editorTransport?.save(); return; }
     if (!storageSafe) return;
     try {
       const serialized = JSON.stringify({schema_version: 1,
@@ -192,6 +409,16 @@
     }
   }
   function discardDraft() {
+    if (data.editor) {
+      if (editorTransport?.status.unrecovered) {
+        note('Unrecovered state: keep the recovery input and original draft.',
+          true);
+        return;
+      }
+      if (confirm('Discard the retained recovery input? Export it first.'))
+        editorTransport?.discardRecovery();
+      return;
+    }
     if (!confirm('Discard stale and unmatched draft entries?')) return;
     for (const [key, answer] of Object.entries(answers)) {
       if (!data.scopes[key] || answer.digest !== data.scopes[key].digest)
@@ -515,7 +742,7 @@
           if (resources.disposed || pageDisposed) throw Error('media disposed');
           return display?.play?.();
         }, pause: () => display?.pause?.()}));
-      renderStatus();
+      if (scopeKeys.length) renderStatus();
     };
     const failMedia = message => {
       if (failed) return;
@@ -529,7 +756,7 @@
       for (const worker of resources.workers) worker.terminate();
       for (const url of resources.urls) URL.revokeObjectURL(url);
       liveResources.delete(resources);
-      renderStatus();
+      if (scopeKeys.length) renderStatus();
     };
     const api = {
       url: null, bytes: null,
@@ -653,7 +880,7 @@
       else component.blur?.(view, api);
       if ((readyCalled && (!display || media.kind === 'frame-sequence')) ||
           mediaState.get(stateKey)?.ready) settleReady();
-      renderStatus();
+      if (scopeKeys.length) renderStatus();
     } catch (error) {
       if (failed && view) try { component.dispose?.(view, api); }
       catch (_) {}
@@ -666,16 +893,24 @@
     const card = el('article', 'item');
     card.dataset.itemId = item.id;
     card.tabIndex = -1;
-    card.append(el('h3', '', item.title || item.id));
-    if (item.fields) {
+    if (!hasEditorView()) card.append(el('h3', '', item.title || item.id));
+    if (hasEditorView()) card.setAttribute('aria-label', item.title || item.id);
+    if (!hasEditorView() && item.fields) {
       const fields = el('dl', 'fields');
       for (const [name, value] of Object.entries(item.fields)) {
         fields.append(el('dt', '', name), el('dd', '', String(value)));
       }
       card.append(fields);
     }
+    let mediaParent = card;
+    if (hasEditorView()) {
+      const root = el('div', 'editor-item'), media = el('div', 'editor-media');
+      card.append(root, media);
+      editorItems.set(item.id, {root, media, wrapper: card});
+      mediaParent = media;
+    }
     (item.media || []).forEach((media, index) =>
-      mediaPending.push(renderMedia(media, card, item, index)));
+      mediaPending.push(renderMedia(media, mediaParent, item, index)));
     for (const key of allScopes(item)) card.append(decision(key));
     card.addEventListener('click', () => focusItem(allItems.indexOf(item)));
     return card;
@@ -929,8 +1164,10 @@
       if (group.items.includes(allItems[focused])) controller.activate();
     });
   }
-  function focusItem(index) {
+  function focusItem(index, scroll = true) {
     if (!allItems.length) return;
+    if (hasEditorView() && index !== null && !editorItemVisible(
+        (index + allItems.length) % allItems.length)) return;
     const previousGroup = groups.find(group =>
       group.items.includes(allItems[focused]));
     const previous = document.querySelector('.item.focused');
@@ -941,7 +1178,7 @@
         try { entry.component.blur?.(entry.view, entry.api); }
         catch (error) { entry.fail('Component blur failed: ' + error); }
     }
-    focused = (index + allItems.length) % allItems.length;
+    focused = index === null ? -1 : (index + allItems.length) % allItems.length;
     const nextGroup = groups.find(group =>
       group.items.includes(allItems[focused]));
     if (previousGroup !== nextGroup) {
@@ -949,15 +1186,18 @@
       comparisonControllers.get(nextGroup?.id)?.activate();
     }
     const card = [...document.querySelectorAll('.item')].find(node =>
-      node.dataset.itemId === allItems[focused].id);
+      node.dataset.itemId === allItems[focused]?.id);
     if (card) {
       card.classList.add('focused');
       for (const entry of mediaViews.get(card.dataset.itemId) || [])
         try { entry.component.focus?.(entry.view, entry.api); }
         catch (error) { entry.fail('Component focus failed: ' + error); }
-      card.scrollIntoView({block: 'nearest'});
-      card.focus({preventScroll: true});
+      if (scroll) {
+        card.scrollIntoView({block: 'nearest'});
+        card.focus({preventScroll: true});
+      }
     }
+    viewCall('focus', allItems[focused]?.id ?? null);
   }
   function render() {
     const app = document.getElementById('app');
@@ -968,20 +1208,42 @@
     const toolbar = el('div', 'toolbar');
     const bar = el('progress'); bar.id = 'progress';
     const progressText = el('span'); progressText.id = 'progress-text';
+    const exportButton = button(data.editor ? 'Save editor state' :
+      'Export results', exportResults);
+    exportButton.id = 'export-results';
     toolbar.append(bar, progressText,
-      button('Export results', exportResults),
-      button('Import results', () =>
+      exportButton,
+      button(data.editor ? 'Import editor state' : 'Import results', () =>
         document.getElementById('import-file').click()),
-      button('Discard stale draft entries', discardDraft),
+      button(data.editor ? 'Discard recovery input' :
+        'Discard stale draft entries', discardDraft),
       button('Keys (?)', showLegend));
     const file = el('input'); file.id = 'import-file'; file.type = 'file';
     file.accept = 'application/json,.json'; file.className = 'hidden';
     file.addEventListener('change', importResults);
     toolbar.append(file);
+    if (hasEditorView()) toolbar.append(button('Export competing draft', () => {
+      if (editorCompetingDraft === undefined || editorCompetingDraft === null)
+        return;
+      const url = URL.createObjectURL(new Blob([editorCompetingDraft],
+        {type: 'application/json'}));
+      const link = el('a'); link.href = url;
+      link.download = 'competing-draft.json';
+      link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }));
+    if (data.editor) toolbar.append(button('Export recovery input', () => {
+      const raw = editorTransport?.recovery?.raw;
+      if (raw === undefined) return;
+      const url = URL.createObjectURL(new Blob([raw],
+        {type: 'application/json'}));
+      const link = el('a'); link.href = url;
+      link.download = 'recovery-input.json';
+      link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }));
     header.append(toolbar);
     const messages = el('div'); messages.id = 'messages';
-    header.append(messages);
     app.append(header);
+    app.append(messages);
     for (const [message, error] of pendingNotes) note(message, error);
     pendingNotes.length = 0;
     const reviewer = el('input'); reviewer.id = 'reviewer';
@@ -992,6 +1254,10 @@
       reviewerValue = reviewer.value; save();
     });
     app.append(reviewer);
+    if (hasEditorView()) {
+      editorViewRoot = el('div', 'editor-global');
+      app.append(editorViewRoot);
+    }
     for (const key of scopeKeys.filter(key => key.startsWith('review:')))
       app.append(decision(key));
     for (const group of groups) {
@@ -1018,6 +1284,10 @@
       + 'the private review directory before import.');
   }
   function packet() {
+    if (data.editor) {
+      if (!editorTransport) throw Error('Editor is not initialized');
+      return editorPacket(editorTransport.envelope());
+    }
     const exported = {};
     let unverified = 0;
     for (const key of scopeKeys) {
@@ -1047,12 +1317,19 @@
     await Promise.race([Promise.allSettled([...mediaHandles.values()].map(
       handle => handle.promise)), new Promise(resolve =>
       setTimeout(resolve, 3000))]);
-    const result = packet();
+    let result;
+    try { result = packet(); }
+    catch (error) { note('Export refused: ' + error, true); return; }
     const incomplete = scopeKeys.filter(key => data.scopes[key].definition
       .required && result.answers[key].state !== 'answered');
-    note(incomplete.length ? incomplete.length + ' required answers remain.' :
+    note(data.editor ? (editorViewFailed ?
+      'Unverified recovery state exported after editor view failure; canonical '
+        + 'validation has not run.' :
+      'Project state exported; canonical validation has not run.') :
+      incomplete.length ? incomplete.length + ' required answers remain.' :
       'All required answers recorded.');
-    const output = JSON.stringify(result, null, 2);
+    const output = data.editor ? JSON.stringify(result) :
+      JSON.stringify(result, null, 2);
     if (new TextEncoder().encode(output).length > data.limits.results) {
       note('Results exceed the export size limit.', true); return;
     }
@@ -1065,12 +1342,27 @@
   async function importResults(event) {
     const file = event.target.files[0];
     if (!file) return;
+    if (data.editor && (!editorTransport || !editorTransport.canImport ||
+        (hasEditorView() && !beforeEditorChange()))) {
+      note('Resolve or export the pending recovery input before another ' +
+        'import.', true);
+      return;
+    }
     if (file.size > data.limits.results) {
       note('Results file exceeds the size limit.', true); return;
     }
     let packet;
+    if (data.editor) {
+      const raw = await file.text();
+      if (hasEditorView() && !beforeEditorChange()) return;
+      importEditor(raw); return;
+    }
     try { packet = JSON.parse(await file.text()); }
     catch (_) { note('Results file is not valid JSON.', true); return; }
+    if (packet && Object.hasOwn(packet, 'project_state')) {
+      note('Project state requires a matching editor v2 binding.', true);
+      return;
+    }
     await Promise.allSettled(mediaPending);
     await Promise.race([Promise.allSettled([...mediaHandles.values()].map(
       handle => handle.promise)), new Promise(resolve =>
@@ -1208,16 +1500,43 @@
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     if (document.getElementById('dialog').open) return;
     const active = document.activeElement;
-    if (active.matches('input,textarea,select') || active.isContentEditable)
-      return;
+    const editing = active.matches('input,textarea,select') ||
+      active.isContentEditable;
+    if (hasEditorView()) {
+      if (editorViewStopped) return;
+      if (!editing || event.key === 'Escape') {
+        if (viewCall('key', event) === true) { event.preventDefault(); return; }
+        if (editorViewStopped) return;
+      }
+    }
+    if (editing) return;
     const key = event.key;
     const group = groups.find(g => g.items.includes(allItems[focused]));
     const groupIndex = groups.indexOf(group);
-    if (key === 'j' || key === 'k') focusItem(focused + (key === 'j' ? 1 : -1));
+    if (key === 'j' || key === 'k') {
+      if (hasEditorView()) {
+        const visible = visibleEditorIndices();
+        const at = visible.indexOf(focused);
+        const next = Math.max(0, Math.min(visible.length - 1,
+          at + (key === 'j' ? 1 : -1)));
+        if (visible.length) focusItem(visible[next]);
+      } else focusItem(focused + (key === 'j' ? 1 : -1));
+    }
     else if (key === 'J' || key === 'K') {
-      const target = groups[(groupIndex + (key === 'J' ? 1 : -1) +
-        groups.length) % groups.length];
-      if (target) focusItem(allItems.indexOf(target.items[0]));
+      const direction = key === 'J' ? 1 : -1;
+      if (hasEditorView()) {
+        for (let step = 1; step <= groups.length; step++) {
+          const target = groups[(groupIndex + direction * step +
+            groups.length * 2) % groups.length];
+          const item = target.items.find(item =>
+            editorItemVisible(allItems.indexOf(item)));
+          if (item) { focusItem(allItems.indexOf(item)); break; }
+        }
+      } else {
+        const target = groups[(groupIndex + direction + groups.length) %
+          groups.length];
+        if (target) focusItem(allItems.indexOf(target.items[0]));
+      }
     } else if (key === 'n') {
       for (let i = 1; i <= allItems.length; i++) {
         const index = (focused + i) % allItems.length;
@@ -1230,7 +1549,11 @@
     } else if (key === 'f') {
       focusMode = !focusMode;
       document.body.classList.toggle('focus-mode', focusMode);
-    } else if (key === 'u') undo();
+    } else if (key === 'u') {
+      // Project undo belongs to the declared API2 owner key handler. API1
+      // declares only snapshot/prepare; neither API has a generic undo hook.
+      if (!data.editor) undo();
+    }
     else if (key === '?') showLegend();
     else if (key === '/') {
       const query = prompt('Filter item IDs or titles', filter);
@@ -1241,6 +1564,8 @@
           card.classList.toggle('hidden', !((item.title || item.id)
             .toLowerCase().includes(filter)));
         }
+        if (hasEditorView() && !editorItemVisible(focused))
+          focusItem(visibleEditorIndices()[0] ?? null);
       }
     } else {
       const item = allItems[focused];
@@ -1281,6 +1606,14 @@
       cacheEvictions, decodedBytes: [...frameCache.values()].reduce(
         (total, entry) => total + entry.image.naturalWidth *
           entry.image.naturalHeight * 4, 0)};
+  }, registerEditor(editor) {
+    const expected = data.editor;
+    if (!expected || editorFactory || !editor ||
+        editor.kind !== expected.kind || editor.version !== expected.version ||
+        ![1, 2].includes(editor.api) || editor.api !== expected.api ||
+        typeof editor.create !== 'function')
+      throw Error('Missing, duplicate, or mismatched editor registration');
+    editorFactory = editor.create;
   }, register(component) {
     const expected = data.components[component?.kind];
     if (!component || !expected || registry.has(component.kind) ||
@@ -1298,7 +1631,16 @@
     }
     registry.set(component.kind, component);
   }, start() {
-    publishHandles(); load(); prefill(); render();
+    publishHandles();
+    if (!data.editor) { load(); prefill(); }
+    render();
+    if (data.editor) {
+      try { startEditor(); }
+      catch (error) {
+        document.getElementById('export-results').disabled = true;
+        note('Editor failed to initialize: ' + error, true);
+      }
+    }
     for (const kind of Object.keys(data.components))
       if (!registry.has(kind)) registryErrors.push(
         'Missing component registration: ' + kind);
@@ -1307,6 +1649,7 @@
     document.addEventListener('keydown', keydown);
     window.addEventListener('pagehide', () => {
       pageDisposed = true;
+      if (hasEditorView()) stopEditorView();
       generation++;
       clearFrameCache();
       for (const entries of mediaViews.values()) for (const entry of entries) {
