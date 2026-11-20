@@ -331,7 +331,10 @@ def watch_record(root, tasks, args):
   if interval < 1:
     raise RecordsError("interval must be at least 1 second", 2)
   if args.after and not re.fullmatch(r"h:[0-9a-f]{16}", args.after):
-    raise RecordsError("invalid cursor", 2)
+    raise RecordsError(
+      "invalid cursor " + repr(args.after) + ": --after takes the h:HASH "
+      "value a previous watch printed as 'cursor:'; omit it to start from "
+      "the current state", 2)
   deadline = time.monotonic() + timeout
   previous = args.after
   prior_fields = None

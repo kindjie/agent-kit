@@ -219,6 +219,33 @@ class SetupTest(RecordsFixture):
     self.run_cmd("agent-task", "list", env=no_env, code=2)
     self.run_cmd("agent-task", "--dir", self.tasks, "list", env=no_env)
 
+  def test_pinned_roots_refuse_other_directories(self):
+    self.init()
+    cfg = self.base / "agent-kit" / "records.json"
+    cfg.parent.mkdir(exist_ok=True)
+    cfg.write_text(json.dumps({"pin_roots": True,
+                               "tasks_dir": str(self.tasks),
+                               "changelog_dir": str(self.changes)}))
+    env = dict(self.env)
+    env.pop("AGENT_TASKS_DIR")
+    env.pop("AGENT_CHANGELOG_DIR")
+    self.run_cmd("agent-task", "--dir", self.tasks, "list", env=env)
+    self.run_cmd("agent-changelog", "list", env=env)
+    cfg.write_text(json.dumps({"pin_roots": True, "tasks_dir": "tasks"}))
+    self.run_cmd("agent-task", "list", env=env, code=2)
+    cfg.write_text(json.dumps({"pin_roots": True}))
+    other = self.base / "other"
+    other.mkdir()
+    self.run_cmd("agent-task", "--dir", other, "list", code=2)
+    self.run_cmd("agent-changelog", "--dir", other, "list", code=2)
+    self.run_cmd("agent-task", "--dir=" + str(other), "list", code=2)
+    fresh = self.base / "fresh"
+    self.run_cmd("agent-task", "init", fresh, code=2)
+    self.run_cmd("agent-changelog", "init", fresh, code=2)
+    self.assertFalse(fresh.exists())
+    cfg.write_text(json.dumps({"pin_roots": "yes"}))
+    self.run_cmd("agent-task", "list", code=2)
+
   def test_unconfigured_directory_is_usage_error(self):
     env = dict(self.env)
     env.pop("AGENT_TASKS_DIR", None)
@@ -261,6 +288,35 @@ class SetupTest(RecordsFixture):
     self.run_cmd("agent-task", "--agent", "agent-a", "close", task,
                  "cancelled", "--reason", "stopped")
     self.assertTrue(list((self.tasks / "archive").glob("T-0001-*.md")))
+
+  def test_show_prints_a_recent_tail_by_default(self):
+    self.init()
+    task = self.run_cmd("agent-task", "--agent", "agent-a", "new",
+                        "--title", "Long task").strip()
+    for n in range(3):
+      self.run_cmd("agent-task", "--agent", "agent-a", "log", task,
+                   f"entry-{n}")
+    shown = self.run_cmd("agent-task", "show", task, "--tail", "1")
+    self.assertIn("entry-2", shown)
+    self.assertNotIn("entry-1", shown)
+    self.assertIn("3 earlier log entries omitted", shown)  # plus creation
+    full = self.run_cmd("agent-task", "show", task, "--full")
+    self.assertIn("entry-0", full)
+    self.assertNotIn("omitted", full)
+    cursor = shown.strip().splitlines()[-1].split()[-1]
+    self.assertEqual(cursor, full.strip().splitlines()[-1].split()[-1])
+    data = json.loads(self.run_cmd("agent-task", "show", task, "--json"))
+    self.assertIn("entry-0", data["body"])
+    for n in range(3, 21):
+      self.run_cmd("agent-task", "--agent", "agent-a", "log", task,
+                   f"entry-{n}")
+    plain = self.run_cmd("agent-task", "show", task)
+    self.assertIn("2 earlier log entries omitted", plain)  # 22 entries
+    self.assertIn("entry-1\n", plain)
+    self.assertNotIn("entry-0\n", plain)
+    newer = self.run_cmd("agent-task", "show", task, "--after", cursor)
+    self.assertIn("entry-20", newer)
+    self.assertNotIn("omitted", newer)
 
   def test_help_and_missing_git(self):
     commands = {

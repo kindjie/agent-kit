@@ -59,7 +59,22 @@ put a `records.json` in `${XDG_CONFIG_HOME:-~/.config}/agent-kit/`:
 }
 ```
 
-`--dir` overrides each directory's configured path. `AGENT_MACHINE` overrides
+An unknown flag is refused with the flags that subcommand accepts and, where
+it has one, the flag probably meant: `--json` for `--machine` or `--format
+json`, `--tail` for `--limit`. A main option such as `--unlocked` given after
+the subcommand is refused with a reminder to put it first; only `agent-task`
+also accepts `--agent` there. An unknown command suggests the closest one.
+`show --last N` is accepted as `--tail N`, and `events --json` is accepted
+because its output is always JSON.
+
+`--dir` overrides each directory's configured path, unless `"pin_roots":
+true` is set. Then the configured directories must be absolute, `--dir`
+must name one of them, and `init` is refused, because each would otherwise
+let a caller run git in a repository whose config can start programs. Set
+it before letting an agent run records commands without review, for example
+through Codex allow rules. Repository detection still runs `git rev-parse`
+in the working directory, with fsmonitor disabled and output to a pipe so
+no pager starts. `AGENT_MACHINE` overrides
 the machine setting. Without either, the commands use `hostname -s`, which
 can change with network configuration; pin a stable machine name. There is no
 implicit records directory selection. For custom or shared stores, initialize
@@ -422,10 +437,13 @@ ID has its own session, so `AGENT_ID` is ignored there: it must pass
 
 ```text
 Your agent ID is helper-0123456789abcdef. Work on T-0001.
-Start each shell call with `export AGENT_ID=helper-0123456789abcdef;` (the
-variable does not persist between calls, and a one-off prefix covers only
-the first command of `a && b`) so implicit lookups such as steamos use it,
-and pass --agent helper-0123456789abcdef to every records mutation. `--holder helper-0123456789abcdef` works on every steamos command.
+Pass --agent helper-0123456789abcdef to every records mutation and
+--holder helper-0123456789abcdef to every steamos command. In Claude Code,
+also start each shell call with `export AGENT_ID=helper-0123456789abcdef;`
+(the variable does not persist between calls, and a one-off prefix covers
+only the first command of `a && b`) so other implicit lookups use it. In
+Codex, pass the flags alone: an export prefix keeps allow rules from
+matching a call that needs approval.
 Start nested claude or codex sessions with `env -u AGENT_ID`.
 Use agent-task --agent helper-0123456789abcdef log T-0001
   --to all 'Progress update' for coordination.

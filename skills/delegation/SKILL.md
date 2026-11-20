@@ -32,7 +32,9 @@ pass `--agent <id>` on every records write and to start each Bash call with
 `export AGENT_ID=<id>;` (`--holder <id>` also works on every `steamos`
 command; a one-off `AGENT_ID=<id> cmd` prefix covers only the first command
 of `a && b`), because tools that default their identity from `agent-id
-show` otherwise record the parent's session. Start nested `claude -p` or
+show` otherwise record the parent's session. A Codex delegate passes the
+flags alone where they exist: an `export` prefix keeps Codex allow rules
+from matching, so a call that needs approval goes to review. Start nested `claude -p` or
 `codex exec` with `env -u AGENT_ID`; a cross-tool delegate you hand a
 minted ID must be told to pass `--agent`/`--holder` explicitly, since
 `AGENT_ID` is ignored outside the minting session. The `agent-records` skill (or

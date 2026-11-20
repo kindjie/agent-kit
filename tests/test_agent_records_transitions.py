@@ -107,6 +107,57 @@ class TransitionTest(RecordsFixture):
     self.run_task("agent-a", "log", task, "message", "--force", "reason",
                   code=2)
 
+  def close_errors(self, agent, task):
+    result = subprocess.run(
+      [sys.executable, str(BIN / "agent-task"), "--agent", agent, "close",
+       task, "done"], cwd=self.base, env=self.env, text=True,
+      capture_output=True, timeout=8)
+    self.assertEqual(result.returncode, 1, result.stderr)
+    return result.stderr
+
+  def test_close_lists_every_blocker_with_its_command(self):
+    self.init()
+    task = self.task("Blockers", "--check", "custom gate")
+    self.run_task("agent-a", "claim", task)
+    self.run_task("agent-a", "check", task, "docs", "--na", "No docs")
+    self.run_task("agent-a", "set", task, "--review", "required")
+    entry = self.run_cmd(
+      "agent-changelog", "--agent", "agent-a", "new", "--scope", "example",
+      "--slug", "work", "--kind", "scratch", "--location", "scratch",
+      "--why", "example", "--cleanup-when", "later", "--cleanup-how",
+      "remove", "--task", task).strip()
+    mistake = self.run_cmd(
+      "agent-changelog", "--agent", "agent-a", "mistake", "new",
+      "--slug", "example", "--severity", "low", "--scope", "example",
+      "--summary", "issue", "--impact", "none", "--cause", "unknown",
+      "--detection", "review", "--cleanup-options", "inspect",
+      "--prevention", "check", "--task", task).strip()
+    self.expire(task)
+    errors = self.close_errors("agent-a", task)
+    self.assertIn("cannot close " + task + " as done:", errors)
+    self.assertIn("your claim expired", errors)
+    self.assertIn("agent-task --agent agent-a claim " + task, errors)
+    self.assertIn("checklist items not done: merged, cleanup, "
+                  "work-reviewed, 'custom gate'", errors)
+    self.assertIn("review is required, not passed", errors)
+    self.assertIn("open associated records: " + entry + ", " + mistake,
+                  errors)
+    self.assertIn("close entries with agent-changelog", errors)
+    self.assertIn("mistake update PATH --status mitigated", errors)
+    self.assertEqual(errors.count("\n- "), 4, errors)
+
+  def test_bad_cursor_names_the_expected_form(self):
+    self.init()
+    task = self.task("Cursor")
+    for command in ("show", "watch"):
+      result = subprocess.run(
+        [sys.executable, str(BIN / "agent-task"), command, task, "--after",
+         "7"], cwd=self.base, env=self.env, text=True, capture_output=True,
+        timeout=8)
+      self.assertEqual(result.returncode, 2, result.stderr)
+      self.assertIn("invalid cursor '7'", result.stderr)
+      self.assertIn("agent-task show " + task, result.stderr)
+
   def test_done_review_owner_block_mistake_abandoned_reopen(self):
     self.init()
     task = self.task("Gates", "--no-changes")

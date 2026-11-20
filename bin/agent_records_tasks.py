@@ -407,7 +407,11 @@ def permission(fields, agent, operation, force=None, helper=False,
   if force:
     raise RecordsError("claim task before " + operation +
                        "; --force cannot create a claim", 1)
-  raise RecordsError("claim task before " + operation, 1)
+  task = fields.get("id", "TASK")
+  lapsed = (" (your claim expired " + fields["expires"] + ")"
+            if fields.get("owner") == agent and fields.get("expires") else "")
+  raise RecordsError("claim task before " + operation + lapsed + "; run "
+                     "agent-task --agent " + agent + " claim " + task, 1)
 
 
 def forced(body, agent, reason):
@@ -578,30 +582,70 @@ def replace_check(body, index, replacement):
   return body[:match.start(1)] + "\n".join(lines) + body[match.end(1):]
 
 
-def close_ready(fields, body, changes, ident, state):
+def close_ready(fields, body, changes, ident, state, agent="AGENT"):
+  """Return the open associated records, refusing with every problem that
+  blocks a close in this state."""
+  open_records, problems = close_problems(fields, body, changes, ident,
+                                          state, agent)
+  if problems:
+    raise RecordsError(close_refusal(ident, state, problems), 1)
+  return open_records
+
+
+def close_refusal(ident, state, problems):
+  return ("cannot close " + ident + " as " + state + ":\n" +
+          "\n".join("- " + problem for problem in problems))
+
+
+def close_problems(fields, body, changes, ident, state, agent):
+  """Return (open records, problems): every reason a done close would be
+  refused, each with the command that clears it, so one refusal lists
+  them all."""
+  problems = []
+  task = ident
   if state == "done":
     _, lines = checklist(body)
     if len(lines) < 4:
-      raise RecordsError("fixed checklist is incomplete", 1)
-    for index, (key, _) in enumerate(FIXED):
-      if not lines[index].startswith("- [x] " + key + ":"):
-        raise RecordsError("checklist item is not done: " + key, 1)
-    for line in lines:
-      if not line.startswith("- [x] ") or not (
-          " -- evidence: " in line or ": n/a -- " in line):
-        raise RecordsError("checklist needs evidence or n/a reason", 1)
-    if fields.get("produces-changes") == "yes":
-      for index in (0, 3):
-        if ": n/a -- " in lines[index]:
-          raise RecordsError("merged and work-reviewed need evidence", 1)
+      problems.append("fixed checklist is incomplete; restore the Done "
+                      "when items in the task file")
+      lines = []
+    missing = [key for index, (key, _) in enumerate(FIXED)
+               if lines and not lines[index].startswith("- [x] " + key + ":")]
+    missing += [repr(line[6:]) for line in lines[len(FIXED):]
+                if not line.startswith("- [x] ")]
+    if missing:
+      problems.append(
+        "checklist items not done: " + ", ".join(missing) + "; run "
+        "agent-task --agent " + agent + " check " + task + " ITEM "
+        "--evidence TEXT (or --na REASON) for each")
+    unsupported = [line[6:].split(":", 1)[0] for line in lines
+                   if line.startswith("- [x] ") and not (
+                     " -- evidence: " in line or ": n/a -- " in line)]
+    if unsupported:
+      problems.append("checked items lack evidence or an n/a reason: " +
+                      ", ".join(unsupported) + "; re-run check with "
+                      "--evidence or --na")
+    if fields.get("produces-changes") == "yes" and lines:
+      waived = [FIXED[index][0] for index in (0, 3)
+                if ": n/a -- " in lines[index]]
+      if waived:
+        problems.append(
+          " and ".join(waived) + " need evidence, not n/a, because the "
+          "task produces changes; re-run check with --evidence, or run "
+          "agent-task --agent " + agent + " set " + task + " "
+          "--produces-changes no --reason TEXT if it does not")
     if fields.get("review") not in ("n/a",) and not fields.get(
         "review", "").startswith("passed "):
-      raise RecordsError("review is not passed", 1)
+      problems.append("review is " + (fields.get("review") or "unset") +
+                      ", not passed; run agent-task --agent " + agent +
+                      " set " + task + " --review 'passed REF'")
     if fields.get("blocked-on-owner") != "no":
-      raise RecordsError("blocked on owner", 1)
+      problems.append("task is blocked on owner; run agent-task --agent " +
+                      agent + " set " + task + " --blocked-on-owner no once "
+                      "the owner has answered")
   open_records = [(p, f) for p, f in associations(changes, ident)
                   if f.get("status") not in ("closed", "mitigated", "resolved")]
-  return open_records
+  return open_records, problems
 
 
 def alter_task(root, args, agent, push, changes=None):
@@ -1034,15 +1078,37 @@ def close_task(root, changes, args, agent, push):
   if args.state == "done" and args.force:
     raise RecordsError("done cannot be forced; use cancelled or superseded "
                        "with a reason", 2)
-  overridden = permission(fields, agent, "close", args.force)
-  if args.force and not overridden:
+  problems = []
+  try:
+    overridden = permission(fields, agent, "close", args.force)
+  except RecordsError as exc:
+    if exc.code != 1:
+      raise
+    overridden = False
+    problems.append(str(exc))
+  if args.force and not overridden and not problems:
     raise RecordsError("--force does not apply to this action", 2)
-  open_records = close_ready(fields, body, changes, args.task, args.state)
+  open_records, readiness = close_problems(fields, body, changes,
+                                          args.task, args.state, agent)
+  problems.extend(readiness)
   target_id = args.transfer or args.by
   if open_records and args.state == "done" and not args.transfer:
-    raise RecordsError("open associated records: " +
-                       ", ".join(p.name for p, _ in open_records) +
-                       "; transfer or close the records first", 1)
+    entries = [str(p.relative_to(changes)) for p, _ in open_records
+               if p.parent.name == "entries"]
+    mistakes = [str(p.relative_to(changes)) for p, _ in open_records
+                if p.parent.name != "entries"]
+    how = []
+    if entries:
+      how.append("close entries with agent-changelog --agent " + agent +
+                 " close PATH --what TEXT")
+    if mistakes:
+      how.append("settle mistakes with agent-changelog --agent " + agent +
+                 " mistake update PATH --status mitigated (or resolved)")
+    problems.append(
+      "open associated records: " + ", ".join(entries + mistakes) + "; " +
+      "; ".join(how) + "; or pass --transfer T-NNNN")
+  if problems:
+    raise RecordsError(close_refusal(args.task, args.state, problems), 1)
   if open_records and not target_id:
     raise RecordsError("open records require --transfer or closure", 1)
   task_edits = {}
@@ -1106,6 +1172,17 @@ def format_task(fields):
           " " + fields["owner"] + remaining + " " + fields["title"])
 
 
+SHOW_TAIL = 20
+SHOW_ASSOCIATIONS = 10
+
+
+def bad_cursor(value, task):
+  return RecordsError(
+    "invalid cursor " + repr(value) + ": --after takes the N:HASH value a "
+    "previous show or watch printed as 'cursor:', not a log index or time; "
+    "run agent-task show " + task + " to get the current one", 2)
+
+
 def task_read(root, changes, args, authoritative=True):
   command = args.command
   if command in ("show", "watch"):
@@ -1116,10 +1193,13 @@ def task_read(root, changes, args, authoritative=True):
       lines = log_lines(body)
       if args.after:
         if not re.fullmatch(r"\d+:[0-9a-f]{16}", args.after):
-          raise RecordsError("invalid cursor", 2)
+          raise bad_cursor(args.after, args.task)
         n = int(args.after.split(":", 1)[0])
         if cursor(lines[:n]) != args.after:
-          raise RecordsError("log rewritten since cursor", 5)
+          raise RecordsError(
+            "log rewritten since cursor " + args.after + "; earlier "
+            "entries changed, so re-read with agent-task show " + args.task +
+            " --full and use the cursor it prints", 5)
         if args.no_messages:
           body = body[:body.index("## Log")]
         else:
@@ -1127,6 +1207,22 @@ def task_read(root, changes, args, authoritative=True):
                   "\n".join(lines[n:]) + "\n")
       elif args.no_messages:
         body = body[:body.index("## Log")]
+      compact = not (args.json or args.after or args.no_messages or
+                     getattr(args, "full", False))
+      notes = []
+      if compact:
+        tail = max(0, getattr(args, "tail", SHOW_TAIL))
+        older = max(0, len(lines) - tail)
+        if older:
+          body = (body[:body.index("## Log")] + "## Log\n" +
+                  "\n".join(lines[older:]) + "\n")
+          notes.append(f"({older} earlier log entries omitted; --full "
+                       "prints all, --after CURSOR prints newer ones)")
+        if len(related) > SHOW_ASSOCIATIONS:
+          notes.append(f"({len(related) - SHOW_ASSOCIATIONS} older "
+                       "associations omitted; --full lists all)")
+          related = sorted(related, key=lambda r: r[0].name)[
+            -SHOW_ASSOCIATIONS:]
       if args.json:
         print(json.dumps({"fields": fields, "body": body,
                           "changes": [{"path": str(p.relative_to(changes)),
@@ -1139,6 +1235,7 @@ def task_read(root, changes, args, authoritative=True):
         for line in (put_task(fields, ORDER, body).decode().rstrip() +
                      "\n" + "\n".join(str(p.relative_to(changes)) +
                      " " + f.get("status", "") for p, f in related) +
+                     "".join("\n" + n for n in notes) +
                      "\ncursor: " + cursor(lines)).splitlines():
           print(prefix + line)
     else:
@@ -1192,7 +1289,7 @@ def watch_task(root, changes, args):
   if interval < 1:
     raise RecordsError("interval must be at least 1 second", 2)
   if args.after and not re.fullmatch(r"\d+:[0-9a-f]{16}", args.after):
-    raise RecordsError("invalid cursor", 2)
+    raise bad_cursor(args.after, args.task)
   if args.until and not (
       args.until in ("closed", "message", "change") or
       re.fullmatch(r"status=(?:open|in-progress|in-review|blocked|done|"

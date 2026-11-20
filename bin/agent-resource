@@ -683,18 +683,25 @@ def main():
                    help='emit one wait snapshot after these seconds')
   run.add_argument('command', nargs=argparse.REMAINDER)
   status = commands.add_parser('status')
-  status.add_argument('--resource', type=resource, action='append', required=True)
+  status.add_argument('--resource', type=resource, action='append',
+                      help='resource to report; repeatable; default: every '
+                      'resource used on this machine')
   config = commands.add_parser('capacity')
   config.add_argument('--resource', required=True)
   config.add_argument('--credits', type=credits, required=True)
   config.add_argument('--wait', type=seconds, default=600)
   args = parser.parse_args()
   if args.action == 'status':
-    names = [name for name, _ in args.resource]
     try:
       root = secure_directory(create=False)
     except OSError:
       root = None
+    if args.resource:
+      names = [name for name, _ in args.resource]
+    else:
+      names = sorted({path.stem for pattern in ('*.lock', '*.capacity')
+                      for path in (root.glob(pattern) if root else ())
+                      if not path.name.startswith('.')})
     print(json.dumps({'policy': POLICY, 'resources': {
       name: resource_status(root, name) for name in names}}, indent=2))
     return 0

@@ -48,7 +48,10 @@ def events(root, changes, args):
             not re.fullmatch(r'[0-9a-f]{64}', item['header'])):
           raise ValueError()
     except (ValueError, TypeError):
-      raise RecordsError('invalid cursor or different task set', 2)
+      raise RecordsError(
+        'invalid cursor or different task set: --after takes the JSON '
+        '"cursor" object a previous events call printed for exactly these '
+        'tasks (' + ', '.join(tasks) + '); omit it to start from now', 2)
   deadline = time.monotonic() + timeout
   while True:
     batch, rewritten, current = [], [], {}

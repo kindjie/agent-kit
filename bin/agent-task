@@ -14,14 +14,17 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 sys.path.insert(0, str(Path(os.path.realpath(__file__)).parent))
+from agent_records_cli import Parser, parse
 from agent_records_core import (
   push_policy,
   EXIT_TEXT, FORCE_TEXT, RecordsError, config, directory, doctor, init_repo,
+  refuse_pinned_init,
   duration, one_line, record_locks, require_agent, sync, unexpected_error,
   validate_root,
 )
 from agent_records_tasks import (alter_task, close_task, lint_tasks, new_task,
-                                 dependency_view, task_read, watch_task)
+                                 dependency_view, task_read, watch_task,
+                                 SHOW_TAIL)
 
 
 def positive_index(value):
@@ -56,7 +59,7 @@ def parser():
       "with the new cursor. watch --until accepts closed, status=S, "
       "owner=ID|none, message (requires --for), or change.")
   )
-  p = argparse.ArgumentParser(
+  p = Parser(
     description=textwrap.fill("Manage task files and git commits. " +
                               EXIT_TEXT),
     epilog=details + "\nExample: agent-task --agent helper new "
@@ -122,6 +125,12 @@ def parser():
   show.add_argument("--after")
   show.add_argument("--no-messages", action="store_true")
   show.add_argument("--json", action="store_true")
+  show.add_argument("--tail", "--last", type=int, default=SHOW_TAIL,
+                    metavar="N",
+                    help="log entries to print without --after or --full "
+                         f"(default {SHOW_TAIL})")
+  show.add_argument("--full", action="store_true",
+                    help="print every log entry and association")
   listing = add("list", "Read task summaries; writes nothing.",
                 "agent-task list --all")
   listing.add_argument("--status")
@@ -267,6 +276,8 @@ def parser():
   events.add_argument("tasks", nargs="+")
   events.add_argument("--after", help="JSON cursor from the preceding batch")
   events.add_argument("--for", dest="for_id")
+  events.add_argument("--json", action="store_true",
+                      help="accepted; events always prints JSON")
   events.add_argument("--actionable", action="store_true",
                       help="ignore lease renewals; retain observed expiry")
   events.add_argument("--timeout", default="540")
@@ -367,7 +378,7 @@ def parser():
 
 
 def main():
-  args = parser().parse_args()
+  args = parse(parser())
   dependency_read = args.command == "dependency" and args.action == "show"
   if args.command == "dependency":
     if dependency_read and (args.prerequisite or args.reason or args.force):
@@ -395,6 +406,7 @@ def main():
       raise RecordsError("--force requires an owner instruction reason", 2)
   cfg = config()
   if args.command == "init":
+    refuse_pinned_init(cfg)
     init_repo(args.path, "tasks", args.adopt, args.allow)
     return 0
   root = directory("tasks", args.dir, cfg)

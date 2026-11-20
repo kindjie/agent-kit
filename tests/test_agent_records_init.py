@@ -197,8 +197,17 @@ class RecordsInitTest(RecordsFixture):
     cfg, tasks, changes = self.paths()
     self.assertEqual(self.invoke("agent-records", "init", "--default",
                                  "--machine", "fixture").returncode, 0)
-    result = self.invoke("agent-doctor", "--records-config", cfg, "--json")
-    self.assertEqual(result.returncode, 0, result.stderr)
+    # Optional command prerequisites vary by host; stub them on PATH.
+    stubs = self.base / "stubs"
+    stubs.mkdir()
+    for tool in ("tmux", "uv"):
+      (stubs / tool).write_text("#!/bin/sh\nexit 0\n")
+      (stubs / tool).chmod(0o755)
+    env = dict(self.env,
+               PATH=str(stubs) + os.pathsep + self.env.get("PATH", ""))
+    result = self.invoke("agent-doctor", "--records-config", cfg, "--json",
+                         env=env)
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
     report = json.loads(result.stdout)
     codes = {item["code"] for item in report["checks"]}
     self.assertIn("config.valid", codes)
