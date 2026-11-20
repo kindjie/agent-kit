@@ -141,6 +141,26 @@ class ReviewSheetTest(unittest.TestCase):
     items = self.build()['description']['groups'][0]['items']
     self.assertEqual(items[1]['media'][0]['mode'], 'reference')
 
+  def test_inherited_authority_embeds_only_first_sibling_image(self):
+    group = self.description['groups'][0]
+    group['comparison'] = {'reference': 'one', 'candidates': ['two']}
+    verdict = self.description['decisions']['verdict']
+    verdict['authority'] = True
+    del verdict['keys']
+    for name in ('one.svg', 'two.svg', 'extra.svg'):
+      (self.root / name).write_text('<svg/>')
+    group['items'][0] = {'id': 'one', 'media': [
+      {'kind': 'image', 'src': 'one.svg', 'mode': 'reference'}]}
+    group['items'].append({'id': 'two', 'media': [
+      {'kind': 'image', 'src': 'two.svg', 'mode': 'reference'},
+      {'kind': 'image', 'src': 'extra.svg', 'mode': 'reference'}],
+      'decisions': {'verdict': {'kind': 'choice', 'required': True,
+                                'options': ['keep', 'revise']}}})
+    self.write_desc()
+    items = self.build()['description']['groups'][0]['items']
+    self.assertEqual([row['mode'] for row in items[1]['media']],
+                     ['embed', 'reference'])
+
   def test_still_comparison_metadata(self):
     group = self.description['groups'][0]
     group['items'].append({'id': 'two'})

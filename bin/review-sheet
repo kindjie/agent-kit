@@ -1019,14 +1019,18 @@ def resolve(path, limits):
                              group.get('decisions', {}).values())
     authoritative |= any(d.get('authority') for d in
                          description.get('decisions_review', {}).values())
-    # A sibling's authority decision compares against this item's still
-    # image, so the image bytes must be embedded and verified too.
+    # A sibling's authority decision compares against this item's first
+    # still image, so those bytes must be embedded and verified too.
     compared = any(d.get('authority')
                    for group in groups
                    if item in group['items'] and 'comparison' in group and
                    group.get('layout') != 'synchronized-comparison'
                    for other in group['items']
-                   for d in other.get('decisions', {}).values())
+                   for d in {**description.get('decisions', {}),
+                             **other.get('decisions', {})}.values())
+    first_image = next((media for media in item.get('media', [])
+                        if isinstance(media, dict) and
+                        media.get('kind') == 'image'), None)
     for media in item.get('media', []):
       keys_only(media, ('kind', 'src', 'alt', 'fps', 'sha256', 'mode', 'view'),
                 'media')
@@ -1083,7 +1087,7 @@ def resolve(path, limits):
           raise ReviewError('embedded media total exceeds limit')
         continue
       mode = ('embed' if authoritative or kind == 'text' or
-              (compared and kind == 'image') or
+              (compared and media is first_image) or
               media.get('mode', settings.get('media_mode')) == 'embed' else
               'reference')
       if media.get('mode') not in (None, 'embed', 'reference'):
