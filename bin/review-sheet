@@ -802,6 +802,7 @@ def check_comparison(group):
   if (not isinstance(keys, list) or keys != sorted(set(keys)) or
       any(not isinstance(x, int) or x < 0 or x >= motion for x in keys)):
     raise ReviewError('comparison key frames are invalid')
+  info['key_frames'] = keys
   crops = info.get('crops', {})
   if not isinstance(crops, dict) or not crops:
     raise ReviewError('comparison needs crops')
@@ -1018,6 +1019,14 @@ def resolve(path, limits):
                              group.get('decisions', {}).values())
     authoritative |= any(d.get('authority') for d in
                          description.get('decisions_review', {}).values())
+    # A sibling's authority decision compares against this item's still
+    # image, so the image bytes must be embedded and verified too.
+    compared = any(d.get('authority')
+                   for group in groups
+                   if item in group['items'] and 'comparison' in group and
+                   group.get('layout') != 'synchronized-comparison'
+                   for other in group['items']
+                   for d in other.get('decisions', {}).values())
     for media in item.get('media', []):
       keys_only(media, ('kind', 'src', 'alt', 'fps', 'sha256', 'mode', 'view'),
                 'media')
@@ -1074,6 +1083,7 @@ def resolve(path, limits):
           raise ReviewError('embedded media total exceeds limit')
         continue
       mode = ('embed' if authoritative or kind == 'text' or
+              (compared and kind == 'image') or
               media.get('mode', settings.get('media_mode')) == 'embed' else
               'reference')
       if media.get('mode') not in (None, 'embed', 'reference'):

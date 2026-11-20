@@ -57,6 +57,16 @@ async function checkPageLayout(browser, root) {
           label);
       }
     });
+    await test('Escape skips a hidden card', async page => {
+      await page.locator('.item.focused').evaluate(node => {
+        node.style.display = 'none';
+      });
+      const input = page.getByLabel('Group rating', {exact: true});
+      await input.focus();
+      await input.press('Escape');
+      assert(await input.evaluate(node =>
+        node.closest('.decision') === document.activeElement));
+    });
     await test('both boolean selections have a visible mark', async page => {
       const buttons = page.locator('[data-choice="group:first:approved"]');
       for (const value of ['true', 'false']) {

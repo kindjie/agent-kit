@@ -121,6 +121,26 @@ class ReviewSheetTest(unittest.TestCase):
     (self.root / 'two.svg').write_text('<svg width="20"/>')
     self.assertEqual(before, self.build()['scopes'][key])
 
+  def test_sibling_authority_embeds_comparison_image(self):
+    group = self.description['groups'][0]
+    group['comparison'] = {'reference': 'one', 'candidates': ['two']}
+    for item_id in ('one', 'two'):
+      (self.root / f'{item_id}.svg').write_text('<svg/>')
+    group['items'][0] = {
+      'id': 'one',
+      'media': [{'kind': 'image', 'src': 'one.svg', 'mode': 'reference'}],
+      'decisions': {'final': {'kind': 'boolean', 'authority': True}}}
+    group['items'].append({'id': 'two', 'media': [
+      {'kind': 'image', 'src': 'two.svg', 'mode': 'reference'}]})
+    self.write_desc()
+    items = self.build()['description']['groups'][0]['items']
+    self.assertEqual([item['media'][0]['mode'] for item in items],
+                     ['embed', 'embed'])
+    del group['comparison']
+    self.write_desc()
+    items = self.build()['description']['groups'][0]['items']
+    self.assertEqual(items[1]['media'][0]['mode'], 'reference')
+
   def test_still_comparison_metadata(self):
     group = self.description['groups'][0]
     group['items'].append({'id': 'two'})

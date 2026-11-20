@@ -514,9 +514,11 @@
         if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
           event.preventDefault(); event.stopPropagation(); saveAnswer();
         } else if (event.key === 'Escape') {
+          // Synchronized layouts hide their cards; never focus a hidden one.
           const scope = input.closest('.group') || document;
-          const target = input.closest('.item') ||
-            scope.querySelector('.item.focused') || wrapper;
+          const target = [input.closest('.item'),
+            scope.querySelector('.item.focused')].find(node =>
+            node && node.getClientRects().length) || wrapper;
           event.preventDefault(); event.stopPropagation();
           target.focus({preventScroll: true});
         }
