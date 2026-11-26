@@ -23,6 +23,14 @@ only for fields reusable across batches. A project component is executable
 code: review its files, then trust its exact bundle digest with
 `review-sheet component trust PATH`. Never let a description grant trust.
 
+When the project supplies its own decision editor, inspect that executable
+bundle and trust its exact digest with `review-sheet editor trust PATH`.
+Build the description with its editor binding. The host import checks the
+recovery envelope and reports `project_validation: "not-run"`. Run the
+project's canonical importer on the editor's exported decisions before
+recording them. Editor recovery files cannot be merged or checked with
+`--require-complete`.
+
 For question-first cards, use item `presentation.prompt` to name the question
 field, and `before_media` / `after_media` arrays to order the visible fields.
 Unlisted fields collapse into Details after the answers; the original item
