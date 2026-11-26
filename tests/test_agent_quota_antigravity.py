@@ -331,6 +331,30 @@ class AntigravityQuotaTests(unittest.TestCase):
       self.assertNotIn("65%", tmux)
       self.assertIn("#[fg=red,nodim]9%", styled)
 
+  def test_tmux_can_hide_only_cg_above_99_after_window_selection(self):
+    for fraction, short, expected in [
+      (1, 1, ""), (0.995, 1, ""), (0.99, 1, "C/G"),
+      (0.98, 1, "C/G"), (1, 0.05, "C/G5h"),
+    ]:
+      data = {"groups": [{"buckets": [
+        bucket("gemini-weekly", "weekly", 1),
+        bucket("3p-weekly", "weekly", fraction, "1970-01-01T00:00:00Z"),
+        bucket("3p-5h", "5h", short),
+      ]}]}
+      buckets, partial = AGENT_QUOTA.agy_usage(data)
+      service = AGENT_QUOTA.agy_service(buckets, partial, "agy.statusLine", NOW, NOW)
+      report = {"schema_version": 3, "services": {"antigravity": service}}
+      for width in (80, 160):
+        with self.subTest(fraction=fraction, short=short, width=width):
+          rendered = strip_tmux_styles(AGENT_STATUS.render_tmux(
+            report, width, now=NOW, hide_cg_above_99=True,
+          ))
+          self.assertIn("Ag G", rendered)
+          if expected:
+            self.assertIn(expected, rendered)
+          else:
+            self.assertNotIn("C/G", rendered)
+
   def test_tmux_partial_five_hour_only_preserves_stale_and_unknown(self):
     data = {"groups": [{"buckets": [
       bucket("gemini-5h", "5h", 0.654, "2026-08-20T01:00:00Z"),

@@ -810,6 +810,8 @@ Gemini and Claude/GPT each have separate weekly and five-hour windows.
 In tmux, `Ag` shows one whole percentage per group (`G` and `C/G`). The
 five-hour window takes over when it is the immediate constraint or the
 only available window for that group. The CLI report shows both windows.
+Pass `--hide-cg-above-99` to `agent-status tmux` to hide C/G when its
+selected window last reported more than 99% remaining.
 The Unix-epoch reset sentinel indicates that the reset time is unknown.
 AI credits are shown separately from quota. Headless results supply no
 account identity, so both quota and credits show as unverified and carry
