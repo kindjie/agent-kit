@@ -17,6 +17,7 @@ import os
 import queue
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -55,6 +56,7 @@ SAME_PERIOD_TOLERANCE_SECONDS = 60
 VELOCITY_BASELINE_SLACK_SECONDS = 2 * HISTORY_MIN_GAP_SECONDS
 ACCOUNT_ARCHIVES = {"claude_code": "claude_accounts",
                     "codex": "codex_accounts"}
+SERVICE_IDS = ("claude_code", "codex", "antigravity")
 
 
 def utc_now() -> datetime:
@@ -79,12 +81,12 @@ def parse_timestamp(
     return None
 
   if isinstance(value, (int, float)):
-    number = float(value)
-    if not math.isfinite(number):
-      return None
-    if milliseconds:
-      number /= 1000
     try:
+      number = float(value)
+      if not math.isfinite(number):
+        return None
+      if milliseconds:
+        number /= 1000
       return datetime.fromtimestamp(number, tz=timezone.utc)
     except (ValueError, OSError, OverflowError):
       return None
@@ -101,11 +103,11 @@ def parse_timestamp(
 
   try:
     parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-  except ValueError:
+    if parsed.tzinfo is not None:
+      return parsed.astimezone(timezone.utc)
+  except (ValueError, OverflowError):
     return None
-  if parsed.tzinfo is None:
-    return None
-  return parsed.astimezone(timezone.utc)
+  return None
 
 
 def finite_percentage(value: Any) -> float | None:
@@ -1902,10 +1904,10 @@ def cache_lock(path: Path) -> Iterator[bool]:
       fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
-# Presentation (text renderers, colour, --timeline and --live) lives in the
-# sibling agent_quota_views.py. It is executed here, in this module's
-# namespace, so it behaves exactly as if written inline -- tests and callers
-# see one namespace -- while each file stays a reviewable size.
+# The Antigravity collector and views use the report helpers above. Include
+# them in this module's namespace, as if written inline.
+_AGY = Path(__file__).resolve().with_name("agent_quota_antigravity.py")
+exec(compile(_AGY.read_text(), str(_AGY), "exec"), globals())
 _VIEWS = Path(__file__).resolve().with_name("agent_quota_views.py")
 exec(compile(_VIEWS.read_text(), str(_VIEWS), "exec"), globals())
 
@@ -2185,9 +2187,15 @@ def build_document(
     if account.get("key") and codex.get("limits"):
       accounts[account["key"]] = copy.deepcopy(codex)
 
+  if provider == "antigravity" or (
+      provider == "all" and antigravity_enabled(previous_services)):
+    services["antigravity"] = get_antigravity(now=now)
+
   generated = now or utc_now()
   if isinstance(previous_services, dict):
     for service_id, service in previous_services.items():
+      if service_id == "antigravity" and provider == "all":
+        continue
       if service_id not in services and isinstance(service, dict):
         services[service_id] = reevaluate_service(service, generated)
 
@@ -2234,12 +2242,18 @@ def reevaluate_document(
   return result
 
 
-def requested_service_ids(provider: str) -> list[str]:
+def requested_service_ids(provider: str,
+                          services: dict[str, Any]) -> list[str]:
   if provider == "claude":
     return ["claude_code"]
   if provider == "codex":
     return ["codex"]
-  return ["claude_code", "codex"]
+  if provider == "antigravity":
+    return ["antigravity"]
+  ids = ["claude_code", "codex"]
+  if "antigravity" in services or antigravity_enabled(services):
+    ids.append("antigravity")
+  return ids
 
 
 def exit_status(
@@ -2248,7 +2262,7 @@ def exit_status(
   strict: bool,
 ) -> int:
   services = document.get("services", {})
-  requested_ids = requested_service_ids(provider)
+  requested_ids = requested_service_ids(provider, services)
   requested_values = [
     services.get(service_id)
     for service_id in requested_ids
@@ -2276,7 +2290,7 @@ def select_services(
   if not isinstance(services, dict):
     selected["services"] = {}
     return selected
-  allowed = set(requested_service_ids(provider))
+  allowed = set(requested_service_ids(provider, services))
   selected["services"] = {
     key: value for key, value in services.items() if key in allowed
   }
@@ -2332,6 +2346,12 @@ def validate_flags(parser: argparse.ArgumentParser, args: argparse.Namespace,
   them, so a mistyped command fails rather than printing a different
   report."""
   given = given_options(parser, argv)
+  if args.provider == "antigravity" and (args.agents or args.models):
+    parser.error("Antigravity supports quota reporting only")
+  if args.record_antigravity_statusline and (
+      args.provider != "antigravity"
+      or set(given) != {"record_antigravity_statusline"}):
+    parser.error("use antigravity --record-antigravity-statusline by itself")
   if not args.agents:
     for dest in AGENT_ONLY:
       if dest in given:
@@ -2361,13 +2381,13 @@ def main(argv: list[str] | None = None) -> int:
   parser = argparse.ArgumentParser(
     prog="agent-quota",
     description=(
-      "Report best-effort Claude Code and Codex subscription quota data."
+      "Report best-effort Claude Code, Codex and Antigravity quota data."
     ),
   )
   parser.add_argument(
     "provider",
     nargs="?",
-    choices=("all", "claude", "codex"),
+    choices=("all", "claude", "codex", "antigravity"),
     default="all",
     help="service to query (default: all)",
   )
@@ -2510,6 +2530,11 @@ def main(argv: list[str] | None = None) -> int:
     help="also fail when any requested service is partial or unavailable",
   )
   parser.add_argument(
+    "--record-antigravity-statusline",
+    action="store_true",
+    help="record a quota observation from Antigravity statusLine JSON on stdin",
+  )
+  parser.add_argument(
     "--version",
     action="version",
     version=f"%(prog)s {VERSION}",
@@ -2528,6 +2553,9 @@ def main(argv: list[str] | None = None) -> int:
   if not 0 < args.agent_days <= 30 or not 1 <= args.agent_limit <= 100:
     parser.error("--agent-days must be >0 and <=30; --agent-limit must be 1–100")
   validate_flags(parser, args, sys.argv[1:] if argv is None else argv)
+  if args.record_antigravity_statusline:
+    record_antigravity_statusline(sys.stdin.buffer)
+    return 0
   text_view = (args.brief or args.verbose or args.agents and not args.compact
                or args.timeline and not args.compact
                or args.models and args.brief)
@@ -2603,6 +2631,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         write_cache(cache_path, document)
 
+  if args.provider == "antigravity":
+    document = select_services(document, args.provider)
+  document = visible_antigravity(document, args.provider)
   if "claude_code" in document.get("services", {}):
     module = agents_module()
     try:

@@ -26,6 +26,14 @@ flowchart LR
 Quota refreshes contact provider services. The model provider can differ from
 the thread's original provider; the dashboard disables summaries by default.
 
+Antigravity quota is optional. Headless collection asks the signed-in
+`agy` CLI for quota and credits without submitting a model prompt.
+The optional status-line hook stores a private snapshot of the signed-in
+session's email, plan if present, quota windows and observation time.
+It discards unrelated fields such as transcript paths and conversation titles.
+The derived report can include that email. The tmux status displays quota
+without account identifiers.
+
 When summaries are enabled, `agent-quota --agents` can label threads by
 sending a bounded excerpt of the thread to a model. By default the
 eligible providers include the one that did not produce the thread, so a
