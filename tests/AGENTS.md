@@ -652,6 +652,15 @@ and explicitly unverified diagnostic reads:
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_records_efficiency
 ```
 
+The pending-watch suite leaves a journal as a killed writer would. It checks
+that task watch, events and changelog watch keep waiting, resume from their
+cursor after the next writer's automatic recovery, and exit 5 without
+recovering when the journal outlasts `--pending-wait`:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_agent_records_watch_pending
+```
+
 The recovery and cross suites exercise real git signing children, index
 locks, staged deletions, journals, and cross-repository races. The privacy
 suite scans tracked and new files;

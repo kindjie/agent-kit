@@ -39,6 +39,8 @@ TIME_RE = re.compile(r"\d{4}-\d\d-\d\d \d\d:\d\d(?::\d\d)? [+-]\d{4}\Z")
 LOCK_WAIT = 400.0
 GIT_TIMEOUT = 120.0
 PUSH_TIMEOUT = 60.0
+PENDING_WAIT = 60.0
+PENDING_POLL = 0.25
 HELD_LOCKS = contextvars.ContextVar("records_lock_fds", default=())
 
 
@@ -105,6 +107,17 @@ def duration(value, name="duration"):
     raise RecordsError(name + " must be positive and finite", 2)
   if not 0 < number < float("inf"):
     raise RecordsError(name + " must be positive and finite", 2)
+  return number
+
+
+def pending_seconds(value):
+  """Seconds a watcher waits for a pending journal to clear; 0 refuses."""
+  try:
+    number = float(value)
+  except (TypeError, ValueError):
+    number = -1.0
+  if not 0 <= number < float("inf"):
+    raise RecordsError("pending-wait must be zero or positive and finite", 2)
   return number
 
 
@@ -1492,30 +1505,58 @@ def mutate_cross(tasks, changes, task_changes, change_changes, operation,
 
 @contextmanager
 def record_locks(tasks, changes, writes=(), wait=LOCK_WAIT, agent="reader",
-                 operation="read", unlocked=False, auto_recover=True):
+                 operation="read", unlocked=False, auto_recover=True,
+                 pending_wait=0.0):
+  """Hold ordered records locks, refusing or recovering a pending journal.
+
+  A reader holds shared locks, so a journal it sees has no live writer:
+  that writer was killed or failed before removing it. The next writer
+  normally recovers it automatically. With pending_wait, a reader releases its
+  locks and re-reads until the journal clears or the window passes; it
+  never recovers.
+  """
   roots = [r for r in (tasks, changes) if r]
   for root in roots:
     if root == tasks:
       validate_root(root, "tasks")
     else:
       validate_root(root, "changelog")
+  pending_since = None
   while True:
     with locks(roots, writes, wait, agent, operation,
                unlocked) as authoritative:
-      pending = any(read_journal(root) for root in roots)
+      journals = [read_journal(root) for root in roots]
+      pending = any(journals)
       if pending and not writes:
         if unlocked:
           yield False
           return
-        for root in roots:
-          operation_state(root)
-          check_index_lock(root)
-        raise RecordsError("pending journal; read refused without recovery. "
-                           "Run agent-task --agent ID recover or "
-                           "agent-changelog --agent ID recover explicitly", 5)
-      if not pending or not auto_recover:
+        if pending_since is None:
+          pending_since = time.monotonic()
+          if pending_wait > 0:
+            journal = next(j for j in journals if j)
+            print("pending journal (" + str(journal.get("operation", "?")) +
+                  " by " + str(journal.get("agent", "?")) + "); waiting up "
+                  "to " + format(pending_wait, "g") + "s for the next "
+                  "writer to recover it", file=sys.stderr)
+        waited = time.monotonic() - pending_since
+        if waited >= pending_wait:
+          for root in roots:
+            operation_state(root)
+            check_index_lock(root)
+          persisted = (" persisted " + format(pending_wait, "g") + "s"
+                       if pending_wait > 0 else "")
+          raise RecordsError("pending journal" + persisted + "; read "
+                             "refused without recovery. Run agent-task "
+                             "--agent ID recover or agent-changelog --agent "
+                             "ID recover explicitly", 5)
+      elif not pending or not auto_recover:
         yield authoritative
         return
+    if not writes:
+      # Re-read without holding locks, so the next writer can recover.
+      time.sleep(min(PENDING_POLL, pending_wait - waited))
+      continue
     try:
       with locks(roots, roots, wait, agent, "recover"):
         cross_recover(tasks, changes)

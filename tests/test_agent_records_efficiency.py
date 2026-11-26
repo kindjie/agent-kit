@@ -142,7 +142,8 @@ class EfficiencyTest(RecordsFixture):
     commands = [('agent-task', 'list'), ('agent-task', 'show', task),
                 ('agent-task', 'next'), ('agent-task', 'lint'),
                 ('agent-task', 'dependency', 'show', task),
-                ('agent-task', 'watch', task, '--timeout', '0.1'),
+                ('agent-task', 'watch', task, '--timeout', '0.1',
+                 '--pending-wait', '0'),
                 ('agent-changelog', 'list'), ('agent-changelog', 'lint')]
     before = self.snapshot()
     for command in commands:

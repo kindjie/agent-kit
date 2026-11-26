@@ -25,8 +25,10 @@ The same task set is required on resume. `--timeout 540 --interval 5` bounds
 local polling without model turns; exit 4 means no matching event before the
 deadline and still returns a usable cursor. Exit 5 with `rewritten` task IDs
 means log history changed: inspect those tasks before using the replacement
-cursor. Missing tasks and pending recovery fail explicitly. Reads never repair
-records and `--unlocked` is refused. The version-1 JSON contains `events`,
+cursor. Missing tasks fail explicitly. A pending journal is re-read for up
+to `--pending-wait` seconds (default 60) while the next writer recovers it;
+exit 5 follows only if it persists. Reads never repair records and
+`--unlocked` is refused. The version-1 JSON contains `events`,
 `cursor`, and `rewritten`; each cursor stores a log prefix count/hash and a
 header hash. Store cursors privately, outside source control. Do not confuse
 an empty batch with completed work.

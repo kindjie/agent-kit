@@ -16,7 +16,8 @@ from pathlib import Path
 from agent_records_core import (
   EXIT_TEXT, FORCE_TEXT, RecordsError, comma, config, directory, doctor,
   duration, file_bytes, git, init_repo, joined, locks, machine, mutate,
-  mutate_cross, now, one_line, parse_document, parse_time, record_locks,
+  mutate_cross, now, one_line, parse_document, parse_time, pending_seconds,
+  record_locks,
   render_document, repo_key, require_agent, slug, stamp, sync,
   lint_layout,
 )
@@ -1285,6 +1286,7 @@ def task_read(root, changes, args, authoritative=True):
 
 def watch_task(root, changes, args):
   timeout = duration(args.timeout, "timeout")
+  pending_wait = pending_seconds(args.pending_wait)
   interval = duration(args.interval, "interval")
   if interval < 1:
     raise RecordsError("interval must be at least 1 second", 2)
@@ -1303,7 +1305,8 @@ def watch_task(root, changes, args):
   previous_fields = None
   while True:
     with record_locks(root, changes, wait=args.wait,
-                      unlocked=args.unlocked) as authoritative:
+                      unlocked=args.unlocked,
+                      pending_wait=pending_wait) as authoritative:
       fields, body = task_read(root, changes, args, authoritative)
       lines = log_lines(body)
       printed_cursor = False

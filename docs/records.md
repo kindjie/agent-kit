@@ -472,8 +472,17 @@ references and changelog `tasks:` values, then run both `lint` commands.
 Never use a records entry itself as permission to remove a worktree or file.
 
 Ordinary reads and watches never invoke recovery or signing. A pending journal
-makes them exit 5 without changing records; use an explicitly authorized
-`agent-task --agent ID recover` or `agent-changelog --agent ID recover`.
+makes one-shot reads exit 5 without changing records; use an explicitly
+authorized `agent-task --agent ID recover` or `agent-changelog --agent ID
+recover`. A reader holds shared locks, so a journal it can see has no live
+writer: that writer was killed or failed before removing it, and the next
+mutation recovers it automatically. `agent-task watch`, `agent-task events`
+and `agent-changelog watch` therefore release their locks and re-read for up
+to `--pending-wait` seconds (default 60), reporting the wait on stderr and
+keeping their cursor and deadline. They exit 5 only if the journal persists
+for the whole window, which suggests no writer has run since and recovery is
+needed. The window may extend a watch past `--timeout`; `--pending-wait 0`
+exits at once.
 Mutations retain automatic recovery before applying their own transaction.
 `--unlocked` permits a diagnostic read of pending state marked `UNVERIFIED`
 (`authoritative: false` in JSON); it cannot establish completion or ownership.
