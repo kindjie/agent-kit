@@ -255,6 +255,17 @@ ReviewSheet.registerEditor({kind:'fixture-editor',version:'1.0.0',api:1,
     self.write_packet(frozen)
     args = ('import', self.packet, '--resolved', self.resolved)
     self.cli(*args, '--check-current')
+    trust = self.config / 'review-sheet' / 'trusted-components.json'
+    original = trust.read_bytes()
+    good = json.loads(original)
+    for change in ({'schema_version': True}, {'schema_version': 1.0},
+                   {'components': [None]}):
+      with self.subTest(change=change):
+        trust.write_text(json.dumps({**good, **change}))
+        invalid = self.cli(*args, code=2)
+        self.assertIn('invalid trusted-components.json', invalid.stderr)
+        self.assertNotIn('Traceback', invalid.stderr)
+    trust.write_bytes(original)
     self.cli('component', 'untrust', frozen['components']['text']['sha256'])
     for options in ((), ('--check-current',)):
       refused = self.cli(*args, *options, code=2)

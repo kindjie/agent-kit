@@ -317,8 +317,14 @@ def trusted_bundles():
   if not path.exists():
     return {'schema_version': 1, 'components': []}
   trust = read_json(path, LIMITS['component'])
-  if (not isinstance(trust, dict) or trust.get('schema_version') != 1 or
-      not isinstance(trust.get('components'), list)):
+  if (not isinstance(trust, dict) or
+      type(trust.get('schema_version')) is not int or
+      trust['schema_version'] != 1 or
+      not isinstance(trust.get('components'), list) or
+      any(not isinstance(row, dict) or
+          any(not isinstance(row.get(key), str)
+              for key in ('kind', 'version', 'sha256', 'path'))
+          for row in trust['components'])):
     raise ReviewError('invalid trusted-components.json')
   return trust
 
@@ -556,7 +562,8 @@ def editor_result_import(args, frozen, frozen_hash, limits):
     raise ReviewError('editor trust revoked or changed')
   revoked = frozen_trust_changes(frozen)
   if revoked:
-    raise ReviewError('component trust revoked or changed: ' + ', '.join(revoked))
+    raise ReviewError('component trust revoked or changed: ' +
+                      ', '.join(revoked))
   packet = read_json(args.results[0], limits['results'])
   keys_only(packet, ('schema_version', 'review', 'resolved_sha256', 'context',
                      'reviewer', 'answers', 'project_state'), 'editor results')
