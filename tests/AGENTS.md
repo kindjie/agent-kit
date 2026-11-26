@@ -337,7 +337,7 @@ The Antigravity collector and rendering fixtures run with
 They cover the print-mode registry and model-turn guard, unavailable CLI,
 unbound quota and zero credits, stale account-bound status-line captures,
 and tmux's weekly, urgent five-hour and partial-window display. The fixture
-suite starts no Antigravity subprocesses.
+suite covers the optional tmux C/G cutoff and starts no Antigravity subprocesses.
 
 `test_agent_quota.py` covers schema-v3 normalization, strict value and
 timestamp handling, stale/reset state, scoped buckets, last-good retention,

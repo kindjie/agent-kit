@@ -37,7 +37,7 @@ ACCOUNT_ARCHIVES = {
 SERVICE_LABELS = {
   "claude_code": ("Claude", "Cl"),
   "codex": ("Codex", "Cx"),
-  "antigravity": ("Ag", "Ag"),
+  "antigravity": ("Agy", "Agy"),
 }
 ANTIGRAVITY_BUCKET_LABELS = {"gemini": "G", "3p": "C/G"}
 SPECIAL_BUCKET_LABELS = {
@@ -478,6 +478,7 @@ def tmux_service_group(
   *,
   now: datetime,
   wide: bool,
+  hide_cg_above_99: bool = False,
 ) -> str:
   antigravity = service_id == "antigravity"
   spaced = wide and not antigravity
@@ -516,8 +517,14 @@ def tmux_service_group(
       item = session
     if item["window"].get("label") == "5h":
       label += " 5h" if spaced else "5h"
+    observation = item.get("last_observation")
+    if (antigravity and hide_cg_above_99 and bucket_id == "3p"
+        and isinstance(observation, dict)):
+      raw = observation.get("remaining_percent")
+      if percentage(raw) is not None and float(raw) > 99:
+        return ""
     value = format_tmux_observation(
-      item.get("last_observation"),
+      observation,
       now=now,
       wide=wide,
       whole_percent=antigravity,
@@ -526,7 +533,10 @@ def tmux_service_group(
     return f"{label}{' ' if spaced else ''}{indicator}{value}"
 
   if antigravity:
-    return SERVICE_LABELS[service_id][0] + " " + " ".join(map(item_text, items))
+    entries = list(filter(None, map(item_text, items)))
+    if len(entries) == 1:
+      entries[0] = entries[0].removeprefix(ANTIGRAVITY_BUCKET_LABELS["gemini"])
+    return " ".join([SERVICE_LABELS[service_id][0], *entries]) if entries else ""
 
   primary = next((item for item in items
                   if item["bucket"].get("scope_kind") == "account"), None)
@@ -557,6 +567,7 @@ def render_tmux(
   width: int,
   *,
   now: datetime | None = None,
+  hide_cg_above_99: bool = False,
 ) -> str:
   observed_now = now or utc_now()
   wide = width >= 120
@@ -566,6 +577,7 @@ def render_tmux(
       service_id,
       now=observed_now,
       wide=wide,
+      hide_cg_above_99=hide_cg_above_99,
     )
     for service_id in SERVICE_LABELS
   ]
@@ -624,6 +636,8 @@ def main(argv: list[str] | None = None) -> int:
   parser.add_argument("mode", choices=("claude", "tmux"))
   parser.add_argument("window", nargs="?")
   parser.add_argument("width", nargs="?", type=int, default=120)
+  parser.add_argument("--hide-cg-above-99", action="store_true",
+                      help="hide the tmux C/G entry above 99%% remaining")
   args = parser.parse_args(argv)
   cache = default_cache_path()
   trigger_refresh(cache)
@@ -654,6 +668,7 @@ def main(argv: list[str] | None = None) -> int:
   rendered = render_tmux(
     report,
     args.width,
+    hide_cg_above_99=args.hide_cg_above_99,
   )
   if rendered:
     print(rendered, end="")
