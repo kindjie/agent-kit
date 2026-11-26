@@ -754,8 +754,10 @@ Paused registered contenders prove fitting-head precedence and original-age
 successor drain with real child exits; controlled mutations must fail these
 oracles. Registration age, no ticket resurrection and malformed live tickets
 have focused cases. Timeout, cancellation and death prove ticket cleanup.
-Status fixtures verify grouped weights/ongoing ages, unknown ETA/legacy
-coverage, bounded busy reads and no creation or pruning. Notice cases check
+Status fixtures verify grouped weights and bound the reported head age using
+the stored enqueue time and shared-clock readings around the status call.
+They also cover unknown ETA/legacy coverage, bounded busy reads and no
+creation or pruning. Notice cases check
 exactly-once CPU/GPU waits with explicit VM/alternative-build-machine advice,
 no immediate/custom-resource reminder, and no paths.
 Fresh configured-idle status must prove exclusive-gate ownership without
