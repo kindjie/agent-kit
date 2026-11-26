@@ -459,8 +459,10 @@ sys.exit(functions['main']())
       fcntl.flock(gate, fcntl.LOCK_EX)
       for path in paths:
         row = json.loads(path.read_text())
-        row['enqueued'] = max(0, shared_test_clock() - 100)
-        row['grace'] = 30
+        now = shared_test_clock()
+        row['enqueued'] = max(0, now - 100)
+        # Even on a just-booted host the fixture needs an expired grace.
+        row['grace'] = min(30, (now - row['enqueued']) / 2)
         path.write_text(json.dumps(row))
 
   def status(self, name='cpu'):
@@ -575,17 +577,23 @@ sys.exit(functions['main']())
     self.assertEqual(self.configure(3, 'cpu').returncode, 0)
     self.holder('active', '--resource', 'cpu')
     self.paused_waiter('head', 3)
-    self.age_tickets(self.tickets(1))
+    head, = self.tickets(1)
+    self.age_tickets([head])
+    enqueued = json.loads(head.read_text())['enqueued']
     self.paused_waiter('younger', 2)
     self.tickets(2)
+    before = shared_test_clock()
     result = self.status()
+    after = shared_test_clock()
     self.assertEqual(result.returncode, 0, result.stderr)
     row = json.loads(result.stdout)['resources']['cpu']
     self.assertEqual((row['capacity'], row['reserved'], row['free']), (3, 1, 2))
     self.assertEqual(row['queued_by_credits'], {'2': 1, '3': 1})
     self.assertEqual(row['head']['credits'], 3)
     self.assertEqual(row['head']['phase'], 'drain')
-    self.assertGreaterEqual(row['head']['age_seconds'], 99)
+    age = row['head']['age_seconds']
+    self.assertGreaterEqual(age, round(before - enqueued, 3))
+    self.assertLessEqual(age, round(after - enqueued, 3))
     self.assertIsNone(row['eta_seconds'])
     self.assertIn('legacy', row['coverage'])
 
