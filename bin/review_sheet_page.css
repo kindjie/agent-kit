@@ -20,7 +20,7 @@ button { cursor: pointer; padding: .25rem .55rem; }
 :focus-visible { outline: 3px solid #155cbd; outline-offset: 2px; }
 .banner { padding: .5rem; margin: .5rem 0; border: 2px solid #a35a00;
   background: #fff4d6; }
-#messages { position: absolute; top: 100%; left: 0; right: 0;
+.pinned > #messages { position: absolute; top: 100%; left: 0; right: 0;
   max-height: calc(100vh - 4rem); overflow: auto; pointer-events: none; }
 #messages .banner { margin: 0; overflow-wrap: anywhere;
   box-sizing: border-box; pointer-events: auto; }

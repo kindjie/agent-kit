@@ -23,6 +23,36 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
   tests.test_review_sheet_browser
 ```
 
+The local opaque-editor prototype adds `tests.test_review_sheet_editor`.
+Its CLI cases run on POSIX with task-local trust/configuration. Its five Node
+cases exercise the shipped transport and page draft glue without a browser:
+commit/rollback failure, synchronous lifecycle refusal, binding immutability,
+in-flight storage suppression, quota recovery and refusing a second pending
+input. They also check one full factory snapshot with caller/factory mutation
+isolation. CLI projection coverage preserves the complete frozen description,
+authoritative editor/state/IDs and resolved-file hash while omitting the
+redundant raw editor block from the browser payload. These are CPU contract
+tests, not browser/media or adoption evidence.
+Ordinary `test_review_sheet` and `test_review_sheet_stage2` remain required
+regressions. Project adapters also need their independent canonical oracle.
+
+`tests.test_review_sheet_view` covers API2 shipped-page contracts with a
+fictional DOM: restored-state mount and explicit roots, single keyboard
+dispatch with editable Escape, bound focus/visibility, visual-failure export,
+abort-before-dispose, live raw import/export and refresh after owner
+transitions, plus cooperative draft checks before owner changes and again
+before writes.
+Media callbacks also preserve readiness/failure and disposal while skipping
+primitive status notifications when no primitive scopes exist; scoped media
+transitions and the initial empty header remain covered.
+These checks refuse observed competing/unreadable drafts; they do not provide
+atomic WebStorage compare-and-swap. They preserve API1
+coverage above and do not establish real browser or media fidelity.
+The alert-flow contract retains startup and later warnings in normal document
+flow immediately after the sticky controls, without truncation or dismissal.
+It checks actual parent/order, queued-note delivery, error styling and export
+in the existing fictional DOM; browser geometry remains a separate gate.
+
 The Python cases use fictional files and temporary Git repositories to check
 build, frozen import/current-input separation, trust refusal and shadowing,
 preset merge/deletion, frame mapping, reveal conflicts, bounds, and output
@@ -63,6 +93,33 @@ Pointer regressions also cover scrolled live messages and their dismissal,
 multi-image Compare cycling/closing, shared pixel scale, pointer/`z` zoom,
 no Compare for an isolated image or an ordinary group's single-image items,
 and explicit cross-item comparison with the source item's title in captions.
+
+The same harness builds an API 2 and an API 1 editor page from one synthetic
+bundle, trusted only in its temporary configuration directory, and prints a
+separate `editor pages` PASS line per browser. On the API 2 page it checks
+that the owner view mounts in the page's dedicated roots (there is no frame),
+that the declared stylesheet applies, that the owner configuration carries no
+local path, and that load, reload, recovery and both tabs produce no page
+error, console error, CSP violation or request beyond `file:`, `blob:` and
+`data:`. An edit must reach the stored draft and the downloaded file
+unchanged, and that download must pass `import --check-current`. Reload must
+restore the draft and reviewer. A refused import must be kept as the recovery
+input, block edits and further imports, download unchanged through "Export
+recovery input", survive a dismissed confirmation and clear through "Discard
+recovery input". A stored draft from another build must be refused at load and
+left in storage until that input is discarded. With two tabs, the second
+writer must be refused and told, must be able to download the first tab's
+draft, and must pick it up on reload. The CSP case requires a violation
+event, and no effect, for an injected inline script, a script file and an
+injected style. It also requires an `EvalError` from `eval`, a blocked remote
+fetch with no request sent, and that a copy of the page with one statement
+outside its hash runs no script at all. The
+API 1 page has no owner view: it checks export, import, reload and the CLI
+import, and records that a state-only page has no cross-tab draft check, so
+the last accepted import replaces the stored draft without a warning. The
+fixture types into a textarea, which reports LF line ends, so CR in typed
+state is not exercised in a browser. One synthetic bundle on one machine is
+not usability evidence for a real project editor.
 
 ## SteamOS
 
@@ -814,3 +871,50 @@ Covers literal argument forwarding, full commit identities, unsafe/missing
 configuration, help without configuration and backend exit propagation.
 The owning backend separately qualifies network trust, verified fetches and
 publication; this launcher suite does not prove those operations.
+
+The editor view regression harness also covers owner visibility during group
+navigation/search, exact-limit compact downloads, owner-key undo (no undeclared
+session undo hook), and explicit editor-state labels. The CLI byte-limit case
+runs without Node. The Node harnesses import no page download through the CLI:
+the view harness accepts an optional binding argument (`export-limit-review`)
+and the editor harness an optional page-path argument (its host cases), but
+committed tests pass neither. Only the browser suite sends a real page
+download through `import`. Both API1 and API2 preserve opaque
+multibyte/escaped text.
+Neither Node VM coverage nor CLI success is a real-browser/media fidelity claim.
+
+Local-path regressions build API1 and API2 editor pages with the CLI and
+require that no temporary-directory or bundle path appears anywhere in the
+page, that the emitted editor carries only the bundle kind, version, API and
+digest, and that the frozen resolved file keeps the full bundle record. A
+sixth Node case, `cli-binding`, passes that emitted binding through the
+shipped transport and checks the configuration handed to the owner factory.
+It does not run the generated page itself. Editor script regressions refuse
+NUL and closing-script markup in any letter case at trust time.
+
+Editor trust regressions run the CLI against a temporary configuration
+directory. Trusting an unchanged bundle twice must leave one byte-identical
+trust file; changed files add a row while `editor list` reports the earlier
+row as not current; results bound to the earlier bundle import until that row
+is untrusted. Twenty-one malformed `trusted-editors.json` shapes (wrong
+top-level type, version or list, rows that are not objects, missing or
+non-text fields, invalid JSON and invalid UTF-8) must each be refused by
+`editor list`, `editor trust`, `editor untrust`, `build` and `import` with one
+message naming the file, exit status 2, no traceback and the file unchanged.
+The Node page cases require the discard control to read "Discard recovery
+input" on editor pages and "Discard stale draft entries" on a page without an
+editor.
+
+Component trust/build contracts also cover decoded one-character JavaScript
+key literals, escaped aliases, malformed keys and duplicate refusal.
+
+API2 stylesheet contracts verify actual CLI trust/build, exact combined CSS/CSP
+hash, mutation invalidation, deterministic order, safe paths, byte limits and
+closing-style refusal. Applied styling and CSP violations still need an actual
+browser check; Node VM does not enforce browser CSP.
+
+Trusted editor script regressions build API1/API2 bundles with CRLF and lone CR.
+They compare the CSP hash with HTML-normalized emitted script text while raw
+source inventory and trust hashes remain unchanged. Reviewer regressions cover
+saved-draft restoration, import precedence/refusal, and full prepared-envelope
+bounds. These CPU checks do not replace actual browser CSP or reload checks.
