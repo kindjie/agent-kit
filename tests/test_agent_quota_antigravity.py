@@ -104,7 +104,7 @@ class AntigravityQuotaTests(unittest.TestCase):
     self.assertTrue(events)
     self.assertTrue(all(event["provider"] == "antigravity" for event in events))
     tmux = strip_tmux_styles(AGENT_STATUS.render_tmux(document, 160, now=NOW))
-    self.assertIn("Ag G5h·5%", tmux)
+    self.assertIn("Agy G5h·5%", tmux)
 
   def test_unsupported_version_never_invokes_print_mode(self):
     with patch.object(AGENT_QUOTA.shutil, "which", return_value=str(self.agy)), \
@@ -310,7 +310,7 @@ class AntigravityQuotaTests(unittest.TestCase):
       self.assertIn(label, brief)
     for width in (160, 90):
       tmux = strip_tmux_styles(AGENT_STATUS.render_tmux(document, width, now=NOW))
-      self.assertEqual(tmux, "Ag G·65% C/G·73% │ ")
+      self.assertEqual(tmux, "Agy G·65% C/G·73% │ ")
 
   def test_tmux_replaces_only_the_weekly_group_that_needs_urgent_five_hour(self):
     data = {"groups": [{"buckets": [
@@ -325,7 +325,7 @@ class AntigravityQuotaTests(unittest.TestCase):
     for width in (160, 90):
       styled = AGENT_STATUS.render_tmux(document, width, now=NOW)
       tmux = strip_tmux_styles(styled)
-      self.assertIn("Ag G5h·9%", tmux)
+      self.assertIn("Agy G5h·9%", tmux)
       self.assertIn("C/G·5%", tmux)
       self.assertNotIn("C/G5h", tmux)
       self.assertNotIn("65%", tmux)
@@ -349,11 +349,20 @@ class AntigravityQuotaTests(unittest.TestCase):
           rendered = strip_tmux_styles(AGENT_STATUS.render_tmux(
             report, width, now=NOW, hide_cg_above_99=True,
           ))
-          self.assertIn("Ag G", rendered)
           if expected:
+            self.assertIn("Agy G", rendered)
             self.assertIn(expected, rendered)
           else:
+            self.assertIn("Agy ·100%", rendered)
             self.assertNotIn("C/G", rendered)
+
+  def test_tmux_lone_gemini_retains_five_hour_window_label(self):
+    data = {"groups": [{"buckets": [bucket("gemini-5h", "5h", 0.5)]}]}
+    buckets, partial = AGENT_QUOTA.agy_usage(data)
+    service = AGENT_QUOTA.agy_service(buckets, partial, "agy.statusLine", NOW, NOW)
+    report = {"schema_version": 3, "services": {"antigravity": service}}
+    text = strip_tmux_styles(AGENT_STATUS.render_tmux(report, 80, now=NOW))
+    self.assertIn("Agy 5h·50%", text)
 
   def test_tmux_partial_five_hour_only_preserves_stale_and_unknown(self):
     data = {"groups": [{"buckets": [
@@ -367,7 +376,7 @@ class AntigravityQuotaTests(unittest.TestCase):
       tmux = strip_tmux_styles(AGENT_STATUS.render_tmux(
         document, width, now=NOW + timedelta(minutes=6),
       ))
-      self.assertIn("Ag G5h·~65%@6m", tmux)
+      self.assertIn("Agy G5h·~65%@6m", tmux)
       self.assertIn("C/G5h·?last6%", tmux)
 
   def test_live_cache_obeys_selected_source_and_no_cache_flag(self):

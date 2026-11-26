@@ -37,7 +37,7 @@ ACCOUNT_ARCHIVES = {
 SERVICE_LABELS = {
   "claude_code": ("Claude", "Cl"),
   "codex": ("Codex", "Cx"),
-  "antigravity": ("Ag", "Ag"),
+  "antigravity": ("Agy", "Agy"),
 }
 ANTIGRAVITY_BUCKET_LABELS = {"gemini": "G", "3p": "C/G"}
 SPECIAL_BUCKET_LABELS = {
@@ -533,8 +533,10 @@ def tmux_service_group(
     return f"{label}{' ' if spaced else ''}{indicator}{value}"
 
   if antigravity:
-    entries = " ".join(filter(None, map(item_text, items)))
-    return f"{SERVICE_LABELS[service_id][0]} {entries}" if entries else ""
+    entries = list(filter(None, map(item_text, items)))
+    if len(entries) == 1:
+      entries[0] = entries[0].removeprefix(ANTIGRAVITY_BUCKET_LABELS["gemini"])
+    return " ".join([SERVICE_LABELS[service_id][0], *entries]) if entries else ""
 
   primary = next((item for item in items
                   if item["bucket"].get("scope_kind") == "account"), None)
