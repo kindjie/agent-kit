@@ -455,7 +455,9 @@ def editor_trust():
   path = owner_root() / 'trusted-editors.json'
   trust = read_json(path, LIMITS['component']) if path.exists() else \
     {'schema_version': 1, 'editors': []}
-  if (not isinstance(trust, dict) or trust.get('schema_version') != 1 or
+  if (not isinstance(trust, dict) or
+      type(trust.get('schema_version')) is not int or
+      trust['schema_version'] != 1 or
       not isinstance(trust.get('editors'), list) or
       any(not isinstance(row, dict) or
           any(not isinstance(row.get(key), str) for key in EDITOR_TRUST_KEYS)
@@ -530,6 +532,14 @@ def resolve_editor(description, path, items, limits):
   return frozen, contents
 
 
+def frozen_file_inventory(frozen):
+  inputs = {frozen['source']['path']: frozen['source']['sha256'],
+            **frozen.get('files', {})}
+  inputs.update({entry['path']: entry['sha256']
+                 for entry in frozen.get('presets', [])})
+  return inputs
+
+
 def editor_result_import(args, frozen, frozen_hash, limits):
   if len(args.results) != 1 or args.require_complete:
     raise ReviewError('opaque editor state cannot merge or prove completion')
@@ -544,6 +554,9 @@ def editor_result_import(args, frozen, frozen_hash, limits):
     raise ReviewError('invalid frozen editor description')
   if not editor_trusted(editor['bundle']):
     raise ReviewError('editor trust revoked or changed')
+  revoked = frozen_trust_changes(frozen)
+  if revoked:
+    raise ReviewError('component trust revoked or changed: ' + ', '.join(revoked))
   packet = read_json(args.results[0], limits['results'])
   keys_only(packet, ('schema_version', 'review', 'resolved_sha256', 'context',
                      'reviewer', 'answers', 'project_state'), 'editor results')
@@ -563,8 +576,7 @@ def editor_result_import(args, frozen, frozen_hash, limits):
       len(value['data'].encode('utf-8')) > limits['results']):
     raise ReviewError('invalid or foreign project state')
   if args.check_current:
-    inventory = {frozen['source']['path']: frozen['source']['sha256'],
-                 **frozen['files']}
+    inventory = frozen_file_inventory(frozen)
     if any(not Path(name).is_file() or file_hash(Path(name)) != expected
            for name, expected in inventory.items()):
       raise ReviewError('editor inputs changed or missing')
@@ -1734,10 +1746,7 @@ def result_import(args):
   if args.check_current:
     changed = []
     missing_inputs = []
-    inventory = {frozen['source']['path']:
-                 frozen['source']['sha256'], **frozen.get('files', {})}
-    inventory.update({entry['path']: entry['sha256'] for entry in
-                      frozen.get('presets', [])})
+    inventory = frozen_file_inventory(frozen)
     for name, expected in inventory.items():
       path = Path(name)
       if not path.is_file():

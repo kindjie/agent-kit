@@ -562,6 +562,10 @@ async function checkEditor(browser, name) {
   assert.equal(await field.inputValue(), editorInitial);
   await field.fill('typed over a stale draft');
   assert.equal(await field.inputValue(), editorInitial);
+  assert.equal(await page.evaluate(() => window.fixtureEditor.refused), 1);
+  await importFile(page, JSON.stringify(editorPacket(fixture, 'another')));
+  await waitNotes(page, pending, 1);
+  assert.equal(await field.inputValue(), editorInitial);
   assert.equal(await draft(page, fixture.key), stale);
   assert.equal(await downloadText(page, 'Export recovery input'), stale);
   page.once('dialog', dialog => dialog.accept());
@@ -607,6 +611,12 @@ async function checkEditor(browser, name) {
   assert.equal(await field.inputValue(), 'from the first tab');
   assert.ok(await notes(page, changed).count() >= 1);
   await clean(page, problems, name, 'first editor tab');
+  // Repeated failed imports leave recent recovery advice visible and bounded.
+  for (let index = 0; index < 25; index++) {
+    await importFile(page, JSON.stringify(editorPacket(fixture, 'blocked')));
+  }
+  assert.equal(await page.locator('#messages > .banner').count(), 20);
+  assert.ok(await notes(page, pending).count() > 0);
   await clean(other, otherProblems, name, 'second editor tab');
   await context.close();
 }

@@ -366,6 +366,7 @@
       (error && !data.editor ? 'Error: ' : '') + text);
     banner.setAttribute('role', error ? 'alert' : 'status');
     host.append(banner);
+    if (data.editor && host.children.length > 20) host.children[0].remove();
     if (!data.editor) noteTimer = setTimeout(clearNote, 8000);
     return banner;
   }

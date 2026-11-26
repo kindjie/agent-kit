@@ -243,6 +243,41 @@ ReviewSheet.registerEditor({kind:'fixture-editor',version:'1.0.0',api:1,
     self.assertEqual([(row['sha256'], row['current']) for row in
                       self.listed()], [(second, False)])
 
+  def test_editor_import_refuses_revoked_media_component(self):
+    folder = self.root / 'component'
+    shutil.copytree(TOOL.parent / 'review_sheet_components' / 'text', folder)
+    self.description['components'] = {'text': 'component'}
+    self.description['items'][0]['media'] = [{'kind': 'text', 'src': 'item.txt'}]
+    (self.root / 'item.txt').write_text('fixture')
+    self.write_description()
+    self.cli('component', 'trust', folder, '--yes')
+    _, frozen = self.trust_and_build()
+    self.write_packet(frozen)
+    args = ('import', self.packet, '--resolved', self.resolved)
+    self.cli(*args, '--check-current')
+    self.cli('component', 'untrust', frozen['components']['text']['sha256'])
+    for options in ((), ('--check-current',)):
+      refused = self.cli(*args, *options, code=2)
+      self.assertIn('component trust revoked or changed: text', refused.stderr)
+      self.assertEqual(refused.stdout, '')
+
+  def test_editor_import_checks_preset_currency_on_request(self):
+    preset = self.root / 'base.json'
+    preset.write_text(json.dumps({'instructions': 'first'}))
+    self.description['extends'] = ['base.json']
+    self.write_description()
+    _, frozen = self.trust_and_build()
+    self.write_packet(frozen)
+    args = ('import', self.packet, '--resolved', self.resolved)
+    self.cli(*args, '--check-current')
+    preset.write_text(json.dumps({'instructions': 'updated'}))
+    self.cli(*args)
+    self.assertIn('editor inputs changed or missing',
+                  self.cli(*args, '--check-current', code=2).stderr)
+    preset.unlink()
+    self.assertIn('editor inputs changed or missing',
+                  self.cli(*args, '--check-current', code=2).stderr)
+
   def test_malformed_trust_file_is_refused_without_a_traceback(self):
     _, frozen = self.trust_and_build()
     self.write_packet(frozen)
@@ -252,6 +287,8 @@ ReviewSheet.registerEditor({kind:'fixture-editor',version:'1.0.0',api:1,
     def rows(*values):
       return json.dumps({'schema_version': 1, 'editors': list(values)})
     shapes = ['[]', '"text"', 'null', '7', '{"schema_version": 1}',
+              json.dumps({**good, 'schema_version': True}),
+              json.dumps({**good, 'schema_version': 1.0}),
               '{"schema_version": 2, "editors": []}',
               '{"schema_version": 1, "editors": {}}',
               '{"schema_version": 1, "editors": "rows"}',
