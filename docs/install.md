@@ -27,7 +27,8 @@ user a first command or skill prompt.
   [SteamOS guide](steamos.md) for Developer Mode, pairing and device setup.
 - `tmux` — required only for `agent-dash`; `taskglance` is optional with
   `agent-dash --personal`. The default uses no model summaries.
-- An authenticated `claude` or `codex` CLI for `agent-quota` to report on.
+- An authenticated `claude`, `codex` or [`agy`](../bin/agent-quota.md#google-antigravity)
+  CLI for `agent-quota` to report on.
   It reports what it can observe and leaves the rest unknown.
 - Speech is optional: `say` on macOS, `spd-say` or `espeak-ng` on Linux.
   Without one, `agent-speak.sh` falls back to a terminal bell.

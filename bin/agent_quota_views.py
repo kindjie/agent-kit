@@ -170,7 +170,9 @@ def brief_limit(limit: dict[str, Any], service_name: str) -> list[str]:
 def brief_credits(service: dict[str, Any]) -> list[str]:
   credits = service.get("credits", [])
   if not credits:
-    return ["Codex credits: UNKNOWN (not reported)."]
+    return [
+      f"{service.get('display_name', 'Codex')} credits: UNKNOWN (not reported)."
+    ]
   lines = []
   for credit in credits:
     balance = credit_balance(credit.get("balance"))
@@ -191,6 +193,8 @@ def brief_credits(service: dict[str, Any]) -> list[str]:
     lines.append(f"Observed {credit.get('observed_at') or 'UNKNOWN'}.")
     pace = credit.get("pace", {})
     rate = pace.get("rate_credits_per_hour")
+    if service.get("service_id") == "antigravity":
+      continue
     if credit.get("unlimited") is True:
       lines.append("Credit pace: not applicable (unlimited credits).")
     elif rate is None:
@@ -477,14 +481,14 @@ def render_brief(document: dict[str, Any], color: bool = False) -> str:
     if service_id == "claude_code":
       tokens.append(brief_tokens(service.get("token_usage", {}),
                                  "Claude Code").replace(" [FRESH]", ""))
-    if service_id != "codex":
-      continue
     for credit in service.get("credits", []):
       balance = credit_balance(credit.get("balance"))
       value = f"{balance:,.2f}" if balance is not None else "UNKNOWN"
       pace = credit.get("pace") or {}
       rate = pace.get("rate_credits_per_hour")
       burn = f"{rate:,.2f}/h" if rate is not None else "Collecting history"
+      if service_id == "antigravity":
+        burn = "—"
       until = "—"
       if pace.get("seconds_until_empty") is not None:
         until = "~" + format_duration(pace["seconds_until_empty"])
@@ -501,15 +505,18 @@ def render_brief(document: dict[str, Any], color: bool = False) -> str:
       credit_rows.append([
         credit["bucket"]["name"] + stale_marker(credit), value, burn, until,
       ])
-    if not service.get("credits"):
-      credit_rows.append(["Codex", "UNKNOWN", "—", "—"])
-    usage = service.get("token_usage") or {}
-    tokens.append(brief_tokens(usage).replace(" [FRESH]", ""))
-    if usage.get("error"):
-      notes.append(f"Token lookup failed: {usage['error']}")
+    if service_id == "codex":
+      if not service.get("credits"):
+        credit_rows.append(["Codex", "UNKNOWN", "—", "—"])
+      usage = service.get("token_usage") or {}
+      tokens.append(brief_tokens(usage).replace(" [FRESH]", ""))
+      if usage.get("error"):
+        notes.append(f"Token lookup failed: {usage['error']}")
+    elif service_id == "antigravity" and service.get("credits") == []:
+      credit_rows.append([name, "UNKNOWN", "—", "—"])
 
   lines = ["Attention: " + "; ".join(alerts) + "."] if alerts else []
-  for service_id in ("claude_code", "codex"):
+  for service_id in SERVICE_IDS:
     if service_id in document.get("services", {}):
       if lines:
         lines.append("")
@@ -752,7 +759,7 @@ def timeline_events(document: dict[str, Any], now: datetime
                     ) -> list[dict[str, Any]]:
   """Every event for the checked and archived accounts, unmerged, in order."""
   services = document.get("services", {})
-  sources = [(services[sid], sid, True) for sid in ("claude_code", "codex")
+  sources = [(services[sid], sid, True) for sid in SERVICE_IDS
              if isinstance(services.get(sid), dict)]
   sources += [(item, item.get("service_id"), False)
               for item in archived_accounts(document, now)]
@@ -862,8 +869,12 @@ def merge_events(events: list[dict[str, Any]], tz: Any = None
   rows: dict[tuple, dict[str, Any]] = {}
   for event in events:
     head, value, tail = note_parts(event, tz)
+    provider_scope = event["provider"] if (
+      event["provider"] == "antigravity" or event["account"] == "account unknown"
+    ) else None
     key = (event["moment"], event["order"], event["type"], event["account"],
-           event["active"], event["restores"], event["stale"], head, tail)
+           provider_scope, event["active"], event["restores"], event["stale"],
+           head, tail)
     row = rows.get(key)
     if row is None:
       rows[key] = dict(event, quotas=[event["quota"]],
@@ -1078,7 +1089,7 @@ def render_verbose_text(document: dict[str, Any]) -> str:
       "Those accounts were not queried here; switching back is what "
       "confirms a reset."
     )
-  for service_id in ("claude_code", "codex"):
+  for service_id in SERVICE_IDS:
     service = services.get(service_id)
     if not isinstance(service, dict):
       continue
@@ -1109,6 +1120,8 @@ def render_verbose_text(document: dict[str, Any]) -> str:
       lines.append(brief_tokens(service.get("token_usage", {})))
     elif service_id == "claude_code":
       lines.append(brief_tokens(service.get("token_usage", {}), "Claude Code"))
+    elif "credits" in service:
+      lines.extend(brief_credits(service))
     for limit in service.get("limits", []):
       if isinstance(limit, dict):
         lines.extend(["", *brief_limit(limit, name)])
@@ -1195,24 +1208,39 @@ def keys_unbuffered():
 def live_document(args: argparse.Namespace, cache_path: Path,
                   now: float) -> dict[str, Any]:
   """The quota document for one live frame, refreshed only when stale."""
+  def build(previous):
+    return build_document(
+      args.provider, Path(args.claude_file).expanduser(), args.claude_bin,
+      args.claude_timeout, args.codex_bin, args.timeout, previous)
+
+  def selected(document):
+    return visible_antigravity(select_services(document, args.provider),
+                               args.provider)
+
+  if args.no_cache:
+    return selected(build(None))
   try:
     age = now - cache_path.stat().st_mtime
   except OSError:
     age = float("inf")
-  previous = None if args.no_cache else load_cache(cache_path)
-  if not args.cached and (previous is None or age > LIVE_QUOTA_REFRESH):
+  previous = load_cache(cache_path)
+  services = previous.get("services", {}) if previous else {}
+  source_changed = (
+    (args.provider == "antigravity" or (
+      args.provider == "all" and antigravity_enabled(services)))
+    and antigravity_source() in ("cli", "statusline")
+    and not antigravity_source_matches(services.get("antigravity"))
+  )
+  if not args.cached and (
+      previous is None or age > LIVE_QUOTA_REFRESH or source_changed):
     with cache_lock(cache_path) as acquired:
       if acquired:
-        previous = load_cache(cache_path)
-        document = build_document(
-          args.provider, Path(args.claude_file).expanduser(),
-          args.claude_bin, args.claude_timeout, args.codex_bin,
-          args.timeout, previous)
+        document = build(load_cache(cache_path))
         write_cache(cache_path, document)
-        return document
+        return selected(document)
   if previous is None:
     return {"generated_at": iso_utc(), "services": {}}
-  return select_services(reevaluate_document(previous), args.provider)
+  return selected(reevaluate_document(previous))
 
 
 def notify(message: str, title: str = "agent-quota") -> None:
@@ -1239,25 +1267,29 @@ def timeline_alerts(previous: dict[tuple, dict[str, Any]],
   """Resets that just happened, accounts freed, and BURNs within an hour."""
   alerts = []
   current = {timeline_row_key(row): row for row in rows}
+  def alert_account(row: dict[str, Any]) -> str:
+    return "Antigravity" if row.get("provider") == "antigravity" else row["account"]
+
   for key, row in previous.items():
     # A detected reset leaving the timeline is not a new reset.
     if (row["type"] == "reset" and row["moment"] <= now
         and not row.get("detected")
         and key not in current and ("reset", key) not in sent):
       sent.add(("reset", key))
-      alerts.append(f"{row['quota']} reset for {row['account']}")
+      alerts.append(f"{row['quota']} reset for {alert_account(row)}")
   for key, row in current.items():
+    account = alert_account(row)
     # Keyed by account and moment: a merged row's quota list can reorder.
     early = ("early", row["account"], iso_utc(row["moment"]))
     if row.get("early") and early not in sent:
       sent.add(early)
-      alerts.append(f"{row['quota']} reset early for {row['account']} ("
+      alerts.append(f"{row['quota']} reset early for {account} ("
                     f"{format_percent(100 - row['was_used'])} → "
                     f"{format_percent(row['remaining'])} left)")
     if row["type"] == "burn" and (row["moment"] - now).total_seconds() <= 3600:
       if ("burn", key) not in sent:
         sent.add(("burn", key))
-        alerts.append(f"{row['quota']} for {row['account']} runs out "
+        alerts.append(f"{row['quota']} for {account} runs out "
                       + timeline_when(row["moment"], now))
     if row["restores"] and not row["active"] and row["moment"] <= now:
       if ("free", row["account"]) not in sent:
@@ -1373,17 +1405,20 @@ def run_live(args: argparse.Namespace, cache_path: Path,
         if frame["command"] and now - last_summaries >= 300:
           module.start_summaries(frame["command"])
           last_summaries = now
-      try:
-        age = format_duration(now - cache_path.stat().st_mtime)
-      except OSError:
-        age = "UNKNOWN"
+      report_age = "quota report uncached"
+      if not args.no_cache:
+        try:
+          age = format_duration(now - cache_path.stat().st_mtime)
+        except OSError:
+          age = "UNKNOWN"
+        report_age = f"quota data {age} old"
       body_lines = body.splitlines()
       heading = (body_lines.pop(0) if body_lines else 'Timeline') if (
         view == 'timeline') else f'agent-quota --{view} --live'
       status = paint(
         f"{SPINNER[tick % len(SPINNER)]} {heading} · every "
         f"{f'{interval:g}s' if interval < 60 else format_duration(interval)} "
-        f"· quota data {age} old · q to quit", ("bold",), args.color_on)
+        f"· {report_age} · q to quit", ("bold",), args.color_on)
       size = live_terminal_size(out)
       lines = fit_screen([clip_live_line(line, size.columns - 1)
                           for line in [status, *body_lines]],

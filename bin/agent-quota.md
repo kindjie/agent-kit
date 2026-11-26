@@ -781,6 +781,66 @@ The inventory cap and parser omissions can make this a partial measurement.
 
 ## Sources and cache
 
+### Google Antigravity
+
+Run `agent-quota antigravity --brief` with a signed-in `agy` CLI.
+A normal headless query saves the source choice for later aggregate and
+tmux refreshes where `agy` is available. Set
+`AGENT_QUOTA_ANTIGRAVITY_SOURCE=cli` to select headless collection explicitly.
+`AGY_BIN` can name the executable when the status process has a different
+PATH. Set `AGENT_QUOTA_ANTIGRAVITY_SOURCE=off` to disable collection and
+hide cached Antigravity readings.
+
+The headless collector uses the installed CLI's read-only
+[`/usage`](https://antigravity.google/docs/cli/commands/usage) and
+[`/credits`](https://antigravity.google/docs/cli/commands/credits)
+commands. It probes only verified `agy` versions 1.5.17 and 1.5.18. The
+[print-mode interface](https://antigravity.google/docs/cli/headless/)
+can send unrecognized slash commands to a model, including the registry
+probe itself if the CLI stops recognizing it. On verified versions the
+collector checks the local registry before dispatch and validates zero
+turns and tokens. It uses a temporary hard link to keep the executable
+stable during the query and disables [self-updates](https://antigravity.google/docs/cli/troubleshooting/#resolve-self-updater-locks-and-failures)
+for its subprocesses. If it cannot hard-link the executable, it skips the
+query. The nested command data shape is observed in the CLI.
+An unrecognized result makes its reading unavailable. The status-line
+source below follows the documented payload across CLI upgrades.
+
+Gemini and Claude/GPT each have separate weekly and five-hour windows.
+The Unix-epoch reset sentinel indicates that the reset time is unknown.
+AI credits are shown separately from quota. Headless results supply no
+account identity, so both quota and credits show as unverified and carry
+no historical burn projections. A failed refresh cannot reuse an earlier
+unverified reading. `--cached` still displays the saved observation with
+its original timestamps and starts no quota-provider process.
+
+For an account-bound observation, configure the documented
+[Antigravity status line](https://antigravity.google/docs/cli/statusline/)
+in the CLI's settings:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "agent-quota antigravity --record-antigravity-statusline",
+    "stack_with_default": true
+  }
+}
+```
+
+The first usable capture enables this source for aggregate and tmux
+refreshes using the same cache directory. An explicit source setting takes
+precedence. Set `AGENT_QUOTA_ANTIGRAVITY_SOURCE=statusline` to select it before
+the first capture. The hook keeps a mode 0600 snapshot of the quota, session
+identity and observation time. It ignores unrelated fields and preserves the
+timestamps of recently seen snapshots when sessions alternate. The report
+and tmux reevaluate freshness on every read. The snapshot identifies the
+session that supplied it, with no assertion about the current login. It
+carries no credits or history from the headless source. Tmux and desktop
+notifications omit the email. Remove the hook to stop writing new captures.
+
+### Claude Code and Codex
+
 Claude Code data comes from its advisory `cachedUsageUtilization` state,
 refreshed with the CLI's `/usage` command without session persistence. That
 cache is undocumented, so schema changes fail visibly and last-good derived

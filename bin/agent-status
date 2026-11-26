@@ -37,6 +37,7 @@ ACCOUNT_ARCHIVES = {
 SERVICE_LABELS = {
   "claude_code": ("Claude", "Cl"),
   "codex": ("Codex", "Cx"),
+  "antigravity": ("Antigravity", "Ag"),
 }
 SPECIAL_BUCKET_LABELS = {
   "Fable 5": "Fable",
@@ -410,7 +411,7 @@ def inactive_reset(
   than the one the service last checked. Snapshots already full gain nothing
   from a reset, so they are skipped. These are last observations of accounts
   that are not queried, never claims about them now."""
-  if not valid_report(report):
+  if service_id not in ACCOUNT_ARCHIVES or not valid_report(report):
     return None
   soonest: datetime | None = None
   for service in alternate_accounts(
@@ -442,7 +443,7 @@ def inactive_ready(
   available again: agent-quota records `ready_at`, the moment it refills
   (or its last spent account-wide bucket resets), and that moment passed
   after the account was last checked. Never names the account."""
-  if not valid_report(report):
+  if service_id not in ACCOUNT_ARCHIVES or not valid_report(report):
     return False
   for service in alternate_accounts(
       report, service_id, ACCOUNT_ARCHIVES[service_id]):
@@ -463,7 +464,11 @@ def tmux_service_group(
   now: datetime,
   wide: bool,
 ) -> str:
-  items = weekly_limits(report, service_id)
+  if service_id == "antigravity":
+    items = [item for item in service_limits(report, service_id)
+             if item["window"].get("label") in ("weekly", "5h")]
+  else:
+    items = weekly_limits(report, service_id)
   if not items:
     # A service whose refresh failed has no limits to show; mark it unknown
     # rather than letting it vanish from the line.
@@ -495,7 +500,10 @@ def tmux_service_group(
       else abbreviation(service_id, item)
     )
     session = sessions.get(item.get("bucket", {}).get("id"))
-    if session_takeover(item, session, now):
+    if service_id == "antigravity":
+      window = "wk" if item["window"]["label"] == "weekly" else "5h"
+      label += f" {window}" if wide else window
+    elif session_takeover(item, session, now):
       item = session
       label += " 5h" if wide else "5h"
     value = format_tmux_observation(
@@ -542,7 +550,7 @@ def render_tmux(
       now=observed_now,
       wide=wide,
     )
-    for service_id in ("claude_code", "codex")
+    for service_id in SERVICE_LABELS
   ]
   groups = [group for group in groups if group]
 
@@ -603,6 +611,16 @@ def main(argv: list[str] | None = None) -> int:
   cache = default_cache_path()
   trigger_refresh(cache)
   report = load_report(cache)
+
+  if report is not None:
+    services = report["services"]
+    antigravity = services.get("antigravity")
+    source = os.environ.get("AGENT_QUOTA_ANTIGRAVITY_SOURCE")
+    if source is None:
+      sidecar = cache.with_name("antigravity-statusline-v1.json")
+      source = "statusline" if sidecar.is_file() else "cli"
+    if isinstance(antigravity, dict) and antigravity.get("source_mode") != source:
+      services.pop("antigravity")
 
   if args.mode == "claude":
     try:

@@ -159,7 +159,7 @@ You only need the requirements for the pieces you choose.
 | --- | --- |
 | Skills only | A coding agent that supports local skills |
 | Commands | Python 3.9+ and a POSIX shell, on macOS or Linux |
-| Live quota | A signed-in Claude Code or Codex CLI; either provider is enough |
+| Live quota | A signed-in Claude Code, Codex or [Antigravity CLI](bin/agent-quota.md#google-antigravity) |
 | Combined dashboard | tmux, in addition to the command requirements |
 | Shared task records | Git and task stores you explicitly configure |
 | SteamOS devices | ssh, rsync and git on the host; a paired SteamOS device |
