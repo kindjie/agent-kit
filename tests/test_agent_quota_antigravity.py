@@ -104,8 +104,7 @@ class AntigravityQuotaTests(unittest.TestCase):
     self.assertTrue(events)
     self.assertTrue(all(event["provider"] == "antigravity" for event in events))
     tmux = strip_tmux_styles(AGENT_STATUS.render_tmux(document, 160, now=NOW))
-    self.assertIn("Antigravity", tmux)
-    self.assertIn("Gemini 5h", tmux)
+    self.assertIn("Ag G5h·5%", tmux)
 
   def test_unsupported_version_never_invokes_print_mode(self):
     with patch.object(AGENT_QUOTA.shutil, "which", return_value=str(self.agy)), \
@@ -289,20 +288,63 @@ class AntigravityQuotaTests(unittest.TestCase):
     self.assertNotIn("antigravity", json.loads(out.getvalue())["services"])
     self.assertIn("antigravity", AGENT_QUOTA.load_cache(self.cache)["services"])
 
-  def test_four_tmux_windows_render_without_identity(self):
+  def test_cli_retains_all_windows_and_tmux_shows_compact_weekly_groups(self):
     data = usage_data()
-    data["groups"][1]["buckets"].append(bucket("3p-5h", "5h", 0.6))
+    data["groups"][0]["buckets"][0]["remaining_fraction"] = 0.654
+    data["groups"][0]["buckets"][1]["remaining_fraction"] = 0.404
+    data["groups"][1]["buckets"] = [
+      bucket("3p-weekly", "weekly", 0.726), bucket("3p-5h", "5h", 0.595),
+    ]
     buckets, partial = AGENT_QUOTA.agy_usage(data)
     service = AGENT_QUOTA.agy_service(buckets, partial, "agy.statusLine", NOW, NOW)
-    service["account"] = {"label": "fixture@example.test"}
+    service["account"] = {"label": "fixture@example.test", "plan": "fixture",
+                          "observed_at": AGENT_QUOTA.iso_utc(NOW)}
+    document = {"schema_version": 3, "generated_at": AGENT_QUOTA.iso_utc(NOW),
+                "services": {"antigravity": service}}
+    self.assertEqual([(item["bucket"]["id"], item["window"]["label"])
+                      for item in service["limits"]],
+                     [("gemini", "weekly"), ("gemini", "5h"),
+                      ("3p", "weekly"), ("3p", "5h")])
+    brief = AGENT_QUOTA.render_brief(document)
+    for label in ("Gemini weekly", "Gemini 5h", "Claude/GPT weekly", "Claude/GPT 5h"):
+      self.assertIn(label, brief)
+    for width in (160, 90):
+      tmux = strip_tmux_styles(AGENT_STATUS.render_tmux(document, width, now=NOW))
+      self.assertEqual(tmux, "Ag G·65% C/G·73% │ ")
+
+  def test_tmux_replaces_only_the_weekly_group_that_needs_urgent_five_hour(self):
+    data = {"groups": [{"buckets": [
+      bucket("gemini-weekly", "weekly", 0.654),
+      bucket("gemini-5h", "5h", 0.094, "2026-08-20T01:00:00Z"),
+      bucket("3p-weekly", "weekly", 0.054),
+      bucket("3p-5h", "5h", 0.094, "2026-08-20T01:00:00Z"),
+    ]}]}
+    buckets, partial = AGENT_QUOTA.agy_usage(data)
+    service = AGENT_QUOTA.agy_service(buckets, partial, "agy.statusLine", NOW, NOW)
     document = {"schema_version": 3, "services": {"antigravity": service}}
-    for width, labels in [(160, ("Gemini wk", "Gemini 5h", "Claude/GPT wk",
-                                 "Claude/GPT 5h")),
-                          (90, ("Gemwk", "Gem5h", "Clawk", "Cla5h"))]:
-      rendered = strip_tmux_styles(AGENT_STATUS.render_tmux(document, width, now=NOW))
-      for label in labels:
-        self.assertIn(label, rendered)
-      self.assertNotIn("example.test", rendered)
+    for width in (160, 90):
+      styled = AGENT_STATUS.render_tmux(document, width, now=NOW)
+      tmux = strip_tmux_styles(styled)
+      self.assertIn("Ag G5h·9%", tmux)
+      self.assertIn("C/G·5%", tmux)
+      self.assertNotIn("C/G5h", tmux)
+      self.assertNotIn("65%", tmux)
+      self.assertIn("#[fg=red,nodim]9%", styled)
+
+  def test_tmux_partial_five_hour_only_preserves_stale_and_unknown(self):
+    data = {"groups": [{"buckets": [
+      bucket("gemini-5h", "5h", 0.654, "2026-08-20T01:00:00Z"),
+      bucket("3p-5h", "5h", 0.064, "1970-01-01T00:00:00Z"),
+    ]}]}
+    buckets, partial = AGENT_QUOTA.agy_usage(data)
+    service = AGENT_QUOTA.agy_service(buckets, partial, "agy.statusLine", NOW, NOW)
+    document = {"schema_version": 3, "services": {"antigravity": service}}
+    for width in (160, 90):
+      tmux = strip_tmux_styles(AGENT_STATUS.render_tmux(
+        document, width, now=NOW + timedelta(minutes=6),
+      ))
+      self.assertIn("Ag G5h·~65%@6m", tmux)
+      self.assertIn("C/G5h·?last6%", tmux)
 
   def test_live_cache_obeys_selected_source_and_no_cache_flag(self):
     buckets, partial = AGENT_QUOTA.agy_usage(usage_data())

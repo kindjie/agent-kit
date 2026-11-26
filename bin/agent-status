@@ -37,8 +37,9 @@ ACCOUNT_ARCHIVES = {
 SERVICE_LABELS = {
   "claude_code": ("Claude", "Cl"),
   "codex": ("Codex", "Cx"),
-  "antigravity": ("Antigravity", "Ag"),
+  "antigravity": ("Ag", "Ag"),
 }
+ANTIGRAVITY_BUCKET_LABELS = {"gemini": "G", "3p": "C/G"}
 SPECIAL_BUCKET_LABELS = {
   "Fable 5": "Fable",
   "GPT-5.3-Codex-Spark": "Spark",
@@ -154,6 +155,7 @@ def format_observation(
   now: datetime,
   local_tz: tzinfo | None = None,
   compact: bool,
+  whole_percent: bool = False,
 ) -> str:
   if not isinstance(observation, dict):
     return "?"
@@ -161,14 +163,15 @@ def format_observation(
   if remaining is None:
     return "?"
 
+  percent = percent_text(remaining, whole_percent)
   freshness, relation = observation_state(observation, now)
   if relation == "ended":
-    return f"?was{remaining}%" if compact else f"? (was {remaining}%)"
+    return f"?was{percent}" if compact else f"? (was {percent})"
   if relation == "unknown":
-    return f"?last{remaining}%" if compact else f"? (last {remaining}%)"
+    return f"?last{percent}" if compact else f"? (last {percent})"
 
   marker = "" if freshness == "fresh" else "~"
-  result = f"{marker}{remaining}%"
+  result = f"{marker}{percent}"
   observed = parse_timestamp(observation.get("observed_at"))
   if freshness != "fresh" and observed is not None:
     age = age_text(observed, now)
@@ -182,6 +185,16 @@ def format_observation(
       if not compact:
         result = result.replace("↻", " ↻", 1)
   return result
+
+
+def percent_text(remaining: int | float, whole: bool) -> str:
+  if not whole:
+    return f"{remaining}%"
+  # Keep empty and full distinguishable from nearby fractional readings.
+  rounded = round(remaining)
+  if 0 < remaining < 100:
+    rounded = max(1, min(99, rounded))
+  return f"{rounded}%"
 
 
 def service_limits(
@@ -338,11 +351,13 @@ def format_tmux_observation(
   *,
   now: datetime,
   wide: bool,
+  whole_percent: bool = False,
 ) -> str:
   rendered = format_observation(
     observation,
     now=now,
     compact=True,
+    whole_percent=whole_percent,
   )
   if wide:
     rendered = rendered.replace("↻", " reset ")
@@ -359,7 +374,7 @@ def format_tmux_observation(
   if freshness != "fresh" and rendered.startswith("~"):
     rendered = tmux_style("~", "fg=yellow,nodim") + rendered[1:]
 
-  token = f"{remaining}%"
+  token = percent_text(remaining, whole_percent)
   if remaining == 0:
     styled = tmux_style(
       token,
@@ -464,11 +479,18 @@ def tmux_service_group(
   now: datetime,
   wide: bool,
 ) -> str:
-  if service_id == "antigravity":
-    items = [item for item in service_limits(report, service_id)
-             if item["window"].get("label") in ("weekly", "5h")]
-  else:
-    items = weekly_limits(report, service_id)
+  antigravity = service_id == "antigravity"
+  spaced = wide and not antigravity
+  items = weekly_limits(report, service_id)
+  sessions = {
+    item["bucket"].get("id"): item
+    for item in service_limits(report, service_id)
+    if item["window"].get("label") == "5h"
+  }
+  if antigravity:
+    weekly_ids = {item["bucket"].get("id") for item in items}
+    items.extend(item for bucket_id, item in sessions.items()
+                 if bucket_id not in weekly_ids)
   if not items:
     # A service whose refresh failed has no limits to show; mark it unknown
     # rather than letting it vanish from the line.
@@ -480,40 +502,35 @@ def tmux_service_group(
     unknown = tmux_style("?", "fg=yellow,nodim")
     return f"{name}{' ' if wide else ''}{unknown}"
 
-  accounts = [
-    item
-    for item in items
-    if item.get("bucket", {}).get("scope_kind") == "account"
-  ]
-  primary = accounts[0] if accounts else None
-  specials = [item for item in items if item is not primary]
-  sessions = {
-    item.get("bucket", {}).get("id"): item
-    for item in service_limits(report, service_id)
-    if item["window"].get("label") == "5h"
-  }
-
   def item_text(item: dict[str, Any]) -> str:
-    label = (
-      wide_label(service_id, item)
-      if wide
-      else abbreviation(service_id, item)
-    )
-    session = sessions.get(item.get("bucket", {}).get("id"))
-    if service_id == "antigravity":
-      window = "wk" if item["window"]["label"] == "weekly" else "5h"
-      label += f" {window}" if wide else window
-    elif session_takeover(item, session, now):
+    bucket_id = item["bucket"].get("id")
+    if antigravity:
+      label = ANTIGRAVITY_BUCKET_LABELS.get(bucket_id, "?")
+    elif wide:
+      label = wide_label(service_id, item)
+    else:
+      label = abbreviation(service_id, item)
+    session = sessions.get(bucket_id)
+    if item["window"].get("label") == "weekly" and session_takeover(
+        item, session, now):
       item = session
-      label += " 5h" if wide else "5h"
+    if item["window"].get("label") == "5h":
+      label += " 5h" if spaced else "5h"
     value = format_tmux_observation(
       item.get("last_observation"),
       now=now,
       wide=wide,
+      whole_percent=antigravity,
     )
     indicator = pace_indicator(item, now=now)
-    return f"{label}{' ' if wide else ''}{indicator}{value}"
+    return f"{label}{' ' if spaced else ''}{indicator}{value}"
 
+  if antigravity:
+    return SERVICE_LABELS[service_id][0] + " " + " ".join(map(item_text, items))
+
+  primary = next((item for item in items
+                  if item["bucket"].get("scope_kind") == "account"), None)
+  specials = [item for item in items if item is not primary]
   if primary is not None:
     rendered = item_text(primary)
   else:
