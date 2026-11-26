@@ -807,6 +807,9 @@ An unrecognized result makes its reading unavailable. The status-line
 source below follows the documented payload across CLI upgrades.
 
 Gemini and Claude/GPT each have separate weekly and five-hour windows.
+In tmux, `Ag` shows one whole percentage per group (`G` and `C/G`). The
+five-hour window takes over when it is the immediate constraint or the
+only available window for that group. The CLI report shows both windows.
 The Unix-epoch reset sentinel indicates that the reset time is unknown.
 AI credits are shown separately from quota. Headless results supply no
 account identity, so both quota and credits show as unverified and carry
