@@ -255,6 +255,14 @@ class EfficiencyTest(unittest.TestCase):
     self.assertEqual(report['coordination']['empty_events_timeout_returns'], 1)
     self.assertEqual(report['coordination']['failed_cli_attempts'], 0)
 
+  def test_pending_wait_option_is_recognized(self):
+    batch = {'schema_version': 1, 'cursor': {}, 'events': [], 'rewritten': []}
+    events = self.codex_tool('pending-wait',
+      "agent-task events T-0001 --after '{}' --pending-wait 0",
+      {'exit_code': 4, 'output': json.dumps(batch)})
+    report = self.coordination(events)
+    self.assertEqual(report['coordination']['empty_events_timeout_returns'], 1)
+
   def test_async_sessions_correlate_terminal_results_once(self):
     batch = {'schema_version': 1, 'cursor': {}, 'events': [], 'rewritten': []}
     events = self.codex_tool('start',

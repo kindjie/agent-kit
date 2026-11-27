@@ -31,6 +31,10 @@ class ActivityTest(unittest.TestCase):
       'cmd': 'agent-task watch T-0012 --until closed --timeout 540'})
     self.assertEqual(wait['tasks'], ['T-0012'])
     self.assertEqual(wait['condition'], 'closed')
+    wait = self.mod.wait_spec('exec_command', {
+      'cmd': 'agent-task watch T-0012 --until closed --timeout 540 '
+             '--pending-wait 120'})
+    self.assertEqual(wait['tasks'], ['T-0012'])
     for cmd in ('echo agent-task watch T-0012',
                 'printf "agent-task watch T-0012"',
                 'agent-task watch T-0012 &',

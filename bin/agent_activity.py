@@ -140,7 +140,8 @@ def wait_spec(name, value):
     if re.fullmatch(r'T-\d{4,}', word):
       tasks.append(word)
       index += 1
-    elif word in ('--until', '--for', '--after', '--timeout', '--interval'):
+    elif word in ('--until', '--for', '--after', '--timeout', '--interval',
+                  '--pending-wait'):
       if index + 1 >= len(words):
         return None
       opts[word] = words[index + 1]

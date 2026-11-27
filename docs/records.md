@@ -481,8 +481,9 @@ and `agent-changelog watch` therefore release their locks and re-read for up
 to `--pending-wait` seconds (default 60), reporting the wait on stderr and
 keeping their cursor and deadline. They exit 5 only if the journal persists
 for the whole window, which suggests no writer has run since and recovery is
-needed. The window may extend a watch past `--timeout`; `--pending-wait 0`
-exits at once.
+needed. An interrupted git operation or a stale `index.lock`, which the next
+writer cannot recover either, still exits 5 at once. The window may extend a
+watch past `--timeout`; `--pending-wait 0` exits at once.
 Mutations retain automatic recovery before applying their own transaction.
 `--unlocked` permits a diagnostic read of pending state marked `UNVERIFIED`
 (`authoritative: false` in JSON); it cannot establish completion or ownership.

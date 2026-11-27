@@ -2,6 +2,7 @@
 
 import base64
 import json
+from pathlib import Path
 import subprocess
 import sys
 import time
@@ -41,9 +42,16 @@ class WatchPendingTest(RecordsFixture):
     path.write_bytes(post)
 
   def start(self, name, *args):
-    return subprocess.Popen(
+    process = subprocess.Popen(
       [sys.executable, str(BIN / name), *args], cwd=self.base, env=self.env,
       text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    self.addCleanup(self.stop, process)
+    return process
+
+  def stop(self, process):
+    if process.poll() is None:
+      process.kill()
+    process.communicate()
 
   def finish(self, process, code):
     try:
@@ -117,10 +125,22 @@ class WatchPendingTest(RecordsFixture):
         self.assertEqual(before, self.snapshot())
     self.assertTrue((self.tasks / ".records-journal.json").exists())
 
+  def test_unrecoverable_state_fails_without_waiting(self):
+    task = self.task()
+    self.pending_edit(task)
+    lock = Path(self.git("rev-parse", "--absolute-git-dir")) / "index.lock"
+    lock.write_text("")
+    self.addCleanup(lock.unlink, missing_ok=True)
+    started = time.monotonic()
+    process = self.start("agent-task", "watch", task, "--until", "closed",
+                         "--timeout", "30", "--pending-wait", "30")
+    _, stderr = self.finish(process, 5)
+    self.assertLess(time.monotonic() - started, 10)
+    self.assertIn("index.lock", stderr)
+
   def test_events_resume_after_next_writer_recovers(self):
     task = self.task()
-    first = json.loads(self.run_cmd("agent-task", "events", task,
-                                    "--timeout", "0.1"))
+    first = json.loads(self.run_cmd("agent-task", "events", task))
     self.pending_edit(task)
     events = self.start("agent-task", "events", task, "--after",
                         json.dumps(first["cursor"]), "--timeout", "20",

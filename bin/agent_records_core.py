@@ -1534,7 +1534,13 @@ def record_locks(tasks, changes, writes=(), wait=LOCK_WAIT, agent="reader",
         if pending_since is None:
           pending_since = time.monotonic()
           if pending_wait > 0:
+            # States the next writer cannot recover fail now, not later.
+            for root in roots:
+              operation_state(root)
+              check_index_lock(root)
             journal = next(j for j in journals if j)
+            if not isinstance(journal, dict):
+              journal = {}
             print("pending journal (" + str(journal.get("operation", "?")) +
                   " by " + str(journal.get("agent", "?")) + "); waiting up "
                   "to " + format(pending_wait, "g") + "s for the next "
