@@ -132,7 +132,7 @@ def shell_specs(name, value):
     else:
       option, sep, argument = word.partition('=')
       if option not in ('--after', '--for', '--timeout', '--interval',
-                        '--agent'):
+                        '--pending-wait', '--agent'):
         return [result]
       if not sep:
         index += 1

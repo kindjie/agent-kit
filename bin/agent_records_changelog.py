@@ -14,7 +14,7 @@ from agent_records_core import (
   one_line,
   parse_document, parse_record_date, record_locks, render_document,
   repo_key, slug,
-  stamp, lint_layout, config,
+  stamp, lint_layout, config, pending_seconds,
 )
 
 
@@ -328,6 +328,7 @@ def show_record(root, value, authoritative=True):
 def watch_record(root, tasks, args):
   timeout = duration(args.timeout)
   interval = duration(args.interval)
+  pending_wait = pending_seconds(args.pending_wait)
   if interval < 1:
     raise RecordsError("interval must be at least 1 second", 2)
   if args.after and not re.fullmatch(r"h:[0-9a-f]{16}", args.after):
@@ -340,7 +341,8 @@ def watch_record(root, tasks, args):
   prior_fields = None
   while True:
     with record_locks(tasks, root, wait=args.wait,
-                      unlocked=args.unlocked) as authoritative:
+                      unlocked=args.unlocked,
+                      pending_wait=pending_wait) as authoritative:
       path = record_path(root, args.entry)
       raw = path.read_bytes()
       fields, _, _ = parse_document(raw)

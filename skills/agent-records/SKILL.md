@@ -115,8 +115,10 @@ lock files. Use the normal sandbox when it permits the operation. Do not
 request escalation for every records command by habit.
 
 `show`, `list`, `next`, relationship views, lint and watches never repair a
-pending journal. Exit 5 means recovery is needed; an authorized writer uses
-`agent-task --agent ID recover` or `agent-changelog --agent ID recover`.
+pending journal. Watches and `events` wait up to `--pending-wait` (default
+60s) for the next writer to recover it. Exit 5 means recovery is needed; an
+authorized writer uses `agent-task --agent ID recover` or
+`agent-changelog --agent ID recover`.
 An explicit `--unlocked` diagnostic read may show incomplete state and is
 marked unverified. Do not use it to establish a gate or ownership decision.
 `doctor` is a write/signing probe, not a routine status read; it also provisions

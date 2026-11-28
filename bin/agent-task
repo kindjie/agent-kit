@@ -17,7 +17,8 @@ sys.path.insert(0, str(Path(os.path.realpath(__file__)).parent))
 from agent_records_cli import Parser, parse
 from agent_records_core import (
   push_policy,
-  EXIT_TEXT, FORCE_TEXT, RecordsError, config, directory, doctor, init_repo,
+  EXIT_TEXT, FORCE_TEXT, PENDING_WAIT, RecordsError, config, directory,
+  doctor, init_repo,
   refuse_pinned_init,
   duration, one_line, record_locks, require_agent, sync, unexpected_error,
   validate_root,
@@ -282,6 +283,7 @@ def parser():
                       help="ignore lease renewals; retain observed expiry")
   events.add_argument("--timeout", default="540")
   events.add_argument("--interval", default="5")
+  events.add_argument("--pending-wait", default=str(PENDING_WAIT))
   watch = add("watch", "Poll task changes; writes nothing.",
               "agent-task watch T-0001 --until closed")
   watch.add_argument("task")
@@ -290,6 +292,7 @@ def parser():
   watch.add_argument("--until")
   watch.add_argument("--timeout", default="540")
   watch.add_argument("--interval", default="5")
+  watch.add_argument("--pending-wait", default=str(PENDING_WAIT))
   add("sync", "Pull with rebase and optionally push; writes git state.",
       "agent-task sync")
   recover = add("recover", "Resolve a pending journal; may write records "
@@ -359,6 +362,8 @@ def parser():
               "--for), or change"),
     "timeout": "watch deadline in seconds; exit 4 on timeout",
     "interval": "poll interval in seconds, minimum 1",
+    "pending_wait": ("seconds to wait for another writer to recover a "
+                     "pending journal before exit 5; 0 exits at once"),
     "keep": "keep and commit this journal path; repeatable",
     "discard": "discard this journal path; repeatable",
   }

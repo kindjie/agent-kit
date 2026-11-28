@@ -4,7 +4,9 @@ import json
 import re
 import time
 
-from agent_records_core import RecordsError, duration, record_locks
+from agent_records_core import (
+  RecordsError, duration, pending_seconds, record_locks,
+)
 from agent_records_tasks import (
   addressed, cursor, live_owner, log_lines, read_task, task_path,
 )
@@ -32,6 +34,7 @@ def events(root, changes, args):
   tasks = sorted(set(args.tasks))
   timeout = duration(args.timeout, 'timeout')
   interval = duration(args.interval, 'interval')
+  pending_wait = pending_seconds(args.pending_wait)
   if interval < 1:
     raise RecordsError('interval must be at least 1 second', 2)
   previous = None
@@ -55,7 +58,8 @@ def events(root, changes, args):
   deadline = time.monotonic() + timeout
   while True:
     batch, rewritten, current = [], [], {}
-    with record_locks(root, changes, wait=args.wait):
+    with record_locks(root, changes, wait=args.wait,
+                      pending_wait=pending_wait):
       for ident, (lines, fields, mark) in snapshot(
           root, tasks, args.actionable).items():
         current[ident] = mark

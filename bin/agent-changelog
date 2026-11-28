@@ -13,7 +13,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(os.path.realpath(__file__)).parent))
 from agent_records_core import (
   push_policy,
-  EXIT_TEXT, FORCE_TEXT, RecordsError, config, directory, doctor, init_repo,
+  EXIT_TEXT, FORCE_TEXT, PENDING_WAIT, RecordsError, config, directory,
+  doctor, init_repo,
   refuse_pinned_init,
   duration, one_line, record_locks, require_agent, sync, unexpected_error,
 )
@@ -134,6 +135,7 @@ def parser():
   watch.add_argument("--after")
   watch.add_argument("--timeout", default="540")
   watch.add_argument("--interval", default="5")
+  watch.add_argument("--pending-wait", default=str(PENDING_WAIT))
   add("sync", "Pull with rebase and optionally push; writes git state.",
       "agent-changelog sync")
   recover = add("recover", "Resolve a journal; may write records and commit.",
@@ -193,6 +195,8 @@ def parser():
     "after": "resume from h:HASH file-content cursor",
     "timeout": "watch deadline in seconds; exit 4 on timeout",
     "interval": "poll interval in seconds, minimum 1",
+    "pending_wait": ("seconds to wait for another writer to recover a "
+                     "pending journal before exit 5; 0 exits at once"),
     "keep": "keep and commit this journal path; repeatable",
     "discard": "discard this journal path; repeatable",
     "set_repos": "JSON mapping from record paths to repository keys",
